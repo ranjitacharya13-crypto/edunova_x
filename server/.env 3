@@ -1,0 +1,6 @@
+PORT=4000
+MONGO_URI=mongodb+srv://ranjit5201314_db_user:admin12345@cluster1edunovax.8q5lafw.mongodb.net/edunova
+JWT_SECRET=THIS_IS_YOUR_NEW_SECRET_1234567890_SUPER_SAFE
+EMAIL_USER=ranjitacharya13@gmail.com
+EMAIL_PASS=qrhk cjdb ajkp psia
+CONTACT_RECEIVER_EMAIL=ranjit5201314@gmail.com
