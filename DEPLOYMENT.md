@@ -27,3 +27,90 @@ In local dev nothing changes: no env vars = Vite proxy to `localhost:4000`, same
 ## Auto-deploys
 
 Every push to `main` triggers a production deploy; PR/branches get preview deploys. No manual "merge to Vercel" step exists — merging to `main` on GitHub **is** the deploy trigger.
+
+---
+
+# Deploying the backend services (Render / Railway)
+
+The three backend services are Docker-ready. Each folder has its own `Dockerfile`:
+
+| Service | Folder | Local port | Health check |
+|---|---|---|---|
+| Express API + Socket.IO | [`server/`](./server) | `4000` | `GET /api/test` |
+| WebRTC signaling (Socket.IO) | [`signaling/`](./signaling) | `5000` | `GET /health` |
+| AI engine (FastAPI) | [`ai_engine/`](./ai_engine) | `8001` | `GET /health` |
+
+> **Note:** `server/` **already embeds the exact same Socket.IO signaling** as `signaling/`. You can skip service #2 entirely and point `VITE_SIGNAL_URL` at the API server (e.g. `https://edunova-api.onrender.com`). Deploy `signaling/` separately only if you want to scale it independently.
+
+## Option 1 — Render (one-click Blueprint)
+
+1. Vercel dashboard is separate; go to **Render Dashboard → Blueprints → New Blueprint Instance**
+2. Connect GitHub and pick `edunova_x` — Render reads [`render.yaml`](./render.yaml) and creates **edunova-api**, **edunova-signal**, and **edunova-ai**
+3. When prompted, fill in the `sync: false` variables (`JWT_SECRET` is auto-generated):
+   - `MONGO_URI` — your MongoDB Atlas connection string (same one you use locally)
+   - `AI_ENGINE_URL` — set **after** the first deploy, once you know the AI service URL (e.g. `https://edunova-ai.onrender.com`)
+   - `EMAIL_USER` / `EMAIL_PASS` / `CONTACT_RECEIVER_EMAIL` — optional, only for the contact form (Gmail + App Password)
+4. Render injects `PORT` automatically — all three services already read it.
+
+**Manual alternative:** New → Web Service → pick the repo → set **Root Directory** to `server` (or `signaling` / `ai_engine`) → Runtime: Docker. Repeat per service.
+
+## Option 2 — Railway
+
+1. **New Project → Deploy from GitHub repo** → pick `edunova_x`
+2. Create one service per folder: service settings → **Root Directory** = `server`, `signaling`, or `ai_engine` — Railway auto-detects each `Dockerfile`
+3. Add the env vars from the table below per service (Railway injects `PORT` automatically)
+
+## Environment variables
+
+**`server/` (edunova-api)**
+
+| Variable | Required | Notes |
+|---|---|---|
+| `MONGO_URI` | ✅ | MongoDB Atlas connection string |
+| `JWT_SECRET` | ✅ | any long random string (Render Blueprint auto-generates it) |
+| `AI_ENGINE_URL` | ⚠️ for AI chat | URL of the deployed ai_engine, no trailing slash |
+| `PORT` | auto | injected by the platform |
+| `SEED_DEMO_USERS` | optional | `"false"` disables demo teacher/student accounts |
+| `ADMIN_TEMP_PASSWORD` | optional | first-boot admin password; random if unset (printed to logs) |
+| `EMAIL_USER` / `EMAIL_PASS` / `CONTACT_RECEIVER_EMAIL` | optional | contact form via Gmail SMTP |
+
+**`ai_engine/` (edunova-ai)**
+
+| Variable | Required | Notes |
+|---|---|---|
+| `MONGO_URI` | ✅ | same Atlas cluster (default DB `edunova`) |
+| `STUDENT_TIMETABLE_ID` / `TEACHER_TIMETABLE_ID` | optional | overrides the built-in timetable ObjectIds |
+| `PORT` | auto | injected by the platform |
+
+**`signaling/` (edunova-signal)** — no env vars needed; only `PORT` (auto-injected).
+
+## Wire the frontend to the backends
+
+After the backends are live, in **Vercel → Project Settings → Environment Variables**:
+
+| Variable | Value |
+|---|---|
+| `VITE_API_URL` | `https://<edunova-api>.onrender.com/api` — **include `/api`** |
+| `VITE_SIGNAL_URL` | `https://<edunova-api>.onrender.com` (or the signaling service URL if deployed separately) |
+
+Then ** redeploy** the Vercel frontend (Vite inlines env vars at build time).
+
+## Free-tier cold starts
+
+Render/Railway free services sleep after ~15 min idle — the first request after sleep takes 30–60 s. If Atlas is on an M0 (free) cluster, also add the platform egress IPs (or `0.0.0.0/0`) in **Atlas → Network Access** so the backends can reach MongoDB.
+
+## Docker commands (local testing)
+
+```bash
+docker build -t edunova-api ./server
+docker build -t edunova-signal ./signaling
+docker build -t edunova-ai ./ai_engine
+
+docker run -p 4000:4000 -e MONGO_URI=... -e JWT_SECRET=... edunova-api
+docker run -p 5000:5000 edunova-signal
+docker run -p 8001:8001 -e MONGO_URI=... edunova-ai
+```
+
+## All-in-one alternative (no Vercel)
+
+`server/server.js` also serves `frontend/dist` statically and hosts the sockets — a single Docker deploy of the repo root (build frontend first, then `node server/server.js`) works on any VPS/VM as a one-process setup. The Vercel + services split above is recommended for free-tier hosting though, since Vercel serves the static app far better.

@@ -1,0 +1,56 @@
+# Render Blueprint — deploys all 3 EduNova backend services in one click.
+# Dashboard → Blueprints → New Blueprint Instance → point at this repo.
+# Any env var with `sync: false` must be filled in the dashboard when prompted.
+
+services:
+  # ─────────────────────────────────────────────
+  # 1. Main API + Socket.IO  (server/)
+  # ─────────────────────────────────────────────
+  - type: web
+    name: edunova-api
+    runtime: docker
+    rootDir: server
+    plan: free
+    healthCheckPath: /api/test
+    envVars:
+      - key: MONGO_URI
+        sync: false            # e.g. mongodb+srv://user:pass@cluster/.../edunova
+      - key: JWT_SECRET
+        generateValue: true    # Render generates a random secret
+      - key: NODE_ENV
+        value: production
+      - key: AI_ENGINE_URL
+        sync: false            # e.g. https://edunova-ai.onrender.com (from service #3)
+      - key: SEED_DEMO_USERS
+        value: "true"          # set to "false" in production if you don't want demo accounts
+      # Optional — contact form email (Gmail + app password). Leave unset to disable.
+      - key: EMAIL_USER
+        sync: false
+      - key: EMAIL_PASS
+        sync: false
+      - key: CONTACT_RECEIVER_EMAIL
+        sync: false
+
+  # ─────────────────────────────────────────────
+  # 2. WebRTC signaling (signaling/)  — optional,
+  #    edunova-api already embeds the same sockets.
+  # ─────────────────────────────────────────────
+  - type: web
+    name: edunova-signal
+    runtime: docker
+    rootDir: signaling
+    plan: free
+    healthCheckPath: /health
+
+  # ─────────────────────────────────────────────
+  # 3. AI engine (ai_engine/)
+  # ─────────────────────────────────────────────
+  - type: web
+    name: edunova-ai
+    runtime: docker
+    rootDir: ai_engine
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: MONGO_URI
+        sync: false            # same Atlas cluster as edunova-api
