@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+server/node_modules/
+signaling/node_modules/
+
+# Build output
+dist/
+frontend/dist/
+
+# Env & secrets
+.env
+.env.*
+!.env.example
+
+# Vercel
+.vercel/
+
+# Logs
+*.log
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.vscode/
+__pycache__/
