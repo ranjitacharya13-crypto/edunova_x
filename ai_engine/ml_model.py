@@ -1,16 +1,14 @@
+import json
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 import joblib
-from pymongo import MongoClient
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from sklearn.linear_model import LinearRegression
 
-
-DEFAULT_MONGO_URI = (
-    "mongodb+srv://ranjit5201314_db_user:admin12345@cluster1edunovax.8q5lafw.mongodb.net/edunova"
-)
 
 SUPPORTED_INTENTS = {
     "TIMETABLE_QUERY",
@@ -32,7 +30,7 @@ INTENT_TO_TASK = {
 
 _MODEL = None
 _VECTORIZER = None
-_MONGO_CLIENT: Optional[MongoClient] = None
+_CONN = None
 
 
 # ================================
@@ -70,20 +68,59 @@ def _today_bounds_utc():
     return start, end
 
 
-def get_db():
-    global _MONGO_CLIENT
-    mongo_uri = os.getenv("MONGO_URI") or DEFAULT_MONGO_URI
+# ================================
+# POSTGRES CONNECTION
+# ================================
 
-    if _MONGO_CLIENT is None:
-        _MONGO_CLIENT = MongoClient(mongo_uri, serverSelectionTimeoutMS=10000)
+def _database_url() -> str:
+    return (
+        os.getenv("DATABASE_URL")
+        or os.getenv("SUPABASE_DB_URL")
+        or os.getenv("POSTGRES_URL")
+        or ""
+    )
 
-    _MONGO_CLIENT.admin.command("ping")
 
-    default_db = _MONGO_CLIENT.get_default_database()
-    if default_db:
-        return default_db
+def get_conn():
+    """Lazily open (and reopen) the Postgres connection."""
+    global _CONN
+    if _CONN is None or _CONN.closed:
+        _CONN = psycopg2.connect(_database_url(), connect_timeout=10)
+        _CONN.autocommit = True
+    return _CONN
 
-    return _MONGO_CLIENT["edunova"]
+
+def _reset_conn():
+    global _CONN
+    try:
+        if _CONN is not None:
+            _CONN.close()
+    except Exception:
+        pass
+    _CONN = None
+
+
+def _fetch_all(sql: str, params=()):
+    for attempt in (1, 2):
+        try:
+            with get_conn().cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(sql, params)
+                return cur.fetchall()
+        except psycopg2.OperationalError:
+            _reset_conn()
+            if attempt == 2:
+                raise
+    return []
+
+
+def _fetch_one(sql: str, params=()):
+    rows = _fetch_all(sql, params)
+    return rows[0] if rows else None
+
+
+def _count(table: str, where: str = "", params=()) -> int:
+    row = _fetch_one(f"SELECT count(*)::int AS c FROM {table} {where}", params)
+    return int(row["c"]) if row else 0
 
 
 # ================================
@@ -117,24 +154,27 @@ def route_task(intent: str):
 
 
 # ================================
-# TASK EXECUTION
+# TASK EXECUTION (SQL)
 # ================================
 
 def execute_task(task: str, user_email: str, message: str):
 
-    db = get_db(edunova_db)
     day_name = detect_day_from_message(message)
 
     # -----------------------------
     # TIMETABLE
     # -----------------------------
     if task == "TASK_TIMETABLE":
-        doc = db["timetables"].find_one({}, {"_id": 0, day_name: 1}) or {}
+        row = _fetch_one(
+            "SELECT days::text AS days FROM timetables ORDER BY created_at ASC LIMIT 1"
+        )
+        days = row["days"] if row else None
+        doc = json.loads(days) if isinstance(days, str) else (days or {})
         entries = doc.get(day_name, [])
 
         return {
             "task": task,
-            "day": day,
+            "day": day_name,
             "count": len(entries),
             "items": entries,
         }
@@ -144,10 +184,24 @@ def execute_task(task: str, user_email: str, message: str):
     # -----------------------------
     if task == "TASK_LIVE_CLASS":
         start, end = _today_bounds_utc()
-        sessions = list(
-            db["livesessions"]
-            .find({"date": {"$gte": start, "$lt": end}})
-            .limit(5)
+        sessions = _fetch_all(
+            """
+            SELECT id::text AS id,
+                   room_id AS "roomId",
+                   teacher_id::text AS "teacherId",
+                   class_name AS "className",
+                   date,
+                   start_time AS "startTime",
+                   end_time AS "endTime",
+                   recording_url AS "recordingUrl",
+                   recording_path AS "recordingPath",
+                   assignment,
+                   created_at AS "createdAt"
+            FROM live_sessions
+            WHERE date >= %s AND date < %s
+            LIMIT 5
+            """,
+            (start, end),
         )
 
         return {
@@ -160,18 +214,20 @@ def execute_task(task: str, user_email: str, message: str):
     # ADMIN ANALYTICS
     # -----------------------------
     if task == "TASK_ADMIN_ANALYTICS":
-        user = db["users"].find_one({"email": user_email})
+        user = _fetch_one(
+            "SELECT role FROM users WHERE email = %s LIMIT 1", (user_email,)
+        ) if user_email else None
         if not user or user.get("role") != "admin":
             return {"authorized": False}
 
         return {
             "authorized": True,
             "summary": {
-                "total_users": db["users"].count_documents({}),
-                "total_students": db["users"].count_documents({"role": "student"}),
-                "total_teachers": db["users"].count_documents({"role": "teacher"}),
-                "total_live_sessions": db["livesessions"].count_documents({}),
-                "total_assignments": db["assignments"].count_documents({}),
+                "total_users": _count("users"),
+                "total_students": _count("users", "WHERE role = %s", ("student",)),
+                "total_teachers": _count("users", "WHERE role = %s", ("teacher",)),
+                "total_live_sessions": _count("live_sessions"),
+                "total_assignments": _count("assignments"),
             },
         }
 
@@ -180,8 +236,8 @@ def execute_task(task: str, user_email: str, message: str):
     # -----------------------------
     if task == "TASK_PERFORMANCE_PREDICTION":
 
-        assignment_count = db["assignments"].count_documents({})
-        live_count = db["livesessions"].count_documents({})
+        assignment_count = _count("assignments")
+        live_count = _count("live_sessions")
 
         x_train = [[0, 0], [1, 0], [2, 1], [3, 1], [4, 2], [5, 3]]
         y_train = [42, 48, 55, 61, 68, 74]
@@ -196,7 +252,7 @@ def execute_task(task: str, user_email: str, message: str):
             "prediction": predicted
         }
 
-    return {"message": "I couldn’t understand your request."}
+    return {"message": "I couldn't understand your request."}
 
 
 # ================================
@@ -210,7 +266,7 @@ def generate_human_reply(intent: str, result: Dict[str, Any]):
         day = result.get("day")
 
         if not items:
-            return f"You don’t have any classes scheduled on {day}. Enjoy your free time 🙂"
+            return f"You don't have any classes scheduled on {day}. Enjoy your free time 🙂"
 
         first = items[0]
         subject = first.get("subject") or first.get("class")

@@ -1,12 +1,12 @@
 Edunova_X - Ready-to-import project
-Structure: frontend (React+Vite+Tailwind), server (Express+MongoDB+JWT+GridFS+Socket.IO). `signaling/` is kept but signaling now runs inside `server/` by default.
-Demo DB: local MongoDB at mongodb://127.0.0.1:27017/edunova_jwt
+Structure: frontend (React+Vite+Tailwind), server (Express+Postgres/pg+JWT+Socket.IO). `signaling/` is kept but signaling now runs inside `server/` by default.
+Demo DB: local Postgres — set `DATABASE_URL` (e.g. postgres://postgres:postgres@127.0.0.1:5432/edunova); tables are auto-created from `server/schema.sql`.
 Demo accounts:
   teacher@edunova.com / 123456
   student@edunova.com / 123456
 
 How to run:
-1. Ensure MongoDB daemon is running locally.
+1. Ensure Postgres is running locally (or use Supabase) and `DATABASE_URL` is set in `server/.env`.
 2. From project-root run: npm run install-all
 3. From project-root run: npm start
 4. Open http://localhost:5173

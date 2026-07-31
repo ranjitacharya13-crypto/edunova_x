@@ -47,7 +47,7 @@ The three backend services are Docker-ready. Each folder has its own `Dockerfile
 1. Vercel dashboard is separate; go to **Render Dashboard → Blueprints → New Blueprint Instance**
 2. Connect GitHub and pick `edunova_x` — Render reads [`render.yaml`](./render.yaml) and creates **edunova-api**, **edunova-signal**, and **edunova-ai**
 3. When prompted, fill in the `sync: false` variables (`JWT_SECRET` is auto-generated):
-   - `MONGO_URI` — your MongoDB Atlas connection string (same one you use locally)
+   - `DATABASE_URL` — your Postgres connection string, e.g. from **Supabase → Project Settings → Database** (`postgresql://user:pass@host:5432/edunova`). The API auto-applies `server/schema.sql` on boot, so a fresh database works out of the box.
    - `AI_ENGINE_URL` — set **after** the first deploy, once you know the AI service URL (e.g. `https://edunova-ai.onrender.com`)
    - `EMAIL_USER` / `EMAIL_PASS` / `CONTACT_RECEIVER_EMAIL` — optional, only for the contact form (Gmail + App Password)
 4. Render injects `PORT` automatically — all three services already read it.
@@ -66,7 +66,7 @@ The three backend services are Docker-ready. Each folder has its own `Dockerfile
 
 | Variable | Required | Notes |
 |---|---|---|
-| `MONGO_URI` | ✅ | MongoDB Atlas connection string |
+| `DATABASE_URL` | ✅ | Postgres connection string (Supabase / Render Postgres / RDS / local) |
 | `JWT_SECRET` | ✅ | any long random string (Render Blueprint auto-generates it) |
 | `AI_ENGINE_URL` | ⚠️ for AI chat | URL of the deployed ai_engine, no trailing slash |
 | `PORT` | auto | injected by the platform |
@@ -78,8 +78,8 @@ The three backend services are Docker-ready. Each folder has its own `Dockerfile
 
 | Variable | Required | Notes |
 |---|---|---|
-| `MONGO_URI` | ✅ | same Atlas cluster (default DB `edunova`) |
-| `STUDENT_TIMETABLE_ID` / `TEACHER_TIMETABLE_ID` | optional | overrides the built-in timetable ObjectIds |
+| `DATABASE_URL` | ✅ | same Postgres database as edunova-api |
+| `STUDENT_TIMETABLE_ID` / `TEACHER_TIMETABLE_ID` | optional | pin a specific timetable row UUID; otherwise the first row is used |
 | `PORT` | auto | injected by the platform |
 
 **`signaling/` (edunova-signal)** — no env vars needed; only `PORT` (auto-injected).
@@ -97,7 +97,7 @@ Then ** redeploy** the Vercel frontend (Vite inlines env vars at build time).
 
 ## Free-tier cold starts
 
-Render/Railway free services sleep after ~15 min idle — the first request after sleep takes 30–60 s. If Atlas is on an M0 (free) cluster, also add the platform egress IPs (or `0.0.0.0/0`) in **Atlas → Network Access** so the backends can reach MongoDB.
+Render/Railway free services sleep after ~15 min idle — the first request after sleep takes 30–60 s. On Supabase free tier, use the **connection pooler** host (session mode, port `5432`) for best reliability; SSL is enabled automatically by the server (`DATABASE_SSL=false` disables it for local Postgres).
 
 ## Docker commands (local testing)
 
@@ -106,9 +106,9 @@ docker build -t edunova-api ./server
 docker build -t edunova-signal ./signaling
 docker build -t edunova-ai ./ai_engine
 
-docker run -p 4000:4000 -e MONGO_URI=... -e JWT_SECRET=... edunova-api
+docker run -p 4000:4000 -e DATABASE_URL=... -e JWT_SECRET=... edunova-api
 docker run -p 5000:5000 edunova-signal
-docker run -p 8001:8001 -e MONGO_URI=... edunova-ai
+docker run -p 8001:8001 -e DATABASE_URL=... edunova-ai
 ```
 
 ## All-in-one alternative (no Vercel)

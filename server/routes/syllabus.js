@@ -1,27 +1,21 @@
 // server/routes/syllabus.js
+// Syllabus file storage backed by Postgres bytea columns.
+// (Replaces the old MongoDB GridFS "syllabus_files" / "syllabus_thumbs" buckets.)
 const express = require('express');
 const multer = require('multer');
-const { GridFSBucket, ObjectId } = require('mongodb');
-const mongoose = require('mongoose');
 const sharp = require('sharp');
 const pdfThumbnail = require('pdf-thumbnail');
-const stream = require('stream');
-const auth = require('../middleware/auth');
 const path = require('path');
-// load server env explicitly so process.env.MONGO_URI is available
-require('dotenv').config({ path: path.join(__dirname, '..', 'config.env') });
+const auth = require('../middleware/auth');
+const fileStore = require('../models/fileStore');
+const { isUuid } = require('../db');
 
 const router = express.Router();
 const storage = multer.memoryStorage();
 const upload = multer({ storage });
 
-let db, bucket;
-
-mongoose.connection.once("open", () => {
-  db = mongoose.connection.db;
-  bucket = new GridFSBucket(db, { bucketName: "syllabus_files" });
-  console.log("GridFS initialized successfully");
-});
+const FILE_TABLE = 'syllabus_files';
+const THUMB_TABLE = 'syllabus_thumbs';
 
 const EXT_CONTENT_TYPES = {
   '.pdf': 'application/pdf',
@@ -41,11 +35,21 @@ function getContentType(filename, fallback) {
   return EXT_CONTENT_TYPES[ext] || fallback || 'application/octet-stream';
 }
 
+// helper
+function streamToBuffer(streamObj) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    streamObj.on('data', (c) => chunks.push(c));
+    streamObj.on('end', () => resolve(Buffer.concat(chunks)));
+    streamObj.on('error', reject);
+  });
+}
+
 async function streamFile(req, res, { forceDownload = false } = {}) {
-  if (!bucket || !db) return res.status(503).json({ error: 'Storage not initialized yet' });
-  const id = new ObjectId(req.params.id);
-  const filesColl = db.collection('syllabus_files.files');
-  const fileDoc = await filesColl.findOne({ _id: id });
+  if (!isUuid(req.params.id)) {
+    return res.status(404).json({ error: 'File not found' });
+  }
+  const fileDoc = await fileStore.getFileMeta(FILE_TABLE, req.params.id);
   if (!fileDoc) return res.status(404).json({ error: 'File not found' });
 
   const contentType = getContentType(fileDoc.filename, fileDoc.contentType);
@@ -83,29 +87,22 @@ async function streamFile(req, res, { forceDownload = false } = {}) {
     }
 
     const chunkSize = end - start + 1;
+    const chunk = await fileStore.getFileRange(FILE_TABLE, fileDoc.id, start, end);
+    if (!chunk) return res.status(404).json({ error: 'File not found' });
+
     res.status(206);
     res.setHeader('Content-Range', `bytes ${start}-${end}/${fileSize}`);
     res.setHeader('Content-Length', chunkSize);
-
-    const downloadStream = bucket.openDownloadStream(id, { start, end: end + 1 });
-    downloadStream.pipe(res);
-    downloadStream.on('error', (err) => {
-      console.error('Syllabus stream error', err);
-      res.status(500).end();
-    });
-    return;
+    return res.end(chunk);
   }
+
+  const data = await fileStore.getFileData(FILE_TABLE, fileDoc.id);
+  if (!data) return res.status(404).json({ error: 'File not found' });
 
   if (fileSize > 0) {
-    res.setHeader('Content-Length', fileSize);
+    res.setHeader('Content-Length', data.length);
   }
-
-  const downloadStream = bucket.openDownloadStream(id);
-  downloadStream.pipe(res);
-  downloadStream.on('error', (err) => {
-    console.error('Syllabus stream error', err);
-    res.status(500).end();
-  });
+  return res.end(data);
 }
 
 // helper: check roles
@@ -126,7 +123,6 @@ function teacherOrAdmin(req, res, next) {
 // Upload (teacher / admin)
 router.post('/', auth, teacherOrAdmin, upload.single('file'), async (req, res) => {
   try {
-    if (!bucket || !db) return res.status(503).json({ error: 'Storage not initialized yet' });
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
     const file = req.file;
 
@@ -148,48 +144,30 @@ router.post('/', auth, teacherOrAdmin, upload.single('file'), async (req, res) =
       console.warn('Thumbnail generation failed', thumbErr);
     }
 
-    // stream file buffer into GridFS
-    const readStream = new stream.PassThrough();
-    readStream.end(file.buffer);
-
-    const uploadStream = bucket.openUploadStream(file.originalname, {
+    const saved = await fileStore.saveFile(FILE_TABLE, {
+      filename: file.originalname,
       contentType: file.mimetype,
+      data: file.buffer,
       metadata: {
         uploadedBy: req.user.email,
         role: req.user.role,
         originalname: file.originalname,
-        hasThumb: !!thumbBuffer
-      }
+        hasThumb: !!thumbBuffer,
+      },
     });
 
-    readStream.pipe(uploadStream)
-      .on('error', (err) => {
-        console.error('Upload error', err);
-        return res.status(500).json({ error: 'Upload failed' });
-      })
-      .on('finish', async () => {
-        // if thumbnail exists, store it in a separate bucket/object (we'll use a 'syllabus_thumbs' bucket)
-        if (thumbBuffer) {
-          const thumbStream = new stream.PassThrough();
-          thumbStream.end(thumbBuffer);
-          const thumbUpload = new GridFSBucket(db, { bucketName: 'syllabus_thumbs' })
-            .openUploadStream(`${uploadStream.id.toString()}_thumb.jpg`, {
-              contentType: 'image/jpeg',
-              metadata: { parentFileId: uploadStream.id }
-            });
-          thumbStream.pipe(thumbUpload);
-          // when thumb finishes, respond (we don't strictly need to wait, but we do for clarity)
-          thumbUpload.on('finish', () => {
-            return res.json({ id: uploadStream.id, filename: file.originalname });
-          });
-          thumbUpload.on('error', (e) => {
-            console.warn('thumb upload err', e);
-            return res.json({ id: uploadStream.id, filename: file.originalname });
-          });
-        } else {
-          return res.json({ id: uploadStream.id, filename: file.originalname });
-        }
-      });
+    if (thumbBuffer) {
+      try {
+        await fileStore.saveThumb(THUMB_TABLE, {
+          parentFileId: saved.id,
+          data: thumbBuffer,
+        });
+      } catch (e) {
+        console.warn('thumb save err', e);
+      }
+    }
+
+    return res.json({ id: saved.id, filename: file.originalname });
   } catch (e) {
     console.error('Upload route error', e);
     return res.status(500).json({ error: 'Server upload error' });
@@ -199,16 +177,15 @@ router.post('/', auth, teacherOrAdmin, upload.single('file'), async (req, res) =
 // List files (public)
 router.get('/', async (req, res) => {
   try {
-    if (!db) return res.status(503).json({ error: 'Storage not initialized yet' });
-    const files = await db.collection('syllabus_files.files').find({}).sort({ uploadDate: -1 }).toArray();
+    const files = await fileStore.listFiles(FILE_TABLE);
     // normalize fields for frontend
-    const list = files.map(f => ({
+    const list = files.map((f) => ({
       _id: f._id,
       filename: f.filename,
       contentType: f.contentType,
       uploadDate: f.uploadDate,
       length: f.length,
-      metadata: f.metadata
+      metadata: f.metadata,
     }));
     res.json(list);
   } catch (e) {
@@ -240,26 +217,17 @@ router.get('/:id/download', async (req, res) => {
 // Delete (admin only)
 router.delete('/:id', auth, adminOnly, async (req, res) => {
   try {
-    if (!bucket || !db) return res.status(503).json({ error: 'Storage not initialized yet' });
-    const id = new ObjectId(req.params.id);
-    await bucket.delete(id); // deletes file and chunks
-    // also delete thumbnail if present
-    await db.collection('syllabus_thumbs.files').deleteMany({ 'metadata.parentFileId': id });
+    if (!isUuid(req.params.id)) {
+      return res.status(404).json({ error: 'File not found' });
+    }
+    await fileStore.deleteFile(FILE_TABLE, req.params.id);
+    // parent_file_id has ON DELETE CASCADE; this mirrors the old explicit cleanup.
+    await fileStore.deleteThumbsByParent(THUMB_TABLE, req.params.id);
     return res.json({ success: true });
   } catch (e) {
     console.error('Delete error', e);
-    return res.status(500).json({ error: 'Delete failed' });
+    res.status(500).json({ error: 'Delete failed' });
   }
 });
 
 module.exports = router;
-
-// helper
-function streamToBuffer(streamObj) {
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    streamObj.on('data', c => chunks.push(c));
-    streamObj.on('end', () => resolve(Buffer.concat(chunks)));
-    streamObj.on('error', reject);
-  });
-}

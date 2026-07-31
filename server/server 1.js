@@ -1,13 +1,14 @@
 // server/server.js
 const path = require("path");
 require("dotenv").config({ path: path.join(__dirname, ".env") }); // load server/.env reliably
+const fs = require("fs");
 const express = require("express");
 const cors = require("cors");
-const mongoose = require("mongoose");
 const http = require("http");
 const { Server } = require("socket.io");
 const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
+const { pool, query } = require("./db");
 const User = require("./models/User");
 const ContactMessage = require("./models/ContactMessage");
 const nodemailer = require("nodemailer");
@@ -20,6 +21,7 @@ const teacherTimetableRoute = require("./routes/teacherTimetable"); // Teacher t
 const studyRoutes = require("./routes/study"); // Study materials
 const assignmentRoutes = require("./routes/assignments"); // Assignments + quiz
 const adminRoutes = require("./routes/admin");
+const aiRoutes = require("./routes/ai");
 
 const app = express();
 const server = http.createServer(app);
@@ -124,79 +126,86 @@ const contactTransporter = nodemailer.createTransport({
   secure: false,
   auth: {
     user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
+    pass: String(process.env.EMAIL_PASS || "").replace(/\s+/g, ""),
   },
 });
 
 // ==========================
-// DATABASE CONNECTION
+// DATABASE (POSTGRES / SUPABASE)
 // ==========================
-mongoose
-  .connect(process.env.MONGO_URI, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
-  })
-  .then(async () => {
-    console.log("✅ MongoDB connected");
+async function applySchema() {
+  const schemaPath = path.join(__dirname, "schema.sql");
+  const schema = fs.readFileSync(schemaPath, "utf8");
+  // Simple-query protocol supports multiple statements in one call.
+  await pool.query(schema);
+}
 
-    const adminEmail = "ranjitacharya13@gmail.com";
-    const adminName = "Super Admin";
-    const adminUsername = "super_admin";
-    const existingAdmin = await User.findOne({ email: adminEmail });
+async function seedUsers() {
+  const adminEmail = "ranjitacharya13@gmail.com";
+  const adminName = "Super Admin";
+  const adminUsername = "super_admin";
+  const existingAdmin = await User.findByEmail(adminEmail);
 
-    if (!existingAdmin) {
-      const tempAdminPassword =
-        process.env.ADMIN_TEMP_PASSWORD || crypto.randomBytes(24).toString("base64url");
-      const adminPasswordHash = await bcrypt.hash(tempAdminPassword, 10);
+  if (!existingAdmin) {
+    const tempAdminPassword =
+      process.env.ADMIN_TEMP_PASSWORD || crypto.randomBytes(24).toString("base64url");
+    const adminPasswordHash = await bcrypt.hash(tempAdminPassword, 10);
 
-      await new User({
-        name: adminName,
-        username: adminUsername,
-        email: adminEmail,
-        password: adminPasswordHash,
-        role: "admin",
-      }).save();
+    await User.create({
+      name: adminName,
+      username: adminUsername,
+      email: adminEmail,
+      password: adminPasswordHash,
+      role: "admin",
+    });
 
-      console.log(`Seeded admin user: ${adminEmail}`);
-      if (!process.env.ADMIN_TEMP_PASSWORD) {
-        console.log("ADMIN_TEMP_PASSWORD was not set. Generated temporary admin password:", tempAdminPassword);
-      }
-    } else if (existingAdmin.role !== "admin") {
-      existingAdmin.role = "admin";
-      await existingAdmin.save();
-      console.log(`Updated existing user role to admin: ${adminEmail}`);
+    console.log(`Seeded admin user: ${adminEmail}`);
+    if (!process.env.ADMIN_TEMP_PASSWORD) {
+      console.log("ADMIN_TEMP_PASSWORD was not set. Generated temporary admin password:", tempAdminPassword);
     }
+  } else if (existingAdmin.role !== "admin") {
+    await User.setRoleByEmail(adminEmail, "admin");
+    console.log(`Updated existing user role to admin: ${adminEmail}`);
+  }
 
-    // Create demo accounts if they don't exist (disable with `SEED_DEMO_USERS=false`).
-    if (String(process.env.SEED_DEMO_USERS || "").toLowerCase() !== "false") {
-      const demoUsers = [
-        {
-          name: "Demo Teacher",
-          username: "teacher_demo",
-          email: "teacher@edunova.com",
-          password: "123456",
-          role: "teacher",
-        },
-        {
-          name: "Demo Student",
-          username: "student_demo",
-          email: "student@edunova.com",
-          password: "123456",
-          role: "student",
-        },
-      ];
+  // Create demo accounts if they don't exist (disable with `SEED_DEMO_USERS=false`).
+  if (String(process.env.SEED_DEMO_USERS || "").toLowerCase() !== "false") {
+    const demoUsers = [
+      {
+        name: "Demo Teacher",
+        username: "teacher_demo",
+        email: "teacher@edunova.com",
+        password: "123456",
+        role: "teacher",
+      },
+      {
+        name: "Demo Student",
+        username: "student_demo",
+        email: "student@edunova.com",
+        password: "123456",
+        role: "student",
+      },
+    ];
 
-      for (const demo of demoUsers) {
-        const existing = await User.findOne({ email: demo.email });
-        if (existing) continue;
+    for (const demo of demoUsers) {
+      const existing = await User.findByEmail(demo.email);
+      if (existing) continue;
 
-        const hashedPassword = await bcrypt.hash(demo.password, 10);
-        await new User({ ...demo, password: hashedPassword }).save();
-        console.log(`✅ Seeded demo user: ${demo.email}`);
-      }
+      const hashedPassword = await bcrypt.hash(demo.password, 10);
+      await User.create({ ...demo, password: hashedPassword });
+      console.log(`✅ Seeded demo user: ${demo.email}`);
     }
-  })
-  .catch((err) => console.error("❌ MongoDB error:", err));
+  }
+}
+
+async function bootstrapDatabase() {
+  await query("SELECT 1");
+  console.log("✅ Postgres connected");
+  await applySchema();
+  await seedUsers();
+}
+
+bootstrapDatabase().catch((err) => console.error("❌ Postgres error:", err));
 
 // ==========================
 // ROUTES
@@ -208,6 +217,7 @@ app.use("/api/assignments", assignmentRoutes);
 app.use("/api/timetable", timetableRoute);
 app.use("/api/teacher-timetable", teacherTimetableRoute);
 app.use("/api/admin", adminRoutes);
+app.use("/api/ai", aiRoutes);
 
 // ==========================
 // CONTACT ROUTE
@@ -240,7 +250,7 @@ app.post("/api/contact", async (req, res) => {
 
     await contactTransporter.sendMail({
       from: `"${cleanName}" <${process.env.EMAIL_USER}>`,
-      to: "ranjitacharya13@gmail.com",
+      to: process.env.CONTACT_RECEIVER_EMAIL || "ranjit5201314@gmail.com",
       replyTo: cleanEmail,
       subject: "New Contact Message - EduNova_X",
       text: `From: ${cleanName}\nEmail: ${cleanEmail}\n\nMessage:\n${cleanMessage}`,
@@ -288,4 +298,3 @@ const PORT = process.env.PORT || 4000;
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Backend server running on port ${PORT}`);
 });
-

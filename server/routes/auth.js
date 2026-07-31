@@ -28,9 +28,7 @@ router.post("/register", async (req, res) => {
       return res.status(400).json({ error: "Invalid role" });
     }
 
-    const exists = await User.findOne({
-      $or: [{ email }, { username }],
-    });
+    const exists = await User.findByEmailOrUsername(email, username);
 
     if (exists) {
       return res
@@ -41,7 +39,7 @@ router.post("/register", async (req, res) => {
     // 🔐 HASH PASSWORD
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    const user = new User({
+    const user = await User.create({
       name,
       dob,
       gender,
@@ -51,10 +49,8 @@ router.post("/register", async (req, res) => {
       role: selectedRole,
     });
 
-    await user.save();
-
     const token = jwt.sign(
-      { id: user._id },
+      { id: user.id },
       process.env.JWT_SECRET,
       { expiresIn: "7d" }
     );
@@ -62,7 +58,7 @@ router.post("/register", async (req, res) => {
     res.json({
       token,
       user: {
-        id: user._id,
+        id: user.id,
         name: user.name,
         role: user.role,
         username: user.username,
@@ -70,6 +66,12 @@ router.post("/register", async (req, res) => {
       },
     });
   } catch (e) {
+    // Postgres unique-violation (email / username)
+    if (e && e.code === "23505") {
+      return res
+        .status(400)
+        .json({ error: "Email or username already exists" });
+    }
     console.error("Register error:", e);
     res.status(500).json({ error: "Register failed" });
   }
@@ -88,7 +90,7 @@ router.post("/login", async (req, res) => {
     }
 
     // 🔍 find user
-    const user = await User.findOne({ email });
+    const user = await User.findByEmail(email, { includePassword: true });
 
     if (!user) {
       return res.status(400).json({ error: "Invalid credentials" });
@@ -103,7 +105,7 @@ router.post("/login", async (req, res) => {
 
     // 🎫 create token
     const token = jwt.sign(
-      { id: user._id },
+      { id: user.id },
       process.env.JWT_SECRET,
       { expiresIn: "7d" }
     );
@@ -111,7 +113,7 @@ router.post("/login", async (req, res) => {
     res.json({
       token,
       user: {
-        id: user._id,
+        id: user.id,
         name: user.name,
         email: user.email,
         role: user.role,

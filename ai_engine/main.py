@@ -1,12 +1,14 @@
-﻿from datetime import datetime, timedelta
+from datetime import datetime, timedelta
+import json
 import os
+import re
 import traceback
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from pymongo import MongoClient
-from bson import ObjectId
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
 app = FastAPI()
 
@@ -18,14 +20,65 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-MONGO_URI = os.getenv(
-    "MONGO_URI",
-    "mongodb+srv://ranjit5201314_db_user:admin12345@cluster1edunovax.8q5lafw.mongodb.net/edunova",
+# Postgres connection (works with Supabase, Render Postgres, local, ...).
+DATABASE_URL = (
+    os.getenv("DATABASE_URL")
+    or os.getenv("SUPABASE_DB_URL")
+    or os.getenv("POSTGRES_URL")
+    or ""
 )
-client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=10000)
-db = client["edunova"]
-STUDENT_TIMETABLE_ID = os.getenv("STUDENT_TIMETABLE_ID", "693c1a9a3ea4ac84aaf771cd")
-TEACHER_TIMETABLE_ID = os.getenv("TEACHER_TIMETABLE_ID", "6943f4e22fc13232ae03fe2a")
+STUDENT_TIMETABLE_ID = os.getenv("STUDENT_TIMETABLE_ID", "")
+TEACHER_TIMETABLE_ID = os.getenv("TEACHER_TIMETABLE_ID", "")
+
+_UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+
+_conn = None
+
+
+def get_conn():
+    """Lazily open (and reopen) the Postgres connection."""
+    global _conn
+    if _conn is None or _conn.closed:
+        _conn = psycopg2.connect(DATABASE_URL, connect_timeout=10)
+        _conn.autocommit = True
+    return _conn
+
+
+def _reset_conn():
+    global _conn
+    try:
+        if _conn is not None:
+            _conn.close()
+    except Exception:
+        pass
+    _conn = None
+
+
+def fetch_one(sql: str, params=()):
+    for attempt in (1, 2):
+        try:
+            with get_conn().cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(sql, params)
+                return cur.fetchone()
+        except psycopg2.OperationalError:
+            _reset_conn()
+            if attempt == 2:
+                raise
+    return None
+
+
+def check_connection():
+    for attempt in (1, 2):
+        try:
+            with get_conn().cursor() as cur:
+                cur.execute("SELECT 1")
+            return
+        except psycopg2.OperationalError:
+            _reset_conn()
+            if attempt == 2:
+                raise
 
 
 class QueryRequest(BaseModel):
@@ -70,32 +123,36 @@ def detect_intent(message: str):
 
 
 # ------------------------
-# DATABASE FETCH
+# DATABASE FETCH (SQL)
 # ------------------------
 
 def get_user_role(email: str | None):
     if not email:
         return "student"
-    user = db["users"].find_one({"email": email}, {"role": 1})
-    if not user:
+    row = fetch_one("SELECT role FROM users WHERE email = %s LIMIT 1", (email,))
+    if not row:
         return "student"
-    return str(user.get("role", "student")).lower()
+    return str(row.get("role", "student")).lower()
 
 
 def get_timetable(email: str | None):
     role = get_user_role(email)
-    collection = "teacher_timetables" if role == "teacher" else "timetables"
+    # Table names can't be query parameters; `table` is derived only from
+    # the fixed set below, so this interpolation is safe.
+    table = "teacher_timetables" if role == "teacher" else "timetables"
     preferred_id = TEACHER_TIMETABLE_ID if role == "teacher" else STUDENT_TIMETABLE_ID
-    timetable = None
+    days = None
 
-    try:
-        timetable = db[collection].find_one({"_id": ObjectId(preferred_id)})
-    except Exception:
-        timetable = None
+    if preferred_id and _UUID_RE.match(preferred_id):
+        row = fetch_one(f"SELECT days::text AS days FROM {table} WHERE id = %s LIMIT 1", (preferred_id,))
+        days = row["days"] if row else None
 
-    if not timetable:
-        timetable = db[collection].find_one()
-    return timetable, collection, role
+    if days is None:
+        row = fetch_one(f"SELECT days::text AS days FROM {table} ORDER BY created_at ASC LIMIT 1")
+        days = row["days"] if row else None
+
+    timetable = json.loads(days) if isinstance(days, str) else (days or None)
+    return timetable, table, role
 
 
 def get_day_name(offset=0):
@@ -104,10 +161,10 @@ def get_day_name(offset=0):
 
 
 def get_classes_for_day(day_name, email: str | None):
-    timetable, collection, role = get_timetable(email)
+    timetable, table, role = get_timetable(email)
     if not timetable:
-        return [], collection, role
-    return timetable.get(day_name, []), collection, role
+        return [], table, role
+    return timetable.get(day_name, []), table, role
 
 
 # ------------------------
@@ -300,6 +357,8 @@ def format_schedule(classes, label, role="student"):
 
     reply += "You are on track. One focused class at a time and you'll finish strong."
     return reply
+
+
 def get_next_class(classes):
     now = datetime.now()
     for c in classes:
@@ -327,7 +386,7 @@ def get_next_class(classes):
 async def ai_query(request: QueryRequest):
     try:
         # Validate DB connectivity for every request to avoid silent fallback behaviour.
-        client.admin.command("ping")
+        check_connection()
 
         intent = detect_intent(request.message)
         email = request.email
@@ -335,7 +394,7 @@ async def ai_query(request: QueryRequest):
         if intent == "today_and_tomorrow":
             today = get_day_name(0)
             tomorrow = get_day_name(1)
-            today_classes, collection, role = get_classes_for_day(today, email)
+            today_classes, table, role = get_classes_for_day(today, email)
             tomorrow_classes, _, _ = get_classes_for_day(tomorrow, email)
             print("Detected intent:", intent)
             print("Today:", today)
@@ -344,13 +403,13 @@ async def ai_query(request: QueryRequest):
             return {
                 "success": True,
                 "reply": f"{format_schedule(today_classes, 'today', role)}\n\n{format_schedule(tomorrow_classes, 'tomorrow', role)}",
-                "source_collection": collection,
+                "source_table": table,
                 "role": role,
             }
 
         if intent == "today":
             today = get_day_name(0)
-            classes, collection, role = get_classes_for_day(today, email)
+            classes, table, role = get_classes_for_day(today, email)
             print("Detected intent:", intent)
             print("Today:", get_day_name(0))
             print("Tomorrow:", get_day_name(1))
@@ -358,13 +417,13 @@ async def ai_query(request: QueryRequest):
             return {
                 "success": True,
                 "reply": format_schedule(classes, "today", role),
-                "source_collection": collection,
+                "source_table": table,
                 "role": role,
             }
 
         if intent == "tomorrow":
             tomorrow = get_day_name(1)
-            classes, collection, role = get_classes_for_day(tomorrow, email)
+            classes, table, role = get_classes_for_day(tomorrow, email)
             print("Detected intent:", intent)
             print("Today:", get_day_name(0))
             print("Tomorrow:", get_day_name(1))
@@ -372,13 +431,13 @@ async def ai_query(request: QueryRequest):
             return {
                 "success": True,
                 "reply": format_schedule(classes, "tomorrow", role),
-                "source_collection": collection,
+                "source_table": table,
                 "role": role,
             }
 
         if intent == "next":
             today = get_day_name(0)
-            classes, collection, role = get_classes_for_day(today, email)
+            classes, table, role = get_classes_for_day(today, email)
             print("Detected intent:", intent)
             print("Today:", get_day_name(0))
             print("Tomorrow:", get_day_name(1))
@@ -386,7 +445,7 @@ async def ai_query(request: QueryRequest):
             return {
                 "success": True,
                 "reply": get_next_class(classes),
-                "source_collection": collection,
+                "source_table": table,
                 "role": role,
             }
 
@@ -406,4 +465,3 @@ async def ai_query(request: QueryRequest):
             "success": False,
             "reply": f"AI encountered an internal error: {exc}"
         }
-

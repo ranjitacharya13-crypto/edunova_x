@@ -11,9 +11,9 @@ module.exports = async function (req, res, next) {
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     // attach minimal user info
-    const user = await User.findById(decoded.id).select('-password');
+    const user = await User.findById(decoded.id);
     if (!user) return res.status(401).json({ error: 'Invalid token user' });
-    req.user = { id: user._id, email: user.email, role: user.role, name: user.name };
+    req.user = { id: user.id, email: user.email, role: user.role, name: user.name };
     next();
   } catch (e) {
     console.error('Auth middleware error', e);

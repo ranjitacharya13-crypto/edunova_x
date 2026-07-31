@@ -58,33 +58,32 @@ function bucketize(items, getDate) {
 async function getOverview() {
   const [totalUsers, totalStudents, totalTeachers, totalStudentTimetableDocs, totalTeacherTimetableDocs] =
     await Promise.all([
-      User.countDocuments(),
-      User.countDocuments({ role: "student" }),
-      User.countDocuments({ role: "teacher" }),
-      Timetable.countDocuments(),
-      TeacherTimetable.countDocuments(),
+      User.count(),
+      User.count("student"),
+      User.count("teacher"),
+      Timetable.count(),
+      TeacherTimetable.count(),
     ]);
 
   const [totalLiveClasses, totalRecordedVideos, totalAssignments, totalMessages] = await Promise.all([
-    LiveSession.countDocuments(),
-    Recording.countDocuments(),
-    Assignment.countDocuments(),
-    ContactMessage.countDocuments(),
+    LiveSession.count(),
+    Recording.count(),
+    Assignment.count(),
+    ContactMessage.count(),
   ]);
 
   const [recentUsers, recentLive, recentAssignments, recentMessages] = await Promise.all([
-    User.find({}, { name: 1, role: 1, createdAt: 1 }).sort({ createdAt: -1 }).limit(4).lean(),
-    LiveSession.find({}, { className: 1, roomId: 1, createdAt: 1 }).sort({ createdAt: -1 }).limit(4).lean(),
-    Assignment.find({}, { title: 1, room: 1, createdAt: 1 }).sort({ createdAt: -1 }).limit(4).lean(),
-    ContactMessage.find({}, { name: 1, email: 1, createdAt: 1 }).sort({ createdAt: -1 }).limit(4).lean(),
+    User.list().then((rows) => rows.slice(0, 4)),
+    LiveSession.findRecent(4),
+    Assignment.findRecent(4),
+    ContactMessage.findRecent(4),
   ]);
 
   const recentActivity = [
     ...recentUsers.map((u) => ({
       type: "user",
       title: `${u.name || "User"} (${u.role || "unknown"})`,
-      createdAt:
-        u.createdAt || (u._id && typeof u._id.getTimestamp === "function" ? u._id.getTimestamp() : null),
+      createdAt: u.createdAt || null,
     })),
     ...recentLive.map((c) => ({
       type: "live_class",
@@ -130,16 +129,8 @@ router.get("/dashboard", async (req, res) => {
 router.get("/users", async (req, res) => {
   try {
     const role = String(req.query.role || "").trim();
-    const filter = role ? { role } : {};
-    const users = await User.find(filter, { name: 1, email: 1, role: 1, createdAt: 1, isBlocked: 1 })
-      .sort({ createdAt: -1, name: 1 })
-      .lean();
-    return res.json({
-      users: users.map((u) => ({
-        ...u,
-        createdAt: u.createdAt || (u._id && typeof u._id.getTimestamp === "function" ? u._id.getTimestamp() : null),
-      })),
-    });
+    const users = await User.list(role || null);
+    return res.json({ users });
   } catch (error) {
     console.error("Admin users error:", error);
     return res.status(500).json({ error: "Failed to load users" });
@@ -153,17 +144,16 @@ router.patch("/users/:id/block", async (req, res) => {
 
     const blockFlag =
       typeof req.body?.blocked === "boolean" ? req.body.blocked : !Boolean(target.isBlocked);
-    target.isBlocked = blockFlag;
-    await target.save();
+    const updated = await User.setBlocked(target.id, blockFlag);
 
     return res.json({
       user: {
-        _id: target._id,
-        name: target.name,
-        email: target.email,
-        role: target.role,
-        isBlocked: target.isBlocked,
-        createdAt: target.createdAt || null,
+        _id: updated._id,
+        name: updated.name,
+        email: updated.email,
+        role: updated.role,
+        isBlocked: updated.isBlocked,
+        createdAt: updated.createdAt || null,
       },
     });
   } catch (error) {
@@ -182,7 +172,7 @@ router.delete("/users/:id", async (req, res) => {
     if (!target) return res.status(404).json({ error: "User not found" });
     if (target.role === "admin") return res.status(403).json({ error: "Cannot delete admin user" });
 
-    await User.deleteOne({ _id: target._id });
+    await User.remove(target.id);
     return res.json({ success: true });
   } catch (error) {
     console.error("Admin delete user error:", error);
@@ -194,8 +184,8 @@ router.get("/timetables", async (req, res) => {
   try {
     const teacherFilter = String(req.query.teacher || "").trim().toLowerCase();
     const [studentDocs, teacherDocs] = await Promise.all([
-      Timetable.find({}).lean(),
-      TeacherTimetable.find({}).lean(),
+      Timetable.list(),
+      TeacherTimetable.list(),
     ]);
 
     const studentTimetables = studentDocs.map((doc) => ({
@@ -237,11 +227,11 @@ router.get("/timetables", async (req, res) => {
 router.delete("/timetables/:type/:id", async (req, res) => {
   try {
     const type = String(req.params.type || "").trim().toLowerCase();
-    const model = type === "teacher" ? TeacherTimetable : type === "student" ? Timetable : null;
-    if (!model) return res.status(400).json({ error: "Invalid timetable type" });
+    const store = type === "teacher" ? TeacherTimetable : type === "student" ? Timetable : null;
+    if (!store) return res.status(400).json({ error: "Invalid timetable type" });
 
-    const result = await model.deleteOne({ _id: req.params.id });
-    if (!result.deletedCount) return res.status(404).json({ error: "Timetable not found" });
+    const deleted = await store.remove(req.params.id);
+    if (!deleted) return res.status(404).json({ error: "Timetable not found" });
     return res.json({ success: true });
   } catch (error) {
     console.error("Admin delete timetable error:", error);
@@ -251,17 +241,14 @@ router.delete("/timetables/:type/:id", async (req, res) => {
 
 router.get("/liveclasses", async (req, res) => {
   try {
-    const sessions = await LiveSession.find({})
-      .sort({ createdAt: -1 })
-      .populate("teacherId", "name email")
-      .lean();
+    const sessions = await LiveSession.listWithTeacher();
 
     return res.json({
       liveClasses: sessions.map((s) => ({
         _id: s._id,
         roomName: s.roomId,
         teacher: s.teacherId
-          ? { id: s.teacherId._id, name: s.teacherId.name, email: s.teacherId.email }
+          ? { id: s.teacherId, name: s.teacherName, email: s.teacherEmail }
           : null,
         participantsCount: 0,
         date: s.date || s.createdAt || null,
@@ -276,10 +263,7 @@ router.get("/liveclasses", async (req, res) => {
 
 router.get("/videos", async (req, res) => {
   try {
-    const videos = await Recording.find({})
-      .sort({ createdAt: -1 })
-      .populate("teacherId", "name email")
-      .lean();
+    const videos = await Recording.listWithTeacher();
 
     return res.json({
       videos: videos.map((v) => ({
@@ -288,7 +272,7 @@ router.get("/videos", async (req, res) => {
         room: v.room,
         timetableId: v.timetableId || null,
         teacher: v.teacherId
-          ? { id: v.teacherId._id, name: v.teacherId.name, email: v.teacherId.email }
+          ? { id: v.teacherId, name: v.teacherName, email: v.teacherEmail }
           : null,
         videoUrl: v.videoUrl,
         duration: v.duration || 0,
@@ -303,8 +287,8 @@ router.get("/videos", async (req, res) => {
 
 router.delete("/videos/:id", async (req, res) => {
   try {
-    const result = await Recording.deleteOne({ _id: req.params.id });
-    if (!result.deletedCount) return res.status(404).json({ error: "Video not found" });
+    const deleted = await Recording.remove(req.params.id);
+    if (!deleted) return res.status(404).json({ error: "Video not found" });
     return res.json({ success: true });
   } catch (error) {
     console.error("Admin delete video error:", error);
@@ -314,9 +298,7 @@ router.delete("/videos/:id", async (req, res) => {
 
 router.get("/assignments", async (req, res) => {
   try {
-    const assignments = await Assignment.find({})
-      .sort({ createdAt: -1 })
-      .lean();
+    const assignments = await Assignment.list();
 
     return res.json({
       assignments: assignments.map((a) => ({
@@ -337,9 +319,7 @@ router.get("/assignments", async (req, res) => {
 
 router.get("/messages", async (req, res) => {
   try {
-    const messages = await ContactMessage.find({})
-      .sort({ createdAt: -1 })
-      .lean();
+    const messages = await ContactMessage.list();
     return res.json({ messages });
   } catch (error) {
     console.error("Admin messages error:", error);
@@ -349,8 +329,8 @@ router.get("/messages", async (req, res) => {
 
 router.delete("/messages/:id", async (req, res) => {
   try {
-    const result = await ContactMessage.deleteOne({ _id: req.params.id });
-    if (!result.deletedCount) return res.status(404).json({ error: "Message not found" });
+    const deleted = await ContactMessage.remove(req.params.id);
+    if (!deleted) return res.status(404).json({ error: "Message not found" });
     return res.json({ success: true });
   } catch (error) {
     console.error("Admin delete message error:", error);
@@ -361,14 +341,14 @@ router.delete("/messages/:id", async (req, res) => {
 router.get("/analytics", async (req, res) => {
   try {
     const [users, teachers, liveClasses] = await Promise.all([
-      User.find({}, { createdAt: 1 }).lean(),
-      User.find({ role: "teacher" }, { createdAt: 1 }).lean(),
-      LiveSession.find({}, { createdAt: 1 }).lean(),
+      User.createdAts(),
+      User.createdAts("teacher"),
+      LiveSession.createdAts(),
     ]);
 
-    const userGrowth = bucketize(users, (u) => u.createdAt || (u._id ? u._id.getTimestamp?.() : null));
-    const teacherGrowth = bucketize(teachers, (u) => u.createdAt || (u._id ? u._id.getTimestamp?.() : null));
-    const classesPerWeek = bucketize(liveClasses, (c) => c.createdAt || (c._id ? c._id.getTimestamp?.() : null));
+    const userGrowth = bucketize(users, (u) => u.createdAt || null);
+    const teacherGrowth = bucketize(teachers, (u) => u.createdAt || null);
+    const classesPerWeek = bucketize(liveClasses, (c) => c.createdAt || null);
     const activeUsers = userGrowth.map((d, idx) => ({
       label: d.label,
       count: d.count + (teacherGrowth[idx]?.count || 0),

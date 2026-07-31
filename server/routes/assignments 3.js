@@ -1,20 +1,14 @@
 const express = require("express");
 const multer = require("multer");
-const mongoose = require("mongoose");
-const { GridFSBucket, ObjectId } = require("mongodb");
-const stream = require("stream");
 const auth = require("../middleware/auth");
 const Assignment = require("../models/Assignment");
+const fileStore = require("../models/fileStore");
+const { isUuid } = require("../db");
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
 
-let db, bucket;
-mongoose.connection.once("open", () => {
-  db = mongoose.connection.db;
-  bucket = new GridFSBucket(db, { bucketName: "assignment_files" });
-  console.log("Assignment GridFS initialized successfully");
-});
+const FILE_TABLE = "assignment_files";
 
 function teacherOrStaffOrAdmin(req, res, next) {
   if (!req.user) return res.status(401).json({ error: "Not authenticated" });
@@ -179,33 +173,34 @@ function generateQuizFromText(text, count = 5) {
 }
 
 async function streamPdfByFileId(res, fileId, name, forceDownload = false) {
-  if (!bucket || !db) {
-    res.status(503).json({ error: "Storage not initialized yet" });
+  if (!isUuid(fileId)) {
+    res.status(404).json({ error: "File not found" });
     return;
   }
-  const id = new ObjectId(fileId);
-
-  const filesColl = db.collection("assignment_files.files");
-  const fileDoc = await filesColl.findOne({ _id: id });
+  const fileDoc = await fileStore.getFileMeta(FILE_TABLE, fileId);
   if (!fileDoc) {
     res.status(404).json({ error: "File not found" });
     return;
   }
 
   res.setHeader("Content-Type", fileDoc.contentType || "application/pdf");
-  res.setHeader("Content-Disposition", `${forceDownload ? "attachment" : "inline"}; filename="${name || fileDoc.filename || "assignment.pdf"}"`);
-  const downloadStream = bucket.openDownloadStream(id);
-  downloadStream.pipe(res);
-  downloadStream.on("error", (err) => {
-    console.error("Assignment stream error", err);
-    res.status(500).end();
-  });
+  res.setHeader(
+    "Content-Disposition",
+    `${forceDownload ? "attachment" : "inline"}; filename="${name || fileDoc.filename || "assignment.pdf"}"`
+  );
+
+  const data = await fileStore.getFileData(FILE_TABLE, fileId);
+  if (!data) {
+    res.status(404).json({ error: "File not found" });
+    return;
+  }
+  res.setHeader("Content-Length", data.length);
+  res.end(data);
 }
 
 // Upload PDF + auto-generate quiz (teacher/staff/admin)
 router.post("/", auth, teacherOrStaffOrAdmin, upload.single("file"), async (req, res) => {
   try {
-    if (!bucket || !db) return res.status(503).json({ error: "Storage not initialized yet" });
     if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
     const room = normalizeRoom(req.body.room);
@@ -227,11 +222,10 @@ router.post("/", auth, teacherOrStaffOrAdmin, upload.single("file"), async (req,
 
     const quiz = generateQuizFromText(extractedText, 6);
 
-    const readStream = new stream.PassThrough();
-    readStream.end(req.file.buffer);
-
-    const uploadStream = bucket.openUploadStream(originalname, {
+    const saved = await fileStore.saveFile(FILE_TABLE, {
+      filename: originalname,
       contentType: "application/pdf",
+      data: req.file.buffer,
       metadata: {
         room,
         title,
@@ -240,28 +234,21 @@ router.post("/", auth, teacherOrStaffOrAdmin, upload.single("file"), async (req,
       },
     });
 
-    readStream
-      .pipe(uploadStream)
-      .on("error", (err) => {
-        console.error("Assignment upload error", err);
-        return res.status(500).json({ error: "Upload failed" });
-      })
-      .on("finish", async () => {
-        const doc = await Assignment.create({
-          room,
-          title,
-          fileId: uploadStream.id,
-          filename: originalname,
-          createdBy: {
-            id: req.user.id,
-            name: req.user.name,
-            role: req.user.role,
-            email: req.user.email,
-          },
-          quiz,
-        });
-        return res.json({ assignment: doc });
-      });
+    const doc = await Assignment.create({
+      room,
+      title,
+      fileId: saved.id,
+      filename: originalname,
+      createdBy: {
+        id: req.user.id,
+        name: req.user.name,
+        role: req.user.role,
+        email: req.user.email,
+      },
+      quiz,
+    });
+
+    return res.json({ assignment: doc });
   } catch (e) {
     console.error("Assignment upload route error", e);
     return res.status(500).json({ error: "Server error" });
@@ -272,8 +259,7 @@ router.post("/", auth, teacherOrStaffOrAdmin, upload.single("file"), async (req,
 router.get("/", async (req, res) => {
   try {
     const room = normalizeRoom(req.query.room);
-    const filter = room ? { room } : {};
-    const list = await Assignment.find(filter).sort({ createdAt: -1 }).lean();
+    const list = await Assignment.list(room || null);
     return res.json({ assignments: list });
   } catch (e) {
     console.error("Assignment list error", e);
@@ -284,7 +270,9 @@ router.get("/", async (req, res) => {
 // Get assignment details (public)
 router.get("/:id", async (req, res) => {
   try {
-    const doc = await Assignment.findById(req.params.id).lean();
+    const doc = isUuid(req.params.id)
+      ? await Assignment.findById(req.params.id)
+      : null;
     if (!doc) return res.status(404).json({ error: "Not found" });
     return res.json({ assignment: doc });
   } catch (e) {
@@ -296,7 +284,9 @@ router.get("/:id", async (req, res) => {
 // Preview PDF (public)
 router.get("/:id/preview", async (req, res) => {
   try {
-    const doc = await Assignment.findById(req.params.id).lean();
+    const doc = isUuid(req.params.id)
+      ? await Assignment.findById(req.params.id)
+      : null;
     if (!doc) return res.status(404).json({ error: "Not found" });
     await streamPdfByFileId(res, doc.fileId, req.query.name, false);
   } catch (e) {
@@ -308,7 +298,9 @@ router.get("/:id/preview", async (req, res) => {
 // Download PDF (public)
 router.get("/:id/download", async (req, res) => {
   try {
-    const doc = await Assignment.findById(req.params.id).lean();
+    const doc = isUuid(req.params.id)
+      ? await Assignment.findById(req.params.id)
+      : null;
     if (!doc) return res.status(404).json({ error: "Not found" });
     await streamPdfByFileId(res, doc.fileId, req.query.name, true);
   } catch (e) {
@@ -318,4 +310,3 @@ router.get("/:id/download", async (req, res) => {
 });
 
 module.exports = router;
-

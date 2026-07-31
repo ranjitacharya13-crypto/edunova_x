@@ -2,8 +2,10 @@
   "name": "edunova_x",
   "version": "1.0.0",
   "scripts": {
-    "start": "concurrently \"npm run dev --prefix frontend\" \"npm start --prefix server\"",
+    "start": "set \"DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/edunova\"&& set \"AI_ENGINE_URL=http://127.0.0.1:8001\"&& concurrently -n \"frontend,server,ai\" -c \"cyan,green,magenta\" \"npm.cmd run dev --prefix frontend -- --host 127.0.0.1\" \"npm.cmd start --prefix server\" \"py -m uvicorn ai_engine.main:app --host 127.0.0.1 --port 8001\"",
+    "start:web": "concurrently \"npm.cmd run dev --prefix frontend\" \"npm.cmd start --prefix server\"",
     "start:ngrok": "npm run build --prefix frontend && npm start --prefix server",
+    "install-ai": "py -m pip install fastapi uvicorn psycopg2-binary pydantic",
     "install-all": "(cd frontend && npm install) && (cd server && npm install) && (cd signaling && npm install)"
   },
   "dependencies": {
@@ -11,7 +13,7 @@
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
-    "mongoose": "^8.19.1",
+    "pg": "^8.13.1",
     "socket.io": "^4.8.1",
     "socket.io-client": "^4.8.1"
   },

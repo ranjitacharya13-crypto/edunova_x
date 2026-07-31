@@ -3,11 +3,11 @@ const router = express.Router();
 const Timetable = require("../models/Timetable");
 const LiveSession = require("../models/LiveSession");
 const Recording = require("../models/Recording");
+const { isUuid } = require("../db");
 const auth = require("../middleware/auth");
 const multer = require("multer");
 const fs = require("fs");
 const path = require("path");
-const mongoose = require("mongoose");
 
 const PERIOD_TIMES = {
   1: "9:30 - 10:15",
@@ -90,7 +90,7 @@ router.get("/today", async (req, res) => {
     ];
 
     const today = days[new Date().getDay()];
-    const timetableDoc = await Timetable.findOne({});
+    const timetableDoc = await Timetable.findFirst();
 
     if (!timetableDoc || !timetableDoc[today]) {
       return res.json({
@@ -103,14 +103,13 @@ router.get("/today", async (req, res) => {
     res.json({
       day: today,
       timetable: (timetableDoc[today] || []).map((p) => {
-        const plain = typeof p?.toObject === "function" ? p.toObject() : p;
         const periodKey =
-          plain?.period === undefined || plain?.period === null
+          p?.period === undefined || p?.period === null
             ? null
-            : Number(plain.period);
+            : Number(p.period);
         return {
-          ...plain,
-          time: plain?.time || (periodKey ? PERIOD_TIMES[periodKey] : "") || "",
+          ...p,
+          time: p?.time || (periodKey ? PERIOD_TIMES[periodKey] : "") || "",
         };
       }),
     });
@@ -136,11 +135,12 @@ router.post("/live-sessions/start", auth, teacherOrStaffOrAdmin, async (req, res
     const now = new Date();
     const { start, end } = getTodayRangeLocal(now);
 
-    const existing = await LiveSession.findOne({
+    const existing = await LiveSession.findTodayByRoomAndTeacher({
       roomId,
       teacherId: req.user.id,
-      date: { $gte: start, $lt: end },
-    }).sort({ createdAt: -1 });
+      start,
+      end,
+    });
 
     if (existing && !existing.endTime) {
       return res.json({ session: existing });
@@ -173,7 +173,7 @@ router.post("/live-sessions/assignment", auth, teacherOrStaffOrAdmin, async (req
     const assignment = req.body.assignment || {};
 
     let session = null;
-    if (sessionId) {
+    if (sessionId && isUuid(sessionId)) {
       session = await LiveSession.findById(sessionId);
     }
 
@@ -181,24 +181,24 @@ router.post("/live-sessions/assignment", auth, teacherOrStaffOrAdmin, async (req
       if (!roomId) return res.status(400).json({ error: "roomId is required" });
       const now = new Date();
       const { start, end } = getTodayRangeLocal(now);
-      session = await LiveSession.findOne({
+      session = await LiveSession.findTodayByRoomAndTeacher({
         roomId,
         teacherId: req.user.id,
-        date: { $gte: start, $lt: end },
-      }).sort({ createdAt: -1 });
+        start,
+        end,
+      });
     }
 
     if (!session) return res.status(404).json({ error: "Session not found" });
     if (String(session.teacherId) !== String(req.user.id)) return res.status(403).json({ error: "Forbidden" });
 
-    session.assignment = {
+    const updated = await LiveSession.updateAssignment(session.id, {
       title: String(assignment.title || "").trim(),
       description: String(assignment.description || "").trim(),
       fileUrl: String(assignment.fileUrl || "").trim(),
-    };
+    });
 
-    await session.save();
-    return res.json({ session });
+    return res.json({ session: updated });
   } catch (e) {
     console.error("Live session assignment error", e);
     return res.status(500).json({ error: "Failed to attach assignment" });
@@ -221,41 +221,39 @@ router.post(
       if (String(session.teacherId) !== String(req.user.id)) return res.status(403).json({ error: "Forbidden" });
 
       const now = new Date();
-      session.endTime = formatClock(now);
+      let recordingUrl = session.recordingUrl || "";
+      let recordingPath = session.recordingPath || "";
 
       if (req.file?.path) {
-        session.recordingPath = req.file.path;
-        session.recordingUrl = `/api/timetable/live-sessions/${session._id}/recording`;
+        recordingPath = req.file.path;
+        recordingUrl = `/api/timetable/live-sessions/${session.id}/recording`;
       }
 
-      await session.save();
+      const updated = await LiveSession.finish(session.id, {
+        endTime: formatClock(now),
+        recordingUrl,
+        recordingPath,
+      });
 
-      if (session.recordingUrl) {
+      if (recordingUrl) {
         const durationRaw = Number(req.body.duration);
         const duration = Number.isFinite(durationRaw) && durationRaw > 0 ? durationRaw : 0;
         const timetableIdRaw = String(req.body.timetableId || "").trim();
-        const timetableId = mongoose.Types.ObjectId.isValid(timetableIdRaw)
-          ? new mongoose.Types.ObjectId(timetableIdRaw)
-          : null;
+        const timetableId = isUuid(timetableIdRaw) ? timetableIdRaw : null;
         const titleRaw = String(req.body.title || "").trim();
 
-        await Recording.findOneAndUpdate(
-          { liveSessionId: session._id },
-          {
-            title: titleRaw || `${session.className} Recording`,
-            room: session.roomId,
-            teacherId: session.teacherId,
-            timetableId,
-            liveSessionId: session._id,
-            videoUrl: session.recordingUrl,
-            duration,
-            createdAt: new Date(),
-          },
-          { upsert: true, new: true, setDefaultsOnInsert: true }
-        );
+        await Recording.upsertByLiveSession({
+          title: titleRaw || `${session.className} Recording`,
+          room: session.roomId,
+          teacherId: session.teacherId,
+          timetableId,
+          liveSessionId: session.id,
+          videoUrl: recordingUrl,
+          duration,
+        });
       }
 
-      return res.json({ session });
+      return res.json({ session: updated });
     } catch (e) {
       console.error("Live session end error", e);
       return res.status(500).json({ error: "Failed to end session" });
@@ -275,10 +273,7 @@ router.get("/live-sessions/today", async (req, res) => {
           .filter(Boolean)
       : [];
 
-    const filter = { date: { $gte: start, $lt: end } };
-    if (rooms.length) filter.roomId = { $in: rooms };
-
-    const sessions = await LiveSession.find(filter).sort({ createdAt: 1 }).lean();
+    const sessions = await LiveSession.listToday({ start, end, rooms });
     const byRoom = {};
     for (const s of sessions) {
       if (!s?.roomId) continue;
@@ -295,7 +290,9 @@ router.get("/live-sessions/today", async (req, res) => {
 // Stream recording (public)
 router.get("/live-sessions/:id/recording", async (req, res) => {
   try {
-    const session = await LiveSession.findById(req.params.id).lean();
+    const session = isUuid(req.params.id)
+      ? await LiveSession.findById(req.params.id)
+      : null;
     if (!session) return res.status(404).json({ error: "Not found" });
     const recordingPath = String(session.recordingPath || "").trim();
     if (!recordingPath) return res.status(404).json({ error: "Recording not available" });
