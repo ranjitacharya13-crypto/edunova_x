@@ -1,41 +1,57 @@
 # Render Blueprint Deployment Configuration
-# Trigger timestamp: 2026-08-07T10:36:30Z
+# Native services are deployed in Singapore; secrets are injected out-of-band.
 
 services:
   - type: web
     name: edunova-api
-    env: node
-    region: oregon
+    runtime: node
+    region: singapore
     plan: free
     rootDir: server
     buildCommand: npm install
     startCommand: node server.js
+    healthCheckPath: /api/test
     envVars:
+      # Values are supplied from server/.env through the deployment environment.
       - key: MONGO_URI
-        value: mongodb+srv://ranjit5201314_db_user:ranjit_1215@cluster1edunovax.8q5lafw.mongodb.net/edunova?appName=Cluster1edunovaX
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: EMAIL_USER
+        sync: false
+      - key: EMAIL_PASS
+        sync: false
+      - key: CONTACT_RECEIVER_EMAIL
+        sync: false
+      - key: AI_ENGINE_URL
+        sync: false
       - key: PORT
-        value: 10000
+        value: "10000"
 
   - type: web
     name: edunova-signal
-    env: node
-    region: oregon
+    runtime: node
+    region: singapore
     plan: free
     rootDir: signaling
     buildCommand: npm install
     startCommand: node index.js
+    healthCheckPath: /
     envVars:
       - key: PORT
-        value: 10000
+        value: "10000"
 
   - type: web
     name: edunova-ai
-    env: python
-    region: oregon
+    runtime: python
+    region: singapore
     plan: free
     rootDir: ai_engine
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port 10000
+    healthCheckPath: /health
     envVars:
       - key: MONGO_URI
-        value: mongodb+srv://ranjit5201314_db_user:ranjit_1215@cluster1edunovax.8q5lafw.mongodb.net/edunova?appName=Cluster1edunovaX
+        sync: false
+      - key: PORT
+        value: "10000"
