@@ -1,7 +1,20 @@
 # Render Blueprint Deployment Configuration
-# Trigger timestamp: 2026-08-07T10:36:30Z
+# EduNova_X backend services:
+#   edunova-api    -> Express + MongoDB + JWT + GridFS + Socket.IO (server/)
+#   edunova-signal -> standalone WebRTC signaling (signaling/)     [optional: server/ already embeds signaling]
+#   edunova-ai     -> FastAPI AI engine / edu_assistance (ai_engine/)
+#
+# Validate locally with the Render CLI:
+#   render blueprints validate ./render.yaml
+# Deploy with the CLI (see RENDER_CLI_DEPLOY.md):
+#   ./scripts/deploy-render.sh
+# Or launch from the Render Dashboard: New -> Blueprint -> select this repo.
+#
+# NOTE: PORT is intentionally NOT set here. Render injects PORT for web
+# services automatically, and all three apps read process.env.PORT.
 
 services:
+  # ---------------- Express API + Socket.IO signaling ----------------
   - type: web
     name: edunova-api
     env: node
@@ -10,12 +23,16 @@ services:
     rootDir: server
     buildCommand: npm install
     startCommand: node server.js
+    healthCheckPath: /api/test
     envVars:
       - key: MONGO_URI
         value: mongodb+srv://ranjit5201314_db_user:ranjit_1215@cluster1edunovax.8q5lafw.mongodb.net/edunova?appName=Cluster1edunovaX
-      - key: PORT
-        value: 10000
+      - key: JWT_SECRET
+        generateValue: true # Render generates a random 256-bit secret on first launch and reuses it
+      - key: AI_ENGINE_URL
+        sync: false # After the AI service is live, set it to https://edunova-ai.onrender.com (no trailing slash)
 
+  # ---------------- Standalone WebRTC signaling ----------------
   - type: web
     name: edunova-signal
     env: node
@@ -24,10 +41,9 @@ services:
     rootDir: signaling
     buildCommand: npm install
     startCommand: node index.js
-    envVars:
-      - key: PORT
-        value: 10000
+    healthCheckPath: /
 
+  # ---------------- AI engine (edu_assistance) ----------------
   - type: web
     name: edunova-ai
     env: python
@@ -36,6 +52,7 @@ services:
     rootDir: ai_engine
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port 10000
+    healthCheckPath: /health
     envVars:
       - key: MONGO_URI
         value: mongodb+srv://ranjit5201314_db_user:ranjit_1215@cluster1edunovax.8q5lafw.mongodb.net/edunova?appName=Cluster1edunovaX
