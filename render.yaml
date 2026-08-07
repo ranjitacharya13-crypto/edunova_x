@@ -1,0 +1,38 @@
+services:
+  - type: web
+    name: edunova-api
+    env: node
+    region: oregon
+    plan: free
+    rootDir: server
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: MONGO_URI
+        value: mongodb+srv://ranjit5201314_db_user:ranjit_1215@cluster1edunovax.8q5lafw.mongodb.net/edunova?appName=Cluster1edunovaX
+      - key: PORT
+        value: 10000
+
+  - type: web
+    name: edunova-signal
+    env: node
+    region: oregon
+    plan: free
+    rootDir: signaling
+    buildCommand: npm install
+    startCommand: node index.js
+    envVars:
+      - key: PORT
+        value: 10000
+
+  - type: web
+    name: edunova-ai
+    env: python
+    region: oregon
+    plan: free
+    rootDir: ai_engine
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port 10000
+    envVars:
+      - key: MONGO_URI
+        value: mongodb+srv://ranjit5201314_db_user:ranjit_1215@cluster1edunovax.8q5lafw.mongodb.net/edunova?appName=Cluster1edunovaX

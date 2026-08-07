@@ -266,28 +266,62 @@ app.post("/api/contact", async (req, res) => {
 // ==========================
 
 // Health check (USE THIS TO FIND BACKEND URL)
+
+    return res.json({
+      success: true,
+      message: "Message sent successfully",
+    });
+  } catch (err) {
+    console.error("Contact email error:", err);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to send message",
+    });
+  }
+});
+
+// ==========================
+// TEST ROUTES (VERY IMPORTANT)
+// ==========================
+
+// Health check (USE THIS TO FIND BACKEND URL)
 app.get("/api/test", (req, res) => {
   console.log("✅ Backend test route hit");
   res.send("OK");
 });
 
-// ==========================
-// START SERVER
-// ==========================
-// ==========================
-// FRONTEND (STATIC)
-// ==========================
-// Serve the built frontend from the same origin/port. This is the most reliable
-// setup for ngrok/multi-device because Socket.IO signaling is also same-origin.
+const fs = require("fs");
 const distDir = path.join(__dirname, "..", "frontend", "dist");
-app.use(express.static(distDir));
-app.get(/^\/(?!api).*/, (req, res) => {
-  res.sendFile(path.join(distDir, "index.html"));
+const distIndex = path.join(distDir, "index.html");
+
+app.get("/", (req, res) => {
+  if (fs.existsSync(distIndex)) {
+    return res.sendFile(distIndex);
+  }
+  res.json({
+    success: true,
+    service: "edunova-api",
+    status: "online",
+    message: "Edunova Express API Server is running.",
+    endpoints: {
+      test: "/api/test",
+      auth: "/api/auth",
+      admin: "/api/admin",
+      study: "/api/study",
+      timetable: "/api/timetable"
+    }
+  });
 });
+
+if (fs.existsSync(distDir)) {
+  app.use(express.static(distDir));
+  app.get(/^\/(?!api).*/, (req, res) => {
+    res.sendFile(distIndex);
+  });
+}
 
 const PORT = process.env.PORT || 4000;
 
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Backend server running on port ${PORT}`);
 });
-

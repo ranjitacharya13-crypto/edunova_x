@@ -87,8 +87,10 @@ router.post("/login", async (req, res) => {
       return res.status(400).json({ error: "Missing email or password" });
     }
 
-    // 🔍 find user
-    const user = await User.findOne({ email });
+    // 🔍 find user by email or username
+    const user = await User.findOne({
+      $or: [{ email: email }, { username: email }]
+    });
 
     if (!user) {
       return res.status(400).json({ error: "Invalid credentials" });
