@@ -1,3 +1,6 @@
+# Render Blueprint Deployment Configuration
+# Trigger timestamp: 2026-08-07T10:36:30Z
+
 services:
   - type: web
     name: edunova-api
