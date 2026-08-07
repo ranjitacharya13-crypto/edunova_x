@@ -1,11 +1,39 @@
-Edunova_X - Ready-to-import project
-Structure: frontend (React+Vite+Tailwind), server (Express+MongoDB+JWT+GridFS+Socket.IO). `signaling/` is kept but signaling now runs inside `server/` by default.
-Demo DB: local MongoDB at mongodb://127.0.0.1:27017/edunova_jwt
-Demo accounts:
-  teacher@edunova.com / 123456
-  student@edunova.com / 123456
+## 📦 One-Step Installation
 
-How to run:
+EduNova X is now available as a globally installable CLI tool or a direct-download package.
+
+### Option 1: Global Installation (via npm)
+```bash
+# Clone the repo
+git clone https://github.com/ranjitacharya13-crypto/edunova_x.git
+cd edunova_x
+
+# Run the setup script (Mac/Linux)
+chmod +x setup.sh && ./setup.sh
+
+# Run the setup script (Windows)
+setup.bat
+
+# (Optional) Install globally to use 'edunova-x' command
+npm install -g .
+```
+
+### Option 2: Direct Download
+1.  **Download** the `edunova-x-installer.zip` from the [Latest Release](https://github.com/ranjitacharya13-crypto/edunova_x/releases/latest).
+2.  **Extract** the ZIP file.
+3.  **Run** the `setup.sh` or `setup.bat` depending on your OS.
+4.  **Configure** your environment in `server/.env`.
+
+### 🚀 Starting the App
+After setup, simply type:
+```bash
+edunova-x
+```
+This will launch the Frontend, Backend, Signaling, and AI Engine simultaneously.
+
+## 🛠 Prerequisites
+... (existing content)
+... (existing content)
 1. Ensure MongoDB daemon is running locally.
 2. From project-root run: npm run install-all
 3. From project-root run: npm start

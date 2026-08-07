@@ -1,6 +1,9 @@
 {
   "name": "edunova_x",
   "version": "1.0.0",
+  "bin": {
+    "edunova-x": "./bin/cli.js"
+  },
   "scripts": {
     "start": "set \"MONGO_URI=mongodb://ranjit5201314_db_user:ranjit1215@ac-yl3lpzq-shard-00-00.8q5lafw.mongodb.net:27017,ac-yl3lpzq-shard-00-01.8q5lafw.mongodb.net:27017,ac-yl3lpzq-shard-00-02.8q5lafw.mongodb.net:27017/edunova?tls=true&authSource=admin&replicaSet=atlas-sr7dwm-shard-0\"&& set \"AI_ENGINE_URL=http://127.0.0.1:8001\"&& concurrently -n \"frontend,server,ai\" -c \"cyan,green,magenta\" \"npm.cmd run dev --prefix frontend -- --host 127.0.0.1\" \"npm.cmd start --prefix server\" \"py -m uvicorn ai_engine.main:app --host 127.0.0.1 --port 8001\"",
     "start:web": "concurrently \"npm.cmd run dev --prefix frontend\" \"npm.cmd start --prefix server\"",
