@@ -1,17 +1,16 @@
 import axios from "axios";
 
 // ==========================
-// VITE PROXY BASED API
+// API CLIENT (dev proxy + prod)
 // ==========================
-// All /api requests will be proxied to http://localhost:4000
-// Works for:
-// - Desktop
-// - Mobile
-// - ngrok
-// - Any device
+// DEV:  baseURL defaults to "/api" and Vite proxies it to http://localhost:4000
+//       (works on desktop, mobile, ngrok, any device).
+// PROD: set VITE_API_URL in Vercel → Project Settings → Environment Variables,
+//       e.g. https://your-backend.onrender.com/api
+//       (include the /api suffix).
 
 const API = axios.create({
-  baseURL: "/api",
+  baseURL: import.meta.env.VITE_API_URL || "/api",
   withCredentials: false,
 });
 
