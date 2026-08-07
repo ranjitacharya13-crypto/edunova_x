@@ -266,25 +266,6 @@ app.post("/api/contact", async (req, res) => {
 // ==========================
 
 // Health check (USE THIS TO FIND BACKEND URL)
-
-    return res.json({
-      success: true,
-      message: "Message sent successfully",
-    });
-  } catch (err) {
-    console.error("Contact email error:", err);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to send message",
-    });
-  }
-});
-
-// ==========================
-// TEST ROUTES (VERY IMPORTANT)
-// ==========================
-
-// Health check (USE THIS TO FIND BACKEND URL)
 app.get("/api/test", (req, res) => {
   console.log("✅ Backend test route hit");
   res.send("OK");
