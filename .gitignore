@@ -1,26 +1,33 @@
-# Dependencies
+# Dependencies — MUST NOT be committed (platform-specific binaries break builds)
 node_modules/
-frontend/node_modules/
-server/node_modules/
-signaling/node_modules/
+**/node_modules/
 
 # Build output
 dist/
+**/dist/
 frontend/dist/
+out/
 
-# Env & secrets
+# Env & secrets (never commit these)
 .env
 .env.*
 !.env.example
+!**/.env.secrets.example
+.env.secrets
+**/.env.secrets
+frontend/.env.production
 
 # Vercel
 .vercel/
+**/.vercel/
 
-# Logs
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Logs & OS / editors
 *.log
-
-# OS / editors
 .DS_Store
 Thumbs.db
 .vscode/
-__pycache__/

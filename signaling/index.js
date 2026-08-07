@@ -6,9 +6,17 @@ const cors = require('cors');
 const app = express();
 app.use(cors());
 
-// Root status route for browser inspection
+// Health check for Render's load balancer (healthCheckPath: /health in render.yaml).
+// Returns 200 + JSON without touching Socket.IO so the LB check never interferes
+// with the WebRTC signaling traffic.
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'live', service: 'edunova-signal' });
+});
+
+// Root status route for browser inspection — explicit 200 so Render's default
+// load balancer probe (/ ) also succeeds while Socket.IO keeps working.
 app.get('/', (req, res) => {
-  res.json({
+  res.status(200).json({
     success: true,
     service: "edunova-signal",
     status: "online",
