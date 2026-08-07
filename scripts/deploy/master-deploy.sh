@@ -280,6 +280,23 @@ done
 [ "$MISSING" = "0" ] || die "Not all three services exist yet. Fix the issues above and rerun (reruns are idempotent)."
 ok "All three services exist: edunova-api, edunova-signal, edunova-ai"
 
+# --- Trigger a fresh deploy of every service so they pick up the latest main.
+# Existing services may have auto-deploy disabled or be connected to an older
+# source — this guarantees the update. If a service deploys from a DIFFERENT
+# repo than this one, reconnect it in the Render dashboard (or delete it and
+# rerun; the script will recreate it from this repo).
+for name in "${SERVICE_NAMES[@]}"; do
+  id="${SERVICE_IDS[$name]}"
+  resp="$(curl -sS -m 30 -w '\n%{http_code}' -X POST "$RENDER_API/services/$id/deploys" \
+    -H "Authorization: Bearer $RENDER_API_KEY")"
+  code="$(echo "$resp" | tail -1)"
+  if [ "$code" = "201" ]; then
+    info "Deploy triggered for $name"
+  else
+    warn "Deploy trigger for $name returned HTTP $code (service may still build on its own)."
+  fi
+done
+
 # =============================================================================
 # STAGE 3 — POLL UNTIL ALL SERVICES ARE LIVE
 # =============================================================================
