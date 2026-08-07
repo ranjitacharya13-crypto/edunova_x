@@ -54,6 +54,11 @@ The three backend services are Docker-ready. Each folder has its own `Dockerfile
 
 **Manual alternative:** New → Web Service → pick the repo → set **Root Directory** to `server` (or `signaling` / `ai_engine`) → Runtime: Docker. Repeat per service.
 
+**CLI alternative (fully scripted):** `./scripts/deploy-render.sh` drives the official
+[Render CLI](https://docs.render.com/cli) — validates `render.yaml`, creates the three
+services with the right runtimes/env vars (including an auto-generated `JWT_SECRET`),
+deploys, and health-checks them. Full walkthrough: [`RENDER_CLI_DEPLOY.md`](./RENDER_CLI_DEPLOY.md).
+
 ## Option 2 — Railway
 
 1. **New Project → Deploy from GitHub repo** → pick `edunova_x`
