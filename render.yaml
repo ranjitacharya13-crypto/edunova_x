@@ -1,41 +1,102 @@
-# Render Blueprint Deployment Configuration
-# Trigger timestamp: 2026-08-07T10:36:30Z
+# =============================================================================
+# EduNova_X — Render Blueprint (Infrastructure as Code)
+# -----------------------------------------------------------------------------
+# Defines the three backend web services:
+#   1. edunova-api      (Express API + Socket.IO)   rootDir: ./server
+#   2. edunova-signal   (WebRTC signaling server)   rootDir: ./signaling
+#   3. edunova-ai       (FastAPI AI engine)         rootDir: ./ai_engine
+#
+# Every service:
+#   - reads the port from $PORT (Render injects it — nothing is hardcoded),
+#   - exposes GET /health -> 200 {"status":"live",...} (healthCheckPath below),
+#   - uses buildCommand npm install (node) / pip install (python).
+#
+# Secrets (MONGO_URI, JWT_SECRET, EMAIL_PASS, ADMIN_TEMP_PASSWORD) are marked
+# `sync: false`: you fill them once in the Render Dashboard, OR the master
+# script scripts/deploy/master-deploy.{sh,ps1} injects them automatically from
+# server/.env via the Render API after services are created.
+#
+# NATIVE DEPENDENCIES (sharp / pdf-thumbnail):
+#   - sharp 0.32 ships prebuilt libvips binaries — works out of the box.
+#   - pdf-thumbnail shells out to GraphicsMagick (gm) which is NOT present in
+#     Render's native Node runtime. Thumbnail generation is wrapped in try/catch
+#     in server/routes/study.js & syllabus.js, so uploads still work — only PDF
+#     thumbnails are skipped. To get full PDF thumbnails, switch edunova-api to
+#     Docker (uncomment `dockerfilePath` + `dockerCommand` below; the existing
+#     server/Dockerfile installs graphicsmagick + ghostscript).
+# =============================================================================
 
 services:
+  # ---------------------------------------------------------------------------
+  # 1) edunova-api — Express + Socket.IO backend
+  # ---------------------------------------------------------------------------
   - type: web
     name: edunova-api
-    env: node
+    runtime: node
     region: oregon
     plan: free
+    branch: main
     rootDir: server
     buildCommand: npm install
     startCommand: node server.js
+    healthCheckPath: /health
+    autoDeploy: true
+    # Optional: full PDF-thumbnail support via the existing Dockerfile
+    # (graphicsmagick + ghostscript). Uncomment to switch from native to Docker.
+    # dockerfilePath: ./Dockerfile
+    # dockerCommand: node server.js
     envVars:
       - key: MONGO_URI
-        value: mongodb+srv://ranjit5201314_db_user:ranjit_1215@cluster1edunovax.8q5lafw.mongodb.net/edunova?appName=Cluster1edunovaX
-      - key: PORT
-        value: 10000
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: ADMIN_TEMP_PASSWORD
+        sync: false
+      - key: EMAIL_PASS
+        sync: false
+      - key: EMAIL_USER
+        sync: false
+      - key: CONTACT_RECEIVER_EMAIL
+        sync: false
+      - key: SEED_DEMO_USERS
+        value: "true"
+      - key: AI_ENGINE_URL
+        fromService:
+          name: edunova-ai
+          type: web
+          envVarKey: RENDER_EXTERNAL_HOSTNAME
+      # Render injects PORT automatically; the server reads process.env.PORT.
+      # NOTE: do NOT add a hardcoded PORT here — it would shadow Render's value.
 
+  # ---------------------------------------------------------------------------
+  # 2) edunova-signal — WebRTC / Socket.IO signaling
+  # ---------------------------------------------------------------------------
   - type: web
     name: edunova-signal
-    env: node
+    runtime: node
     region: oregon
     plan: free
+    branch: main
     rootDir: signaling
     buildCommand: npm install
     startCommand: node index.js
-    envVars:
-      - key: PORT
-        value: 10000
+    healthCheckPath: /health
+    autoDeploy: true
 
+  # ---------------------------------------------------------------------------
+  # 3) edunova-ai — FastAPI AI engine
+  # ---------------------------------------------------------------------------
   - type: web
     name: edunova-ai
-    env: python
+    runtime: python
     region: oregon
     plan: free
+    branch: main
     rootDir: ai_engine
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn main:app --host 0.0.0.0 --port 10000
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeploy: true
     envVars:
       - key: MONGO_URI
-        value: mongodb+srv://ranjit5201314_db_user:ranjit_1215@cluster1edunovax.8q5lafw.mongodb.net/edunova?appName=Cluster1edunovaX
+        sync: false

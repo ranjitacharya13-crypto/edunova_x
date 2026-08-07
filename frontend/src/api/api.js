@@ -9,8 +9,16 @@ import axios from "axios";
 //       e.g. https://your-backend.onrender.com/api
 //       (include the /api suffix).
 
+// Normalize the base URL: all REST routes are mounted under /api on the backend.
+// Accepts either "https://edunova-api.onrender.com" or ".../api" — if the /api
+// suffix is missing it is appended, otherwise requests hit a 404 ("Cannot GET /auth/...").
+let baseURL = import.meta.env.VITE_API_URL || "/api";
+if (baseURL !== "/api" && !baseURL.replace(/\/+$/, "").endsWith("/api")) {
+  baseURL = baseURL.replace(/\/+$/, "") + "/api";
+}
+
 const API = axios.create({
-  baseURL: import.meta.env.VITE_API_URL || "/api",
+  baseURL,
   withCredentials: false,
 });
 

@@ -1,4 +1,4 @@
-﻿from datetime import datetime, timedelta
+from datetime import datetime, timedelta
 import os
 import traceback
 
@@ -46,7 +46,7 @@ async def root():
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    return {"status": "live", "service": "edunova-ai"}
 
 
 # ------------------------

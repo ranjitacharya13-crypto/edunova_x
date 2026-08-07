@@ -118,6 +118,17 @@ io.on("connection", (socket) => {
 app.use(express.json());
 
 // ==========================
+// HEALTH CHECK (Render LB)
+// ==========================
+// Render's load balancer polls this path (healthCheckPath: /health in render.yaml).
+// It must NOT depend on MongoDB — the process must answer 200 even while the
+// database connection is still being established, otherwise Render restarts the
+// service in a loop and marks it unhealthy.
+app.get("/health", (req, res) =>
+  res.status(200).json({ status: "live", service: "edunova-api" })
+);
+
+// ==========================
 // EMAIL (CONTACT)
 // ==========================
 const contactTransporter = nodemailer.createTransport({
