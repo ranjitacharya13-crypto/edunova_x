@@ -2,12 +2,12 @@
   "name": "edunova-frontend",
   "version": "1.0.0",
   "private": true,
-  "main": "electron/main.js",
+  "main": "main.js",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview --port 5174",
-    "electron:build": "npm run build && electron-builder --win dir --config.win.signAndEditExecutable=false",
+    "electron:build": "npm run build && electron-builder --win",
     "cap:sync": "npm run build && npx cap sync"
   },
   "build": {
@@ -18,10 +18,10 @@
     },
     "files": [
       "dist/**/*",
-      "electron/**/*"
+      "main.js"
     ],
     "win": {
-      "target": "dir",
+      "target": "nsis",
       "signAndEditExecutable": false
     }
   },
