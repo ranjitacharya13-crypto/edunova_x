@@ -1,5 +1,5 @@
 {
-  "name": "edunova_x",
+  "name": "edunova-x",
   "version": "1.0.0",
   "bin": {
     "edunova-x": "./bin/cli.js"
@@ -9,7 +9,13 @@
     "start:web": "concurrently \"npm.cmd run dev --prefix frontend\" \"npm.cmd start --prefix server\"",
     "start:ngrok": "npm run build --prefix frontend && npm start --prefix server",
     "install-ai": "py -m pip install fastapi uvicorn pymongo pydantic",
-    "install-all": "(cd frontend && npm install) && (cd server && npm install) && (cd signaling && npm install)"
+    "install-all": "(cd frontend && npm install) && (cd server && npm install) && (cd signaling && npm install)",
+    "desktop:install": "npm install",
+    "desktop:build": "npm run build:frontend && electron-builder --config electron-builder.yml",
+    "build:frontend": "npm run build --prefix frontend",
+    "desktop:win": "npm run desktop:build -- --win",
+    "desktop:mac": "npm run desktop:build -- --mac",
+    "desktop:linux": "npm run desktop:build -- --linux"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
@@ -21,6 +27,11 @@
     "socket.io-client": "^4.8.1"
   },
   "devDependencies": {
-    "concurrently": "^9.2.1"
-  }
+    "concurrently": "^9.2.1",
+    "electron": "^28.2.0",
+    "electron-builder": "^24.9.2"
+  },
+  "description": "EduNova X desktop installer and launcher",
+  "author": "EduNova X",
+  "main": "electron/main.js"
 }
