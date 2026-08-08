@@ -1,106 +1,80 @@
 # =============================================================================
 # EduNova_X — Render Blueprint (Infrastructure as Code)
 # -----------------------------------------------------------------------------
-# Defines the backend web services (the frontend is already deployed on Cloudflare Workers):
-#   0. edunova-frontend (React/Vite static site)     publishPath: frontend/dist
-#   1. edunova-api      (Express API + Socket.IO)   rootDir: ./server
-#   2. edunova-signal   (WebRTC signaling server)   rootDir: ./signaling
-#   3. edunova-ai       (FastAPI AI engine)         rootDir: ./ai_engine
+# Production architecture:
+#   - Cloudflare Workers frontend: https://edunova-x.ranjitacharya13.workers.dev (ONLY frontend)
+#   - Render backend services (this file defines only backends):
+#       1. edunova-api      (Express API + Socket.IO)   rootDir: server
+#       2. edunova-signal   (WebRTC signaling server)   rootDir: signaling
+#       3. edunova-ai       (FastAPI AI engine)         rootDir: ai_engine
 #
-# Every service:
-#   - reads the port from $PORT (Render injects it — nothing is hardcoded),
-#   - exposes GET /health -> 200 {"status":"live",...} (healthCheckPath below),
-#   - uses buildCommand npm install (node) / pip install (python).
-#
-# Secrets (MONGO_URI, JWT_SECRET, EMAIL_PASS, ADMIN_TEMP_PASSWORD) are marked
-# `sync: false`: you fill them once in the Render Dashboard, OR the master
-# script scripts/deploy/master-deploy.{sh,ps1} injects them automatically from
-# server/.env via the Render API after services are created.
-#
-# NATIVE DEPENDENCIES (sharp / pdf-thumbnail):
-#   - sharp 0.32 ships prebuilt libvips binaries — works out of the box.
-#   - pdf-thumbnail shells out to GraphicsMagick (gm) which is NOT present in
-#     Render's native Node runtime. Thumbnail generation is wrapped in try/catch
-#     in server/routes/study.js & syllabus.js, so uploads still work — only PDF
-#     thumbnails are skipped. To get full PDF thumbnails, switch edunova-api to
-#     Docker (uncomment `dockerfilePath` + `dockerCommand` below; the existing
-#     server/Dockerfile installs graphicsmagick + ghostscript).
+# Rules enforced:
+#   - No Render static frontend service.
+#   - All services read PORT from Render's env (no hardcoded ports).
+#   - Bind to 0.0.0.0 (server.js and signaling do).
+#   - Health checks: GET /health -> 200.
+#   - CORS_ORIGIN explicitly allows Cloudflare Workers frontend.
+#   - Localhost origins preserved only for local development via fallback logic in code.
+#   - Secrets marked sync: false (set manually in Render Dashboard).
 # =============================================================================
 
 services:
   # ---------------------------------------------------------------------------
-  # 0) edunova-api — Express + Socket.IO backend
+  # 1) edunova-api — Express + Socket.IO backend + REST API
   # ---------------------------------------------------------------------------
   - type: web
     name: edunova-api
     runtime: node
-    region: oregon
-    plan: free
-    branch: main
     rootDir: server
     buildCommand: npm install
-    startCommand: node server.js
+    startCommand: npm start
     healthCheckPath: /health
-    autoDeploy: true
-    # Optional: full PDF-thumbnail support via the existing Dockerfile
-    # (graphicsmagick + ghostscript). Uncomment to switch from native to Docker.
-    # dockerfilePath: ./Dockerfile
-    # dockerCommand: node server.js
     envVars:
       - key: MONGO_URI
         sync: false
       - key: JWT_SECRET
         sync: false
-      - key: ADMIN_TEMP_PASSWORD
+      - key: CORS_ORIGIN
+        value: https://edunova-x.ranjitacharya13.workers.dev
+      - key: AI_ENGINE_URL
+        value: https://edunova-ai.onrender.com
+      - key: EMAIL_USER
         sync: false
       - key: EMAIL_PASS
         sync: false
-      - key: EMAIL_USER
-        sync: false
       - key: CONTACT_RECEIVER_EMAIL
         sync: false
-      - key: CORS_ORIGIN
-        # Explicit production frontend origin; add localhost only in local env.
-        value: https://edunova-x.ranjitacharya13.workers.dev
+      - key: ADMIN_TEMP_PASSWORD
+        sync: false
       - key: SEED_DEMO_USERS
         value: "true"
-      - key: AI_ENGINE_URL
-        fromService:
-          name: edunova-ai
-          type: web
-          envVarKey: RENDER_EXTERNAL_HOSTNAME
-      # Render injects PORT automatically; the server reads process.env.PORT.
-      # NOTE: do NOT add a hardcoded PORT here — it would shadow Render's value.
 
   # ---------------------------------------------------------------------------
-  # 1) edunova-signal — WebRTC / Socket.IO signaling
+  # 2) edunova-signal — WebRTC / Socket.IO signaling
   # ---------------------------------------------------------------------------
   - type: web
     name: edunova-signal
     runtime: node
-    region: oregon
-    plan: free
-    branch: main
     rootDir: signaling
     buildCommand: npm install
     startCommand: node index.js
     healthCheckPath: /health
-    autoDeploy: true
+    envVars:
+      - key: CORS_ORIGIN
+        value: https://edunova-x.ranjitacharya13.workers.dev
 
   # ---------------------------------------------------------------------------
-  # 2) edunova-ai — FastAPI AI engine
+  # 3) edunova-ai — FastAPI AI engine
   # ---------------------------------------------------------------------------
   - type: web
     name: edunova-ai
     runtime: python
-    region: oregon
-    plan: free
-    branch: main
     rootDir: ai_engine
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
-    autoDeploy: true
     envVars:
       - key: MONGO_URI
         sync: false
+      - key: CORS_ORIGIN
+        value: https://edunova-x.ranjitacharya13.workers.dev
