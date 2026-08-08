@@ -14,8 +14,8 @@ EduNova X is pre-configured with `wrangler.toml`, `wrangler.jsonc`, and `_redire
 3. Build Settings:
    - **Framework preset**: `Vite` (or `None`)
    - **Build command**: `npm run build`
-   - **Build output directory**: `dist` (or `frontend/dist`)
-   - **Root directory**: `/`
+   - **Build output directory**: `dist`
+   - **Root directory**: `/` (repo root — required so the repository's `wrangler.toml`/`wrangler.jsonc` are used)
 4. Environment Variables:
    - `NODE_VERSION`: `20`
    - `VITE_API_URL`: `https://your-backend.onrender.com/api`
