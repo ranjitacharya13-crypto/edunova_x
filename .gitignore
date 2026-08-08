@@ -11,6 +11,9 @@ out/
 # Env & secrets (never commit these)
 .env
 .env.*
+# Backup env copies ("<name> <n>.<ext>" duplicates contain REAL secrets)
+**/.env [0-9]
+**/.env [0-9] [0-9]
 !.env.example
 !**/.env.secrets.example
 .env.secrets

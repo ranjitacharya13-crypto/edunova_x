@@ -303,22 +303,27 @@ if ($env:VITE_TURN_URL) {
   Write-Warn "VITE_TURN_URL empty - STUN only. Set TURN vars in $secretsFile for reliable 4G/mobile video."
 }
 
+$apiProxy = "https://$apiUrl/api/:path*"
+$rewrites = @(
+  @{ source = "/api/:path*"; destination = $apiProxy }
+  @{ source = "/((?!assets/|.*\\..*).*)"; destination = "/index.html" }
+)
 $vercelJson = @{
   framework = "vite"; buildCommand = "npm run build"; outputDirectory = "dist"; env = $envBlock
-  rewrites = @(@{ source = "/((?!assets/|.*\\..*).*)"; destination = "/index.html" })
+  rewrites = $rewrites
 } | ConvertTo-Json -Depth 6
 Set-Content -Path (Join-Path $frontendDir "vercel.json") -Value $vercelJson -Encoding UTF8
-Write-Ok "frontend/vercel.json updated"
+Write-Ok "frontend/vercel.json updated (incl. /api -> API rewrite)"
 
 # Root vercel.json (covers deploys where Vercel uses the repo root as project root)
 $rootVercelJson = @{
   "\$schema" = "https://openapi.vercel.sh/vercel.json"; framework = "vite"
   installCommand = "cd frontend && npm install"; buildCommand = "cd frontend && npm run build"
   outputDirectory = "frontend/dist"; env = $envBlock
-  rewrites = @(@{ source = "/((?!assets/|.*\\..*).*)"; destination = "/index.html" })
+  rewrites = $rewrites
 } | ConvertTo-Json -Depth 6
 Set-Content -Path (Join-Path $repoRoot "vercel.json") -Value $rootVercelJson -Encoding UTF8
-Write-Ok "root vercel.json updated"
+Write-Ok "root vercel.json updated (incl. /api -> API rewrite)"
 
 @"
 VITE_API_URL=$viteApiUrl

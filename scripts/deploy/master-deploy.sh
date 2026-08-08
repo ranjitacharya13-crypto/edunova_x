@@ -386,18 +386,20 @@ fi
 #  project root; frontend/vercel.json covers `vercel --cwd frontend`, which is
 #  what this script runs).
 jq -nc --arg api "$VITE_API_URL" --arg sig "$VITE_SIGNAL_URL" --argjson turn "$TURN_VARS" \
+  --arg apiProxy "https://$API_URL/api/:path*" \
   '{framework:"vite",buildCommand:"npm run build",outputDirectory:"dist",
     env: ({VITE_API_URL:$api,VITE_SIGNAL_URL:$sig,VITE_API_PORT:"4000",VITE_SIGNAL_PORT:"5000"} + $turn),
-    rewrites:[{source:"/((?!assets/|.*\\..*).*)",destination:"/index.html"}]}' \
+    rewrites:[{source:"/api/:path*",destination:$apiProxy},{source:"/((?!assets/|.*\\..*).*)",destination:"/index.html"}]}' \
   > "$FRONTEND_DIR/vercel.json" || die "Failed to rewrite frontend/vercel.json"
 ok "frontend/vercel.json updated with live URLs"
 
 jq -nc --arg api "$VITE_API_URL" --arg sig "$VITE_SIGNAL_URL" --argjson turn "$TURN_VARS" \
+  --arg apiProxy "https://$API_URL/api/:path*" \
   '{"$schema":"https://openapi.vercel.sh/vercel.json",framework:"vite",
     installCommand:"cd frontend && npm install",buildCommand:"cd frontend && npm run build",
     outputDirectory:"frontend/dist",
     env: ({VITE_API_URL:$api,VITE_SIGNAL_URL:$sig,VITE_API_PORT:"4000",VITE_SIGNAL_PORT:"5000"} + $turn),
-    rewrites:[{source:"/((?!assets/|.*\\..*).*)",destination:"/index.html"}]}' \
+    rewrites:[{source:"/api/:path*",destination:$apiProxy},{source:"/((?!assets/|.*\\..*).*)",destination:"/index.html"}]}' \
   > "$REPO_ROOT/vercel.json" || die "Failed to rewrite root vercel.json"
 ok "root vercel.json updated with live URLs"
 

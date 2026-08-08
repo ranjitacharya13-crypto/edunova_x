@@ -12,6 +12,10 @@
   },
   "rewrites": [
     {
+      "source": "/api/:path*",
+      "destination": "https://edunova-api.onrender.com/api/:path*"
+    },
+    {
       "source": "/((?!assets/|.*\\..*).*)",
       "destination": "/index.html"
     }

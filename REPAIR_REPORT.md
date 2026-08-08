@@ -198,3 +198,41 @@ printed Render Blueprint `envVars` YAML and Vercel env JSON. Generates
 > API server smoke test stubbed `sharp` after `npm install --ignore-scripts`
 > (sharp isn't touched by any health/test path). On a real machine / on Render
 > it installs normally — no code change is required for that.
+
+---
+
+## 7. Round 3 — War-Room hardening pass (2026-08-08, audit-first workflow)
+
+Per the "Production Deployment War Room" master prompt (audit → report → apply),
+this round was executed as an explicit PHASE 1–13 audit followed by approved
+PHASE 14–22 changes:
+
+### New findings from the audit (fixed)
+| # | Finding | Fix |
+|---|---------|-----|
+| 1 | **Relative `fetch("/api/...")` calls** in `ContactView`, `HomeView`, `LiveView`, `FloatingAIChat`, `StudyView`, `SyllabusView` would hit the Vercel origin in production, fall into the SPA rewrite and return HTML instead of JSON (`404`-class break). | Added external rewrite `"/api/:path*" → "https://<API_URL>/api/:path*"` to **both** `vercel.json` files (before the SPA catch-all) + the master scripts regenerate it with the live URL on every deploy. |
+| 2 | **Real secrets tracked in git** (`server/.env`, `frontend/.env`, plus `*.env 1/2/3` backups). | `git rm --cached` (files stay on disk) + `.gitignore` rules for the backup copies; **rotate the credentials in git history**. |
+| 3 | Local smoke-test script orphaned processes on `( ... ) &` backgrounding. | `exec`-based backgrounding so `$!` is the server PID; cleanup verified (no orphaned ports). |
+| 4 | AI check in the smoke test silently timed out when uvicorn was missing. | Fast, explicit `[FAIL] AI engine prereqs missing — pip install -r ai_engine/requirements.txt` with `--skip-ai` escape hatch. |
+
+### New fail-closed tooling
+- `scripts/verify-production.{sh,ps1}` — local smoke test (Node ≥ 20, env-var
+  presence, optional `vite build`, boots all three services, checks `/health`,
+  `/api/test`, `/`, Socket.IO Engine.IO handshake; exit ≠ 0 on any failure).
+- `scripts/deploy-production.{sh,ps1}` — orchestrator: token gates → secret
+  sync → local preflight (aborts on failure) → `master-deploy` → final
+  `DEPLOYMENT VERIFIED / FAILED / UNVERIFIED` status.
+
+### Verification (this sandbox)
+| Check | Result |
+|---|---|
+| `verify-production.sh --build` | ✅ 17/17 checks, exit 0 (after fixing the two real failures it caught: missing uvicorn, port orphans) |
+| `deploy-production.sh` without tokens | ✅ exit 1, `[FAIL] RENDER_API_KEY is missing` (fail-closed gate) |
+| vercel.json generators with live URL | ✅ `/api/:path*` rewrite emitted correctly, SPA catch-all preserved |
+| `git diff --check`, `.env` untracked + ignored | ✅ |
+
+> Production live deployment remains **UNVERIFIED from this sandbox**: outbound
+> HTTPS to `api.render.com` / `api.vercel.com` is blocked here, and the
+> `VERCEL_TOKEN` / `RENDER_API_KEY` belong to the user. Run
+> `./scripts/deploy-production.sh` on your machine to get
+> `DEPLOYMENT VERIFIED` — the pipeline refuses to claim success otherwise.

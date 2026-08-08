@@ -11,12 +11,16 @@ The repo ships a fully automated pipeline for the production topology
 safe to rerun; it repairs rather than duplicates.
 
 ```
-scripts/deploy/
-├── master-deploy.sh            # Bash pipeline (macOS/Linux/WSL/Git-Bash)
-├── master-deploy.ps1           # PowerShell pipeline (Windows)
-├── extract-secrets.mjs/.sh/.ps1  # auto-pull secrets from local .env files
-├── .env.secrets.example        # template (committed)
-└── .env.secrets                # YOUR secrets — gitignored, never committed
+scripts/
+├── deploy-production.sh        # ★ ENTRY POINT — fail-closed orchestrator (Bash)
+├── deploy-production.ps1       # ★ ENTRY POINT — fail-closed orchestrator (PowerShell)
+├── verify-production.sh/.ps1   # local smoke test (Node, env, build, /health, /api/test, Socket.IO)
+└── deploy/
+    ├── master-deploy.sh        # deploy pipeline: blueprint → poll LIVE → Vercel → verify
+    ├── master-deploy.ps1       # (Windows twin)
+    ├── extract-secrets.mjs/.sh/.ps1  # auto-pull secrets from local .env files
+    ├── .env.secrets.example    # template (committed)
+    └── .env.secrets            # YOUR secrets — gitignored, never committed
 ```
 
 ## 1. Prepare secrets (2 minutes)
@@ -35,15 +39,23 @@ VERCEL_TOKEN=[Insert_Token]     # Vercel access token
 RENDER_API_KEY=[Insert_Key]     # Render API key (rnd_...)
 ```
 
-## 2. Deploy (one command)
+## 2. Deploy (one command, fail-closed)
 
 ```bash
-cd scripts/deploy
-./master-deploy.sh              # Bash
-powershell -File master-deploy.ps1   # Windows
+./scripts/deploy-production.sh                # Bash — recommended entry point
+powershell -File scripts/deploy-production.ps1  # Windows
 ```
 
-The script:
+The orchestrator enforces the gates, then delegates to `master-deploy.sh/.ps1`:
+- **Stage A** — refuses to run without `RENDER_API_KEY` and `VERCEL_TOKEN` (from
+  `.env.secrets` or the environment; values are never printed).
+- **Stage B** — optionally re-syncs `.env.secrets` from `server/.env` +
+  `frontend/.env` via `extract-secrets.sh`.
+- **Stage C** — runs the **local smoke test** (`verify-production.sh --build`:
+  Node ≥ 20, env-var presence, `vite build`, then boots all three services and
+  checks `/health`, `/api/test`, `/` and the Socket.IO handshake). Any failure
+  **aborts the deployment**.
+- **Stage D** — delegates to `master-deploy.sh/.ps1`, which:
 1. **Authenticates** — verifies the Render API key (`GET /v1/owners`) and the
    Vercel token (`vercel whoami`).
 2. **Pushes the blueprint** — commits/pushes this repo, validates `render.yaml`
@@ -62,8 +74,26 @@ The script:
 6. **Verifies** — pings `/health` + `/api/test` on every service and the SPA
    root on Vercel, and whitelists the exact deployed domain in the API's
    `CORS_ORIGINS`.
+- **Stage E** — prints `FINAL STATUS: DEPLOYMENT VERIFIED` (or
+  `DEPLOYMENT FAILED` + the exact blocker; `UNVERIFIED` only if you passed
+  `--skip-verify`).
 
-Optional flags: `--skip-git-push`, `--skip-vercel`, `--skip-verify`.
+Optional flags: `--skip-preflight`, `--skip-git-push`, `--skip-vercel`,
+`--skip-verify` (each makes the final status weaker — you own that risk).
+
+## SPA + API routing on Vercel (why relative `/api` calls work)
+
+The frontend calls the API two ways:
+- `frontend/src/api/api.js` → axios with the absolute `VITE_API_URL`; and
+- relative `fetch("/api/...")` in `ContactView`, `HomeView`, `LiveView`,
+  `FloatingAIChat`, `StudyView`, `SyllabusView`.
+
+Both `vercel.json` files therefore contain an **external rewrite**
+(`"/api/:path*" → "https://<API_URL>/api/:path*"`) BEFORE the SPA catch-all,
+mirroring the dev Vite proxy. Without it, those relative calls would hit the
+Vercel origin, fall into the SPA rewrite, and return HTML instead of JSON.
+The master script rewrites the destination with the **live** API URL on every
+deploy.
 
 ## Health contract (all three backends)
 
@@ -76,6 +106,16 @@ app.get("/health", (req, res) =>
 `edunova-signal` also answers `GET /` with `200` JSON so Render's default root
 probe passes, and unknown paths return JSON 404s (never the raw HTML
 `Cannot GET …` page).
+
+## Secrets (never committed)
+
+- `render.yaml` / `vercel.json` contain **references only** (`sync: false`) —
+  no secret values, ever.
+- `server/.env`, `frontend/.env` and their `*.env 1/2/3` backup copies are
+  **untracked and gitignored** (files stay on disk for local dev).
+- **Credentials that were previously committed are still in git history —
+  rotate them** (MongoDB password, `JWT_SECRET`, Gmail app password) and then
+  optionally `git filter-repo` to purge history.
 
 ## Node version
 
