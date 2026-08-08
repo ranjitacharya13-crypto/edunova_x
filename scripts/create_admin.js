@@ -14,9 +14,19 @@ async function main() {
     const db = client.db('edunova');
     const usersCollection = db.collection('users');
 
-    const username = "admin";
-    const rawPassword = "admin@1215";
-    const email = "admin@edunova.com";
+    const username = process.env.ADMIN_USERNAME || "admin";
+    const email = process.env.ADMIN_EMAIL || "admin@edunova.com";
+
+    // The password must NEVER be hardcoded in the repository. Supply it at run
+    // time, e.g.:
+    //   MONGO_URI="..." ADMIN_PASSWORD="<strong-password>" node scripts/create_admin.js
+    // If omitted, a strong random password is generated and printed once.
+    let rawPassword = process.env.ADMIN_PASSWORD;
+    let generated = false;
+    if (!rawPassword) {
+      rawPassword = require("crypto").randomBytes(24).toString("base64url");
+      generated = true;
+    }
 
     const hashedPassword = await bcrypt.hash(rawPassword, 10);
 
@@ -39,7 +49,13 @@ async function main() {
       { upsert: true }
     );
 
-    console.log("✅ Admin user successfully added/updated in database:", res);
+    console.log(
+      `✅ Admin user successfully added/updated (${email}). ` +
+        `matched=${res.matchedCount} upserted=${res.upsertedCount}`
+    );
+    if (generated) {
+      console.log("🔑 Generated admin password (shown once, store it now):", rawPassword);
+    }
   } catch (err) {
     console.error("❌ Failed to create admin user:", err);
   } finally {

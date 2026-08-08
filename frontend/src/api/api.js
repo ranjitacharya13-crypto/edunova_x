@@ -3,18 +3,41 @@ import axios from "axios";
 // ==========================
 // API CLIENT (dev proxy + prod)
 // ==========================
-// DEV:  baseURL defaults to "/api" and Vite proxies it to http://localhost:4000
-//       (works on desktop, mobile, ngrok, any device).
-// PROD: set VITE_API_URL in Vercel → Project Settings → Environment Variables,
-//       e.g. https://your-backend.onrender.com/api
-//       (include the /api suffix).
+// DEV:  baseURL defaults to "/api" and the Vite dev proxy forwards it to the
+//       local backend on port 4000 (see frontend/vite.config.mjs). Works on
+//       desktop, mobile, ngrok — any device.
+// PROD: VITE_API_URL is inlined at BUILD time. Set it in the Cloudflare
+//       dashboard (Workers & Pages -> edunova-x -> Settings -> Variables) to
+//       the Render API URL, including the /api suffix.
+//
+// The production frontend must NEVER call localhost/127.0.0.1: on Cloudflare
+// that resolves to the visitor's own machine, not the backend.
 
-// Normalize the base URL: all REST routes are mounted under /api on the backend.
-// Accepts either "https://edunova-api.onrender.com" or ".../api" — if the /api
-// suffix is missing it is appended, otherwise requests hit a 404 ("Cannot GET /auth/...").
+// Normalize the base URL: all REST routes are mounted under /api on the
+// backend. Accepts either "https://<api-host>" or "https://<api-host>/api" —
+// a missing /api suffix is appended, otherwise requests 404
+// ("Cannot GET /auth/login").
 let baseURL = import.meta.env.VITE_API_URL || "/api";
 if (baseURL !== "/api" && !baseURL.replace(/\/+$/, "").endsWith("/api")) {
   baseURL = baseURL.replace(/\/+$/, "") + "/api";
+}
+
+// Guard: a production bundle that points at localhost is broken by definition
+// (the browser would dial the visitor's own machine). Surface it loudly rather
+// than failing with opaque network errors in the console.
+if (import.meta.env.PROD) {
+  if (baseURL === "/api") {
+    console.error(
+      "[EduNova] VITE_API_URL was not set at build time. The app will call the " +
+        "site's own origin for /api, which has no backend. Set VITE_API_URL in " +
+        "the Cloudflare dashboard and redeploy."
+    );
+  } else if (/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])/i.test(baseURL)) {
+    console.error(
+      `[EduNova] VITE_API_URL points at ${baseURL} in a production build. ` +
+        "It must be the public HTTPS URL of the Render API."
+    );
+  }
 }
 
 const API = axios.create({
