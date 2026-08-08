@@ -36,7 +36,7 @@ With the backends live, you can deploy the web frontend.
 3. In the project settings, set the **Root Directory** to `frontend`.
 4. Open the **Environment Variables** section and add:
    - `VITE_API_URL` = `https://<your-edunova-api-url>.onrender.com/api`
-   - `VITE_SIGNAL_URL` = `https://<your-edunova-api-url>.onrender.com`
+   - `VITE_SIGNAL_URL` = `https://<your-edunova-signal-url>.onrender.com`
 5. Click **Deploy**. Vercel will build the Vite app and publish your web app globally.
 
 ---

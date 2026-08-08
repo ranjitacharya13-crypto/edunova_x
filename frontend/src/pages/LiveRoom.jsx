@@ -4,7 +4,7 @@ import { io } from "socket.io-client";
 const defaultSignalUrl = (() => {
   const configured = import.meta.env.VITE_SIGNAL_URL;
   if (configured) return configured;
-  if (typeof window === "undefined") return "http://localhost:5173";
+  if (typeof window === "undefined") return "";
   return window.location.origin;
 })();
 

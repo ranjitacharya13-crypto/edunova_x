@@ -6,11 +6,11 @@ const defaultSignalUrl = (() => {
   const configured = import.meta.env.VITE_SIGNAL_URL;
   if (configured) return configured;
 
-  if (typeof window === "undefined") return "http://localhost:5173";
+  if (typeof window === "undefined") return "";
 
   // Default: same-origin Socket.IO.
   // - DEV (Vite): rely on Vite proxy for `/socket.io` -> signaling server.
-  // - PROD: serve Socket.IO from the same host (recommended for ngrok / multi-device).
+  // - PROD: set VITE_SIGNAL_URL to the deployed signaling/API service.
   return window.location.origin;
 })();
 
