@@ -23,7 +23,7 @@ Before deploying the frontend, you need your backend APIs live so you can connec
    - `edunova-signal` (WebRTC signaling)
    - `edunova-ai` (FastAPI AI Agent)
 5. Fill in the required Environment Variables when prompted (e.g., `MONGO_URI` for your MongoDB connection).
-6. Once deployed, copy the URLs for your API and Signal services (e.g., `https://edunova-api.onrender.com`).
+6. Once deployed, copy the URLs for your API and Signal services (e.g., `https://<your-render-api>.onrender.com`).
 
 ---
 

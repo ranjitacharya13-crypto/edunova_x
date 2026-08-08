@@ -10,28 +10,30 @@
     "pages:build": "node scripts/build.js",
     "cloudflare:build": "node scripts/build.js",
     "deploy:cloudflare": "npx wrangler deploy",
+    "postinstall": "node scripts/ensure-server-deps.js --soft",
+    "build:server": "node scripts/ensure-server-deps.js",
     "start": "npm run start:server",
+    "prestart:server": "node scripts/ensure-server-deps.js",
     "start:server": "npm start --prefix server",
-    "start:dev": "concurrently -n \"frontend,server,ai\" -c \"cyan,green,magenta\" \"npm run dev --prefix frontend -- --host 0.0.0.0\" \"npm start --prefix server\" \"python -m uvicorn ai_engine.main:app --host 0.0.0.0 --port 8001\"",
+    "//dev-scripts": "LOCAL DEVELOPMENT ONLY. `concurrently` is never used in production: on Render each service (API / AI) is its own web service with its own start command.",
+    "start:dev": "concurrently -n \"frontend,server,ai\" -c \"cyan,green,magenta\" \"npm run dev --prefix frontend -- --host 0.0.0.0\" \"npm start --prefix server\" \"npm run start:ai\"",
     "start:web": "concurrently -n \"frontend,server\" -c \"cyan,green\" \"npm run dev --prefix frontend -- --host 0.0.0.0\" \"npm start --prefix server\"",
+    "start:ai": "node scripts/run-python.js -m uvicorn main:app --host 0.0.0.0 --port 8001",
     "start:ngrok": "npm run build --prefix frontend && npm start --prefix server",
-    "install-ai": "python -m pip install -r ai_engine/requirements.txt",
+    "install-ai": "node scripts/run-python.js -m pip install -r requirements.txt",
     "install-all": "npm install --prefix frontend && npm install --prefix server && npm install --prefix signaling",
-    "desktop:install": "npm install",
+    "desktop:install": "node scripts/desktop-install.js",
     "desktop:build": "npm run build && electron-builder --config electron-builder.yml",
     "desktop:win": "npm run desktop:build -- --win",
     "desktop:mac": "npm run desktop:build -- --mac",
     "desktop:linux": "npm run desktop:build -- --linux"
   },
+  "//dependencies": "Root = desktop launcher + maintenance scripts ONLY. The Express API's dependencies live in server/package.json and MUST NOT be duplicated here: root copies get hoisted into the module resolution path and silently mask a missing server install (this is what produced 'Cannot find module nodemailer' on Render).",
   "dependencies": {
     "bcryptjs": "^3.0.3",
-    "cors": "^2.8.5",
-    "dotenv": "^17.2.3",
-    "express": "^5.1.0",
-    "mongoose": "^8.19.1",
-    "socket.io": "^4.8.1",
-    "socket.io-client": "^4.8.1"
+    "mongodb": "^6.10.0"
   },
+  "//devDependencies": "Desktop-app and local-dev tooling ONLY — never needed by the Render backend. Install production deps with `npm install --omit=dev` so electron's binary download is skipped entirely.",
   "devDependencies": {
     "concurrently": "^9.2.1",
     "electron": "^28.2.0",
@@ -39,5 +41,9 @@
   },
   "description": "EduNova X desktop installer and launcher",
   "author": "EduNova X",
-  "main": "electron/main.js"
+  "main": "electron/main.js",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "//electron-note": "electron@28's postinstall (install.js) checks ONLY the ELECTRON_SKIP_BINARY_DOWNLOAD *environment variable* — npm config keys are ignored. It downloads a ~100MB binary from github.com and hard-fails `npm install` on CI/Render/Cloudflare with 'RequestError: unable to verify the first certificate'. Production installs therefore use `npm install --omit=dev`, which skips electron entirely (see render.yaml and DEPLOYMENT.md). For a full dev install behind a proxy, export ELECTRON_SKIP_BINARY_DOWNLOAD=1 first, or run `npm run desktop:install`."
 }

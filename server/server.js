@@ -35,27 +35,52 @@ const server = http.createServer(app);
 // should set CORS_ORIGIN in production.
 const corsOrigin = (process.env.CORS_ORIGIN || "")
   .split(",")
-  .map((o) => o.trim())
+  .map((o) => o.trim().replace(/\/+$/, "")) // tolerate a trailing slash in the env var
   .filter(Boolean);
 
-// Keep local development origins available, but never fall back to `*` for
-// production. Render sets CORS_ORIGIN explicitly; this fallback also makes a
-// locally started production-like process safe by default.
-const defaultOrigins = [
+// The Cloudflare Workers frontend is the production origin and must ALWAYS be
+// allowed, even if CORS_ORIGIN is misconfigured in the dashboard — otherwise a
+// typo silently takes the whole product offline with opaque browser errors.
+const PRODUCTION_ORIGIN = "https://edunova-x.ranjitacharya13.workers.dev";
+
+// Local development origins are kept separate from production ones.
+const developmentOrigins = [
   "http://localhost:5173",
   "http://127.0.0.1:5173",
-  "https://edunova-x.ranjitacharya13.workers.dev",
+  "http://localhost:4173",
+  "http://127.0.0.1:4173",
 ];
-const allowedOrigins = corsOrigin.length ? corsOrigin : defaultOrigins;
+
+const allowedOrigins = Array.from(
+  new Set([...corsOrigin, PRODUCTION_ORIGIN, ...developmentOrigins])
+);
+
+// Cloudflare Workers *.workers.dev preview deployments (e.g. a versioned
+// preview like https://<hash>-edunova-x.<account>.workers.dev) are allowed so
+// staged frontend builds can talk to the API without a redeploy of the backend.
+const isAllowedOrigin = (origin) => {
+  const normalized = String(origin).replace(/\/+$/, "");
+  if (allowedOrigins.includes(normalized)) return true;
+  return /^https:\/\/[a-z0-9-]+\.ranjitacharya13\.workers\.dev$/i.test(normalized);
+};
+
 const corsOptions = {
   origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
-    return callback(new Error("CORS origin not allowed"));
+    // `!origin` covers same-origin requests, curl/health checks, mobile
+    // (Capacitor) and the Electron desktop shell — none of which send Origin.
+    if (!origin || isAllowedOrigin(origin)) return callback(null, true);
+    return callback(new Error(`CORS origin not allowed: ${origin}`));
   },
   credentials: false,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  optionsSuccessStatus: 204,
 };
 
 app.use(cors(corsOptions));
+// Answer preflight OPTIONS for every route. Express 5 no longer accepts a bare
+// "*" string path, so use a RegExp that matches all paths.
+app.options(/.*/, cors(corsOptions));
 
 // ==========================
 // SOCKET.IO (SIGNALING)
@@ -138,8 +163,18 @@ app.use(express.json());
 // It must NOT depend on MongoDB — the process must answer 200 even while the
 // database connection is still being established, otherwise Render restarts the
 // service in a loop and marks it unhealthy.
+const MONGO_STATES = ["disconnected", "connected", "connecting", "disconnecting"];
+
 app.get("/health", (req, res) =>
-  res.status(200).json({ status: "live", service: "edunova-api" })
+  res.status(200).json({
+    status: "live",
+    service: "edunova-api",
+    uptime: Math.round(process.uptime()),
+    // Reported for observability only — the status code stays 200 so a database
+    // hiccup never causes Render to kill a process that is otherwise serving.
+    mongo: MONGO_STATES[mongoose.connection.readyState] || "unknown",
+    aiEngineConfigured: Boolean(process.env.AI_ENGINE_URL),
+  })
 );
 
 // ==========================
@@ -158,14 +193,37 @@ const contactTransporter = nodemailer.createTransport({
 // ==========================
 // DATABASE CONNECTION
 // ==========================
-if (!process.env.MONGO_URI) {
+const MONGO_URI = String(process.env.MONGO_URI || "").trim();
+
+if (!MONGO_URI) {
+  // Fail fast with an actionable message instead of crashing later inside
+  // mongoose with "uri parameter must be a string".
   console.error(
-    "❌ MONGO_URI is not set. Add it in Render → edunova-api → Environment " +
-      "(or in server/.env for local development)."
+    "❌ MONGO_URI is not set. Add it in Render → your API service → Environment " +
+      "(or in server/.env for local development).\n" +
+      "   The server will keep serving /health so the platform can report the " +
+      "misconfiguration, but all database-backed routes will fail."
+  );
+} else if (!/^mongodb(\+srv)?:\/\//i.test(MONGO_URI)) {
+  console.error(
+    "❌ MONGO_URI is set but is not a valid MongoDB connection string " +
+      "(it must start with mongodb:// or mongodb+srv://)."
   );
 }
-mongoose
-  .connect(process.env.MONGO_URI)
+
+// JWT_SECRET is required for authentication to work at all.
+if (!process.env.JWT_SECRET) {
+  console.error(
+    "❌ JWT_SECRET is not set. Login/registration will fail. " +
+      "Set it in Render → your API service → Environment."
+  );
+}
+
+const mongoConnection = MONGO_URI
+  ? mongoose.connect(MONGO_URI, { serverSelectionTimeoutMS: 15000 })
+  : Promise.reject(new Error("MONGO_URI is not configured"));
+
+mongoConnection
   .then(async () => {
     console.log("✅ MongoDB connected");
 
@@ -226,7 +284,29 @@ mongoose
       }
     }
   })
-  .catch((err) => console.error("❌ MongoDB error:", err));
+  .catch((err) => {
+    // Do NOT exit: the process must keep listening so Render's health check
+    // reports a live-but-degraded service (and shows this log) instead of an
+    // opaque "no open ports detected" restart loop.
+    console.error("❌ MongoDB connection failed:", err.message);
+    if (/Authentication failed|bad auth/i.test(err.message)) {
+      console.error("   → Check the username/password in MONGO_URI.");
+    }
+    if (/ENOTFOUND|querySrv|ETIMEDOUT|timed out/i.test(err.message)) {
+      console.error(
+        "   → Check the Atlas cluster hostname and that Network Access allows " +
+          "0.0.0.0/0 (Render egress IPs are dynamic)."
+      );
+    }
+  });
+
+// Surface post-startup connection drops instead of failing silently.
+mongoose.connection.on("error", (err) =>
+  console.error("❌ MongoDB runtime error:", err.message)
+);
+mongoose.connection.on("disconnected", () =>
+  console.warn("⚠️  MongoDB disconnected — driver will attempt to reconnect.")
+);
 
 // ==========================
 // ROUTES
@@ -330,8 +410,41 @@ if (fs.existsSync(distDir)) {
   });
 }
 
+// Render (and every other PaaS) injects the port to listen on via PORT.
+// Binding to 0.0.0.0 is REQUIRED — binding to localhost makes the port
+// unreachable from outside the container and Render reports
+// "No open ports detected".
 const PORT = process.env.PORT || 4000;
 
-server.listen(PORT, "0.0.0.0", () => {
-  console.log(`🚀 Backend server running on port ${PORT}`);
+server.on("error", (err) => {
+  if (err.code === "EADDRINUSE") {
+    console.error(`❌ Port ${PORT} is already in use.`);
+  } else {
+    console.error("❌ HTTP server error:", err);
+  }
+  process.exit(1);
 });
+
+server.listen(PORT, "0.0.0.0", () => {
+  console.log(`🚀 Backend server listening on 0.0.0.0:${PORT}`);
+});
+
+// Keep the process alive on unexpected async errors so a single bad request
+// cannot take the whole service down (and its port with it).
+process.on("unhandledRejection", (reason) =>
+  console.error("❌ Unhandled promise rejection:", reason)
+);
+process.on("uncaughtException", (err) =>
+  console.error("❌ Uncaught exception:", err)
+);
+
+// Render sends SIGTERM on deploy/scale-down — shut down cleanly.
+const shutdown = (signal) => () => {
+  console.log(`${signal} received — shutting down gracefully.`);
+  server.close(() => {
+    mongoose.connection.close(false).finally(() => process.exit(0));
+  });
+  setTimeout(() => process.exit(0), 10000).unref();
+};
+process.on("SIGTERM", shutdown("SIGTERM"));
+process.on("SIGINT", shutdown("SIGINT"));

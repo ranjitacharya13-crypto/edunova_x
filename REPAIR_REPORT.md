@@ -12,7 +12,7 @@
 | 1 | `server/server.js` | **No `/health` route.** Any health check pointed at `/health` returned Express's default `404` → Render marks the service unhealthy and restarts it in a loop. | 🔴 Critical |
 | 2 | `signaling/index.js` | **No `/health` route.** Same 404 problem for the signaling service. | 🔴 Critical |
 | 3 | `ai_engine/main.py` | `/health` existed but returned `{"status":"ok"}` — inconsistent contract vs. the other services. | 🟡 Minor |
-| 4 | `frontend/src/api/api.js` | `VITE_API_URL` (set to `https://edunova-api.onrender.com`) **did not include `/api`**, so every REST call went to `…/auth/login`, `…/timetable/today` → **`Cannot GET /auth/login`** 404s in production. | 🔴 Critical |
+| 4 | `frontend/src/api/api.js` | `VITE_API_URL` (set to `https://<your-render-api>.onrender.com`) **did not include `/api`**, so every REST call went to `…/auth/login`, `…/timetable/today` → **`Cannot GET /auth/login`** 404s in production. | 🔴 Critical |
 | 5 | Git repo | **`node_modules` (42,776 files, ~470 MB) committed to git**, including broken platform-mismatched binaries (`sharp` missing its `.node` binary, corrupt `debug`, missing rollup native). Render's `npm install` then sees deps "satisfied" and skips, shipping dead binaries → crashes. | 🔴 Critical |
 | 6 | `render.yaml` | Hardcoded `PORT: 10000` env var (should be left to Render's injection); no `healthCheckPath`; AI service `startCommand` didn't use `$PORT`. | 🟡 Moderate |
 | 7 | `server/index.js` | Stale Next.js-style file (`getServerSideProps` referencing an undefined `clientPromise`). **Not an entry point** — nothing imports it, but it must never be `require`d. Left in place; candidate for deletion. | 🟢 Note |
