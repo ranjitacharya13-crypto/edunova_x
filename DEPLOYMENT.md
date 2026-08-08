@@ -19,6 +19,10 @@ Production architecture:
               v                       v
        MongoDB Atlas          Python FastAPI AI engine
                               Render (rootDir: ai_engine)
+
+        WebRTC media is peer-to-peer between browsers:
+        STUN (NAT discovery) + TURN (relay fallback for
+        strict NAT / mobile / enterprise networks)
 ```
 
 | Component | Where it runs | Directory |
@@ -132,6 +136,9 @@ any change.
 |---|---|
 | `VITE_API_URL` | `https://<your-render-api>.onrender.com/api` — **include `/api`** |
 | `VITE_SIGNAL_URL` | `https://<your-render-api>.onrender.com` — **no `/api`** |
+| `VITE_TURN_URL` | `turn:<your-turn-host>:3478` (or `turns:…:5349`) — **required for reliable video on mobile/4G** |
+| `VITE_TURN_USERNAME` | TURN username (temporary credential if the provider supports it) |
+| `VITE_TURN_CREDENTIAL` | TURN password / credential — **secret, never commit** |
 | `NODE_VERSION` | `20` |
 
 Because the Express API hosts Socket.IO, `VITE_SIGNAL_URL` is normally the same
@@ -150,7 +157,74 @@ npx wrangler deploy
 
 ---
 
-## 4. Local development
+## 4. TURN server (production WebRTC)
+
+WebRTC connects peers directly (STUN discovers the public address). On
+symmetric NAT, carrier-grade NAT (CGNAT), mobile networks and enterprise
+firewalls the direct path fails — a **TURN relay is the required fallback**.
+The code already reads the ICE configuration from build-time variables in
+`frontend/src/Components/Views/LiveView.jsx`; this section only covers wiring a
+provider in.
+
+### Option A — Managed TURN provider (recommended)
+
+Create an account with a reputable managed provider (e.g. Metered, Twilio
+Network Traversal, Cloudflare Calls / Realtime, or similar) and obtain:
+
+- a TURN host:port (UDP + TCP, and `turns:` TLS if supported), and
+- either long-lived credentials or a **REST API for temporary credentials**.
+
+### Option B — Self-hosted coturn
+
+Run [coturn](https://github.com/coturn/coturn) on a VPS and expose
+`3478/udp+tcp` (and `5349/tcp` for TURNS). Example minimal config:
+
+```ini
+listening-port=3478
+tls-listening-port=5349
+fingerprint
+lt-cred-mech
+user=edunova:<GENERATED_PASSWORD>   # never commit; use a secret manager
+realm=edunova.local
+# Generate with: openssl rand -hex 16
+static-auth-secret=<GENERATED_SECRET>
+```
+
+If the provider supports **temporary credentials**, the recommended pattern is
+to have the backend issue short-lived TURN credentials via an endpoint, then
+pass them to the frontend. The current repo ships the simpler (and fully
+supported) path below — build-time static credentials via Cloudflare variables.
+
+### Wiring into Cloudflare (build-time, mandatory)
+
+`VITE_*` values are compiled into the bundle **at build time**, so after
+changing any of them you must do a full **install → build → deploy** cycle —
+restarting the Worker is not enough:
+
+```bash
+# Cloudflare dashboard → Workers & Pages → edunova-x → Settings → Variables
+#   VITE_TURN_URL=turn:your-provider.example:3478
+#   VITE_TURN_USERNAME=<username>
+#   VITE_TURN_CREDENTIAL=<credential>     # SECRET — never commit
+#   (advanced: VITE_ICE_SERVERS_JSON='[{"urls":"stun:..."},{"urls":["turn:...","turns:..."],"username":"...","credential":"..."}]')
+
+cd frontend
+npm ci
+npm run build          # VITE_* values are inlined here
+npx wrangler deploy
+```
+
+The app always includes Google STUN (`stun:stun.l.google.com:19302`) and adds
+the TURN server when `VITE_TURN_URL` is present. `VITE_ICE_SERVERS_JSON`, when
+set, overrides the individual TURN variables.
+
+> **Never commit** `VITE_TURN_USERNAME`, `VITE_TURN_CREDENTIAL`,
+> `TURN_PASSWORD`, `TURN_SECRET` or `TURN_API_KEY` to GitHub. Only
+> `frontend/.env.example` (empty placeholders) is committed.
+
+---
+
+## 5. Local development
 
 ```bash
 # install everything (frontend + server + signaling + root)
@@ -171,7 +245,7 @@ Create `server/.env` from [`server/.env.example`](./server/.env.example) for
 
 ---
 
-## 5. Verifying a deployment
+## 6. Verifying a deployment
 
 ```bash
 # 1. API is up and its port is open
