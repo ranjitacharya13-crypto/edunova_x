@@ -15,8 +15,8 @@ Link: [Cloudflare Workers & Pages Dashboard](https://dash.cloudflare.com/)
 3. Set your build configuration:
    - **Framework preset**: `Vite` (or `None`)
    - **Build command**: `npm run build` (or `npm run pages:build`)
-   - **Build output directory**: `dist` (or `frontend/dist`)
-   - **Root directory**: `/` (repo root) or `frontend`
+   - **Build output directory**: `dist`
+   - **Root directory**: `/` (repo root) — **required**. The repository's `wrangler.toml` / `wrangler.jsonc` (which define the Worker script `main` and the `ASSETS` binding) are only read from the repo root. If you pick any other root directory, Cloudflare won't find the Wrangler config and may auto-generate an assets-only configuration instead.
 4. Add **Environment Variables** (under *Settings* → *Environment Variables*):
    | Variable | Value | Description |
    |---|---|---|
@@ -62,6 +62,39 @@ npx wrangler pages deploy dist --project-name=edunova-x
 ## 🔄 SPA Routing Support
 
 Cloudflare automatically routes all client-side navigation (e.g. `/live/:roomId`, `/dashboard`, `/admin`) to `index.html` with HTTP 200 via `_redirects` and `wrangler.toml`'s `not_found_handling = "single-page-application"`.
+
+---
+
+## 🛠 Troubleshooting: "Cannot use assets with a binding in an assets-only Worker"
+
+```
+✘ [ERROR] Cannot use assets with a binding in an assets-only Worker.
+  Please remove the asset binding from your configuration file, or provide a Worker
+  script in your configuration file `main`).
+```
+
+**Cause:** the Wrangler configuration declares an `[assets]` binding (e.g. `binding = "ASSETS"`)
+but no `main` worker script, so Wrangler treats the deployment as an assets-only Worker.
+
+**Fix (already applied in this repo):** both `wrangler.toml` and `wrangler.jsonc` define
+`main = "./dist/_worker.js"` **together with** `binding = "ASSETS"`. The build script
+(`scripts/build.js`) also validates this at build time and fails with a clear message if the
+config ever regresses.
+
+If you still see the error after merging:
+
+1. **Deploy the latest `main`** — the error only occurs with a configuration that lacks `main`
+   (the pre-fix state). Redeploy from the dashboard, or run locally:
+   `git pull && npm run build && npx wrangler deploy`.
+2. **Root directory must be `/`** — if the Cloudflare build's root directory is anything other
+   than the repo root, the repository's `wrangler.toml`/`wrangler.jsonc` are not found and
+   Cloudflare may auto-generate an assets-only configuration.
+3. **Trigger a fresh build** — if the project previously deployed as assets-only, a new build
+   from current `main` uploads the Worker script and assets together.
+
+> Note: `frontend/public/.assetsignore` (copied to `dist/.assetsignore` by the build) excludes
+> `_worker.js` from the static asset upload, so the same file can serve as the Worker's `main`
+> script without being uploaded as a public asset.
 
 ---
 
