@@ -2,7 +2,7 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
 export default defineConfig({
-  base: './',
+  base: process.env.VITE_BASE || "/",
   plugins: [react()],
   server: {
     port: 5173,
@@ -10,7 +10,7 @@ export default defineConfig({
     host: true,
     allowedHosts: [".ngrok-free.dev"],
 
-    // 🔥 THIS IS THE FIX
+    // Proxy API and socket during local dev
     proxy: {
       "/api": {
         target: "http://127.0.0.1:4000",
@@ -26,3 +26,4 @@ export default defineConfig({
     },
   },
 });
+
