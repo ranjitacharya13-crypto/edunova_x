@@ -9,8 +9,10 @@ const defaultSignalUrl = (() => {
   if (typeof window === "undefined") return "";
 
   // Default: same-origin Socket.IO.
-  // - DEV (Vite): rely on Vite proxy for `/socket.io` -> signaling server.
-  // - PROD: set VITE_SIGNAL_URL to the deployed signaling/API service.
+  // - DEV (Vite): rely on Vite proxy for `/socket.io` -> local signaling server.
+  // - PROD: if VITE_SIGNAL_URL was not set at build time, fall back to the
+  //   deployed Render API origin, which hosts Socket.IO signaling.
+  if (import.meta.env.PROD) return "https://edunova-x.onrender.com";
   return window.location.origin;
 })();
 
