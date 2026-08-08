@@ -9,30 +9,37 @@ const rootDist = path.join(rootDir, 'dist');
 
 console.log('🚀 [EduNova X Build] Starting production build...');
 
-// Step 0: Validate Cloudflare Worker configs.
-// Prevents the "Cannot use assets with a binding in an assets-only Worker" deploy error:
-// an [assets] binding (e.g. binding = "ASSETS") requires a "main" worker script.
-function validateWranglerConfig(configFile) {
-  if (!fs.existsSync(configFile)) return true;
+// Step 0: Validate Cloudflare Workers/Assets configs.
+// Edunova_X is a static React/Vite SPA for Cloudflare Assets. Assets-only
+// deployments must NOT define an assets binding. A binding is only valid when
+// a real Worker `main` entry point exists and uses env.ASSETS.
+let deploysWithWorkerMain = false;
+function inspectWranglerConfig(configFile) {
   const raw = fs.readFileSync(configFile, 'utf8');
   const hasAssetsBinding =
-    /^\s*binding\s*=\s*["']ASSETS["']/m.test(raw) || /"binding"\s*:\s*"ASSETS"/.test(raw);
-  if (!hasAssetsBinding) return true;
+    /^\s*binding\s*=\s*["'][^"']+["']/m.test(raw) || /"binding"\s*:\s*"[^"]+"/.test(raw);
   const hasMain = /^\s*main\s*=\s*"/m.test(raw) || /"main"\s*:\s*"/.test(raw);
-  return hasMain;
+
+  if (hasAssetsBinding && !hasMain) {
+    return { ok: false, mode: 'invalid-assets-binding' };
+  }
+
+  if (hasMain) deploysWithWorkerMain = true;
+  return { ok: true, mode: hasMain ? 'worker-with-assets' : 'assets-only' };
 }
 
 ['wrangler.toml', 'wrangler.jsonc', 'wrangler.json']
   .map((file) => path.join(rootDir, file))
   .filter(fs.existsSync)
   .forEach((configFile) => {
-    if (!validateWranglerConfig(configFile)) {
-      console.error(`❌ [EduNova X Build] ${path.basename(configFile)}: [assets] defines a binding but no "main" worker script.`);
+    const result = inspectWranglerConfig(configFile);
+    if (!result.ok) {
+      console.error(`❌ [EduNova X Build] ${path.basename(configFile)}: assets defines a binding but no "main" worker script.`);
       console.error('   Cloudflare rejects this with: "Cannot use assets with a binding in an assets-only Worker."');
-      console.error(`   Fix: add main = "./dist/_worker.js" to ${path.basename(configFile)} (or remove the asset binding).`);
+      console.error(`   Fix: remove the assets binding for assets-only deployments, or add a real Worker main.`);
       process.exit(1);
     }
-    console.log(`✅ [EduNova X Build] ${path.basename(configFile)}: assets binding + main worker script OK`);
+    console.log(`✅ [EduNova X Build] ${path.basename(configFile)}: ${result.mode} config OK`);
   });
 
 // Set environment variables to prevent electron binary download during CI/web builds
@@ -63,15 +70,26 @@ if (fs.existsSync(frontendDist)) {
   fs.rmSync(rootDist, { recursive: true, force: true });
   fs.cpSync(frontendDist, rootDist, { recursive: true });
 
-  // Ensure _redirects, _headers, and _routes.json exist in root dist
+  // Ensure static deployment metadata exists in root dist. Do not ship a Worker
+  // entry point for assets-only deployments; Wrangler will serve ./dist directly.
   const publicDir = path.join(frontendDir, 'public');
-  ['manifest.json', 'edu-assistance-snn.svg', '_redirects', '_headers', '_routes.json', '_worker.js', '.assetsignore'].forEach(file => {
+  ['manifest.json', 'edu-assistance-snn.svg', '_redirects', '_headers', '_routes.json', '.assetsignore'].forEach(file => {
     const src = path.join(publicDir, file);
     const dest = path.join(rootDist, file);
     if (fs.existsSync(src) && !fs.existsSync(dest)) {
       fs.copyFileSync(src, dest);
     }
   });
+
+  if (!deploysWithWorkerMain) {
+    // These files are meaningful for Pages/Workers-with-a-script, but are not
+    // needed for Cloudflare Workers assets-only. SPA fallback is configured via
+    // assets.not_found_handling above, so avoid uploading a Pages-style redirect
+    // that Wrangler warns is an infinite loop.
+    ['_worker.js', '_redirects'].forEach((file) => {
+      fs.rmSync(path.join(rootDist, file), { force: true });
+    });
+  }
 
   console.log('✅ [EduNova X Build] Build complete! Static assets ready in ./dist and ./frontend/dist');
 } else {
