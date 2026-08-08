@@ -19,7 +19,7 @@ EduNova X is pre-configured with `wrangler.toml`, `wrangler.jsonc`, and `_redire
 4. Environment Variables:
    - `NODE_VERSION`: `20`
    - `VITE_API_URL`: `https://edunova-api.onrender.com/api`
-   - `VITE_SIGNAL_URL`: `https://edunova-api.onrender.com`
+   - `VITE_SIGNAL_URL`: `https://edunova-signal.onrender.com`
 5. Click **Save and Deploy**.
 
 ## Via Wrangler CLI
@@ -70,7 +70,7 @@ The three backend services are Docker-ready. Each folder has its own `Dockerfile
 
 | Service | Folder | Local port | Health check |
 |---|---|---|---|
-| Express API + Socket.IO | [`server/`](./server) | `4000` | `GET /api/test` |
+| Express API + Socket.IO | [`server/`](./server) | `4000` | `GET /health` |
 | WebRTC signaling (Socket.IO) | [`signaling/`](./signaling) | `5000` | `GET /health` |
 | AI engine (FastAPI) | [`ai_engine/`](./ai_engine) | `8001` | `GET /health` |
 
@@ -78,35 +78,39 @@ The three backend services are Docker-ready. Each folder has its own `Dockerfile
 
 ## Option 1 — Render (one-click Blueprint) — RECOMMENDED FULL-STACK SETUP
 
-The repo ships [`render.yaml`](./render.yaml) which creates **four** services:
+The repo ships [`render.yaml`](./render.yaml) which creates **three** backend
+services. The frontend is **not** deployed on Render — it stays on Cloudflare
+Workers (`https://edunova-x.ranjitacharya13.workers.dev`) and talks to the
+backends over HTTPS:
 
 | Service | Type | Root dir | Build | Start |
 |---|---|---|---|---|
-| `edunova-frontend` | Static Site | repo root (publish `frontend/dist`) | `npm install --prefix frontend && npm run build --prefix frontend` | — (static) |
-| `edunova-api` | Web Service | `server` | `npm install` | `node server.js` |
+| `edunova-api` | Web Service | `server` | `npm install` | `npm start` (`node server.js`) |
 | `edunova-signal` | Web Service | `signaling` | `npm install` | `node index.js` |
 | `edunova-ai` | Web Service | `ai_engine` | `pip install -r requirements.txt` | `uvicorn main:app --host 0.0.0.0 --port $PORT` |
 
 > All services bind `0.0.0.0` and read Render's injected `PORT`. No service uses
-> `npm.cmd`, `py`, `set "..."`, or localhost between services.
+> `npm.cmd`, `py`, `set "..."`, or localhost between services, and **no service
+> runs `npm run dev`** — that script is local development only.
 
 ### Blueprint steps
 
 1. **Render Dashboard → New → Blueprint** → connect GitHub → pick `edunova_x`.
-2. Render creates the four services and prompts for the `sync: false` secrets:
+2. Render creates the three services and prompts for the `sync: false` secrets:
    - `MONGO_URI` (on **edunova-api** and **edunova-ai**) — your MongoDB Atlas connection string.
    - `JWT_SECRET` (edunova-api) — long random string.
    - `EMAIL_USER` / `EMAIL_PASS` / `CONTACT_RECEIVER_EMAIL` — optional (contact form).
    - `CORS_ORIGIN` (edunova-api) — the frontend URL, e.g. `https://edunova-x.ranjitacharya13.workers.dev`.
-   - `VITE_API_URL` / `VITE_SIGNAL_URL` (edunova-frontend) — see "Wire the frontend" below.
-   - `AI_ENGINE_URL` is wired automatically from the `edunova-ai` service URL
-     (`fromService` in render.yaml); the backend adds `https://` if needed.
+   - `AI_ENGINE_URL` (edunova-api) — the deployed edunova-ai URL,
+     e.g. `https://edunova-ai.onrender.com` (the backend adds `https://` if the
+     value is scheme-less).
 3. After the first deploy, copy each service's `.onrender.com` URL from the
-   dashboard. Set `VITE_API_URL` + `VITE_SIGNAL_URL` on the static site and
-   redeploy the frontend (Vite inlines them at build time).
-4. **Manual alternative** (no blueprint): create each service individually —
-   Static Site (`frontend/dist`) and three Web Services with the root
-   directories and commands from the table above.
+   dashboard and confirm `frontend/.env` matches them:
+   - `VITE_API_URL=https://<edunova-api-url>/api`
+   - `VITE_SIGNAL_URL=https://<edunova-signal-url>`
+   (Vite inlines these at build time on Cloudflare — see "Wire the frontend" below.)
+4. **Manual alternative** (no blueprint): create each service individually with
+   the root directories and commands from the table above.
 
 ## Option 2 — Railway
 
@@ -141,17 +145,20 @@ The repo ships [`render.yaml`](./render.yaml) which creates **four** services:
 
 ## Wire the frontend to the backends
 
-After the backends are live, set these on the frontend host (Render **Static
-Site** → Environment, or Vercel → Project Settings → Environment Variables):
+The production frontend runs on **Cloudflare Workers** at
+`https://edunova-x.ranjitacharya13.workers.dev`. The API URLs are baked into the
+build from `frontend/.env` (or from `VITE_API_URL` / `VITE_SIGNAL_URL` set in
+the Cloudflare build environment, which take precedence). After the Render
+services are live, confirm these values:
 
 | Variable | Value |
 |---|---|
-| `VITE_API_URL` | `https://edunova-api.onrender.com` (the `/api` suffix is auto-appended by `frontend/src/api/api.js`) |
+| `VITE_API_URL` | `https://edunova-api.onrender.com/api` (the `/api` suffix is auto-appended by `frontend/src/api/api.js` if missing) |
 | `VITE_SIGNAL_URL` | `https://edunova-signal.onrender.com` (the WebRTC signaling service) |
 
-Then **redeploy** the frontend — Vite inlines env vars at build time. The
-frontend is a static site; it never proxies `/api` — every request goes
-directly to the backend's HTTPS URL via the configured API client.
+Then **redeploy** the frontend on Cloudflare — Vite inlines env vars at build
+time. The frontend is a static site; it never proxies `/api` — every request
+goes directly to the backend's HTTPS URL via the configured API client.
 
 ## Free-tier cold starts
 
