@@ -18,8 +18,8 @@ EduNova X is pre-configured with `wrangler.toml`, `wrangler.jsonc`, and `_redire
    - **Root directory**: `/` (repo root — required so the repository's `wrangler.toml`/`wrangler.jsonc` are used)
 4. Environment Variables:
    - `NODE_VERSION`: `20`
-   - `VITE_API_URL`: `https://your-backend.onrender.com/api`
-   - `VITE_SIGNAL_URL`: `https://your-backend.onrender.com`
+   - `VITE_API_URL`: `https://edunova-api.onrender.com/api`
+   - `VITE_SIGNAL_URL`: `https://edunova-api.onrender.com`
 5. Click **Save and Deploy**.
 
 ## Via Wrangler CLI
@@ -51,8 +51,8 @@ Just import the repo. The root [`vercel.json`](./vercel.json) builds from `front
 
 | Variable | When needed | Example |
 |---|---|---|
-| `VITE_API_URL` | When your backend API is hosted | `https://your-backend.onrender.com/api` (include `/api`) |
-| `VITE_SIGNAL_URL` | When your Socket.IO signaling server is hosted | `https://your-signaling.onrender.com` |
+| `VITE_API_URL` | When your backend API is hosted | `https://edunova-api.onrender.com/api` (include `/api`) |
+| `VITE_SIGNAL_URL` | When your Socket.IO signaling server is hosted | `https://edunova-signal.onrender.com` |
 
 Without these, `/api` calls and live-class sockets will not work in production — Vercel hosts **only the static frontend**. Deploy `server/`, `signaling/`, and `ai_engine/` separately (Railway / Render / etc.), then set the URLs above and redeploy.
 
@@ -97,7 +97,7 @@ The repo ships [`render.yaml`](./render.yaml) which creates **four** services:
    - `MONGO_URI` (on **edunova-api** and **edunova-ai**) — your MongoDB Atlas connection string.
    - `JWT_SECRET` (edunova-api) — long random string.
    - `EMAIL_USER` / `EMAIL_PASS` / `CONTACT_RECEIVER_EMAIL` — optional (contact form).
-   - `CORS_ORIGIN` (edunova-api) — the frontend URL, e.g. `https://edunova-frontend.onrender.com`.
+   - `CORS_ORIGIN` (edunova-api) — the frontend URL, e.g. `https://edunova-x.ranjitacharya13.workers.dev`.
    - `VITE_API_URL` / `VITE_SIGNAL_URL` (edunova-frontend) — see "Wire the frontend" below.
    - `AI_ENGINE_URL` is wired automatically from the `edunova-ai` service URL
      (`fromService` in render.yaml); the backend adds `https://` if needed.
@@ -123,7 +123,7 @@ The repo ships [`render.yaml`](./render.yaml) which creates **four** services:
 | `MONGO_URI` | ✅ | MongoDB Atlas connection string |
 | `JWT_SECRET` | ✅ | any long random string (Render Blueprint auto-generates it) |
 | `AI_ENGINE_URL` | ⚠️ for AI chat | URL of the deployed ai_engine (scheme-less hostnames get `https://` automatically) |
-| `CORS_ORIGIN` | ⚠️ for browser access | comma-separated frontend origin(s), e.g. `https://edunova-frontend.onrender.com` |
+| `CORS_ORIGIN` | ⚠️ for browser access | comma-separated frontend origin(s), e.g. `https://edunova-x.ranjitacharya13.workers.dev` |
 | `PORT` | auto | injected by the platform |
 | `SEED_DEMO_USERS` | optional | `"false"` disables demo teacher/student accounts |
 | `ADMIN_TEMP_PASSWORD` | optional | first-boot admin password; random if unset (printed to logs) |
