@@ -4,7 +4,19 @@ const { Server } = require('socket.io');
 const cors = require('cors');
 
 const app = express();
-app.use(cors());
+const allowedOrigins = (process.env.CORS_ORIGIN || [
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  'https://edunova-x.ranjitacharya13.workers.dev',
+].join(',')).split(',').map(origin => origin.trim()).filter(Boolean);
+const corsOptions = {
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error('CORS origin not allowed'));
+  },
+  credentials: false,
+};
+app.use(cors(corsOptions));
 
 // Health check for Render's load balancer (healthCheckPath: /health in render.yaml).
 // Returns 200 + JSON without touching Socket.IO so the LB check never interferes
@@ -25,7 +37,7 @@ app.get('/', (req, res) => {
 });
 
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: '*' } });
+const io = new Server(server, { cors: corsOptions });
 
 const CHAT_HISTORY_LIMIT = 200;
 const roomChat = new Map(); // room -> [{ id, text, user, createdAt }]

@@ -26,7 +26,11 @@ app = FastAPI(title="EduNova_X AI Engine", version="1.0.0")
 # CORS: allow the deployed frontend. Comma-separated list via CORS_ORIGIN;
 # defaults to "*" (any origin) when unset or empty.
 _cors_raw = os.getenv("CORS_ORIGIN", "").strip()
-CORS_ORIGINS = [o.strip() for o in _cors_raw.split(",") if o.strip()] or ["*"]
+CORS_ORIGINS = [o.strip() for o in _cors_raw.split(",") if o.strip()] or [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "https://edunova-x.ranjitacharya13.workers.dev",
+]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,

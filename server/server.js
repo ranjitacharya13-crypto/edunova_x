@@ -38,8 +38,20 @@ const corsOrigin = (process.env.CORS_ORIGIN || "")
   .map((o) => o.trim())
   .filter(Boolean);
 
+// Keep local development origins available, but never fall back to `*` for
+// production. Render sets CORS_ORIGIN explicitly; this fallback also makes a
+// locally started production-like process safe by default.
+const defaultOrigins = [
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+  "https://edunova-x.ranjitacharya13.workers.dev",
+];
+const allowedOrigins = corsOrigin.length ? corsOrigin : defaultOrigins;
 const corsOptions = {
-  origin: corsOrigin.length ? corsOrigin : true,
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error("CORS origin not allowed"));
+  },
   credentials: false,
 };
 
