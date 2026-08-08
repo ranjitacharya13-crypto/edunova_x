@@ -17,7 +17,18 @@ import axios from "axios";
 // backend. Accepts either "https://<api-host>" or "https://<api-host>/api" —
 // a missing /api suffix is appended, otherwise requests 404
 // ("Cannot GET /auth/login").
-let baseURL = import.meta.env.VITE_API_URL || "/api";
+//
+// PRODUCTION FALLBACK: If VITE_API_URL was not set at build time (e.g. the
+// Cloudflare build ran without dashboard env vars), fall back to the deployed
+// Render API. This keeps the committed production bundle self-sufficient and
+// never lets a Cloudflare build silently dial the visitor's own origin for
+// /api. Local development is unaffected: in dev mode it still defaults to
+// "/api", which the Vite dev proxy forwards to the local backend on port 4000.
+const DEFAULT_PROD_API_URL = "https://edunova-x.onrender.com/api";
+
+let baseURL =
+  import.meta.env.VITE_API_URL ||
+  (import.meta.env.PROD ? DEFAULT_PROD_API_URL : "/api");
 if (baseURL !== "/api" && !baseURL.replace(/\/+$/, "").endsWith("/api")) {
   baseURL = baseURL.replace(/\/+$/, "") + "/api";
 }
@@ -26,16 +37,16 @@ if (baseURL !== "/api" && !baseURL.replace(/\/+$/, "").endsWith("/api")) {
 // (the browser would dial the visitor's own machine). Surface it loudly rather
 // than failing with opaque network errors in the console.
 if (import.meta.env.PROD) {
-  if (baseURL === "/api") {
+  if (/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])/i.test(baseURL)) {
+    console.error(
+      `[EduNova] VITE_API_URL points at ${baseURL} in a production build. ` +
+        "It must be the public HTTPS URL of the Render API."
+    );
+  } else if (baseURL === "/api") {
     console.error(
       "[EduNova] VITE_API_URL was not set at build time. The app will call the " +
         "site's own origin for /api, which has no backend. Set VITE_API_URL in " +
         "the Cloudflare dashboard and redeploy."
-    );
-  } else if (/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])/i.test(baseURL)) {
-    console.error(
-      `[EduNova] VITE_API_URL points at ${baseURL} in a production build. ` +
-        "It must be the public HTTPS URL of the Render API."
     );
   }
 }
