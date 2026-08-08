@@ -1,4 +1,38 @@
-# Deploying EduNova_X to Vercel
+# Deploying EduNova_X
+
+EduNova X frontend is a **Vite + React** app that can be hosted on **Cloudflare (Workers / Pages)** or **Vercel**, connecting to backend services on **Render / Railway / VPS**.
+
+---
+
+# Option 1: Deploying to Cloudflare (Workers & Pages)
+
+EduNova X is pre-configured with `wrangler.toml`, `wrangler.jsonc`, and `_redirects` for zero-config Cloudflare builds.
+
+## Via Cloudflare Dashboard
+1. Go to **Cloudflare Dashboard** → **Workers & Pages** → **Create application** → **Connect to Git**
+2. Select `edunova_x`
+3. Build Settings:
+   - **Framework preset**: `Vite` (or `None`)
+   - **Build command**: `npm run build`
+   - **Build output directory**: `dist` (or `frontend/dist`)
+   - **Root directory**: `/`
+4. Environment Variables:
+   - `NODE_VERSION`: `20`
+   - `VITE_API_URL`: `https://your-backend.onrender.com/api`
+   - `VITE_SIGNAL_URL`: `https://your-backend.onrender.com`
+5. Click **Save and Deploy**.
+
+## Via Wrangler CLI
+```bash
+npm run build
+npx wrangler deploy
+# Or for Cloudflare Pages:
+npx wrangler pages deploy dist --project-name=edunova-x
+```
+
+---
+
+# Option 2: Deploying to Vercel
 
 The frontend is a **Vite + React** app in [`frontend/`](./frontend). This repo is ready to deploy — two `vercel.json` files are provided so it works either way you import it.
 

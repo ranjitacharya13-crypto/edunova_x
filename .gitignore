@@ -17,9 +17,13 @@ out/
 **/.env.secrets
 frontend/.env.production
 
-# Vercel
+# Vercel & Cloudflare
 .vercel/
 **/.vercel/
+.wrangler/
+**/.wrangler/
+.cloudflare/
+
 
 # Python
 __pycache__/
