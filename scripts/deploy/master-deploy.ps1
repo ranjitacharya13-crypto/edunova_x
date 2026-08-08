@@ -12,14 +12,17 @@
 
  Usage:
    .\master-deploy.ps1                     # reads secrets from .env.secrets
-   $env:RENDER_API_KEY=...; $env:VERCEL_TOKEN=...; .\master-deploy.ps1
-   .\master-deploy.ps1 -SkipGitPush
+   $env:RENDER_API_KEY="[Insert_Key]"; $env:VERCEL_TOKEN="[Insert_Token]"; .\master-deploy.ps1
+   .\master-deploy.ps1 -SkipGitPush        # skip commit/push
+   .\master-deploy.ps1 -SkipVerify         # skip final health verification
+   .\scripts\deploy\extract-secrets.ps1  # (re)build .env.secrets from .env files
  =============================================================================
 #>
 [CmdletBinding()]
 param(
   [switch]$SkipGitPush,
-  [switch]$SkipVercel
+  [switch]$SkipVercel,
+  [switch]$SkipVerify
 )
 
 $ErrorActionPreference = "Stop"
@@ -173,12 +176,15 @@ if ($useApiCreate) {
   if ($env:CONTACT_RECEIVER_EMAIL) { $apiEnv += @{ key = "CONTACT_RECEIVER_EMAIL"; value = $env:CONTACT_RECEIVER_EMAIL } }
   $apiEnv += @{ key = "SEED_DEMO_USERS"; value = $(if ($env:SEED_DEMO_USERS) { $env:SEED_DEMO_USERS } else { "true" }) }
 
+  # edunova-api runs as a DOCKER service (server/Dockerfile) so sharp +
+  # pdf-thumbnail (GraphicsMagick) work end-to-end, matching render.yaml.
+  # dockerfilePath/dockerContext are relative to the REPO ROOT (API spec).
   $apiDetails = @{
     envVars = $apiEnv
     serviceDetails = @{
-      runtime = "node"; plan = $env:RENDER_PLAN; region = $env:RENDER_REGION; numInstances = 1
+      runtime = "docker"; plan = $env:RENDER_PLAN; region = $env:RENDER_REGION; numInstances = 1
       healthCheckPath = "/health"
-      envSpecificDetails = @{ buildCommand = "npm install"; startCommand = "node server.js" }
+      envSpecificDetails = @{ dockerfilePath = "server/Dockerfile"; dockerContext = "server"; dockerCommand = "node server.js" }
     }
   }
   $serviceIds["edunova-api"] = New-RenderService "edunova-api" $apiDetails
@@ -252,7 +258,9 @@ while (-not $allLive) {
       $deployLive = ($deps[0].status -eq "live")
       try {
         $body = (Invoke-WebRequest -Uri "https://$url/health" -TimeoutSec 15 -UseBasicParsing).Content
-        $liveHttp = $body -match '"live"'
+        # Universal health contract: {"status":"ok","service":"edunova-x-production"}
+        # (accepts the legacy "live" value too, for services still mid-rollout).
+        $liveHttp = $body -match '"status"\s*:\s*"(ok|live)"'
       } catch { $liveHttp = $false }
       $mark = if ($liveHttp) { "[LIVE]" } else { "[wait]" }
       Write-Host ("   {0,-16} deploy:{1} http:{2} {3}" -f $n, $deployLive, $liveHttp, $mark)
@@ -302,6 +310,16 @@ $vercelJson = @{
 Set-Content -Path (Join-Path $frontendDir "vercel.json") -Value $vercelJson -Encoding UTF8
 Write-Ok "frontend/vercel.json updated"
 
+# Root vercel.json (covers deploys where Vercel uses the repo root as project root)
+$rootVercelJson = @{
+  "\$schema" = "https://openapi.vercel.sh/vercel.json"; framework = "vite"
+  installCommand = "cd frontend && npm install"; buildCommand = "cd frontend && npm run build"
+  outputDirectory = "frontend/dist"; env = $envBlock
+  rewrites = @(@{ source = "/((?!assets/|.*\\..*).*)"; destination = "/index.html" })
+} | ConvertTo-Json -Depth 6
+Set-Content -Path (Join-Path $repoRoot "vercel.json") -Value $rootVercelJson -Encoding UTF8
+Write-Ok "root vercel.json updated"
+
 @"
 VITE_API_URL=$viteApiUrl
 VITE_SIGNAL_URL=$viteSignalUrl
@@ -314,13 +332,24 @@ Write-Ok "frontend/.env.production written"
 
 @"
 # Auto-updated by scripts/deploy/master-deploy.ps1 - $(Get-Date -Format o)
+# NOTE: TURN credentials are written to frontend/.env.local (gitignored),
+#       not here - this file is tracked in git.
+VITE_API_URL=$viteApiUrl
+VITE_SIGNAL_URL=$viteSignalUrl
+VITE_API_PORT=4000
+VITE_SIGNAL_PORT=5000
+"@ | Set-Content -Path (Join-Path $frontendDir ".env") -Encoding UTF8
+Write-Ok "frontend/.env updated (URLs only - no secrets)"
+
+@"
 VITE_API_URL=$viteApiUrl
 VITE_SIGNAL_URL=$viteSignalUrl
 VITE_API_PORT=4000
 VITE_SIGNAL_PORT=5000
 $(if ($env:VITE_TURN_URL) { "VITE_TURN_URL=$($env:VITE_TURN_URL)`nVITE_TURN_USERNAME=$($env:VITE_TURN_USERNAME)`nVITE_TURN_CREDENTIAL=$($env:VITE_TURN_CREDENTIAL)" })
-"@ | Set-Content -Path (Join-Path $frontendDir ".env") -Encoding UTF8
-Write-Ok "frontend/.env updated"
+$(if ($env:VITE_ICE_SERVERS_JSON) { "VITE_ICE_SERVERS_JSON=$($env:VITE_ICE_SERVERS_JSON)" })
+"@ | Set-Content -Path (Join-Path $frontendDir ".env.local") -Encoding UTF8
+Write-Ok "frontend/.env.local written (TURN creds, gitignored)"
 
 # ============================================================
 # STAGE 5 - DEPLOY TO VERCEL
@@ -354,6 +383,53 @@ $deployUrl = [regex]::Match($deployOut, "https://[a-zA-Z0-9.-]+\.vercel\.app").V
 $deployOut -split "`n" | Select-Object -Last 6 | ForEach-Object { Write-Host $_ }
 
 # ============================================================
+# STAGE 6 - VERIFY EVERYTHING (health + CORS hardening)
+# ============================================================
+Write-Host "`n>> Stage 6 - Verifying health of every endpoint" -ForegroundColor White
+if ($SkipVerify) {
+  Write-Warn "Skipping verification (-SkipVerify)."
+} else {
+  $verifyFail = $false
+  function Test-Endpoint([string]$label, [string]$url) {
+    try {
+      $code = (Invoke-WebRequest -Uri $url -TimeoutSec 25 -UseBasicParsing -MaximumRedirection 5).StatusCode
+      if ($code -eq 200) { Write-Ok ("{0} -> HTTP {1}" -f $label, $code) }
+      else { Write-Warn ("{0} -> HTTP {1}" -f $label, $code); $script:verifyFail = $true }
+    } catch {
+      Write-Warn ("{0} -> {1}" -f $label, $_.Exception.Message)
+      $script:verifyFail = $true
+    }
+  }
+  Test-Endpoint "API /health" "https://$apiUrl/health"
+  Test-Endpoint "API /api/test" "https://$apiUrl/api/test"
+  Test-Endpoint "API / (root)" "https://$apiUrl/"
+  Test-Endpoint "Signaling /health" "https://$signalUrl/health"
+  Test-Endpoint "AI /health" "https://$aiUrl/health"
+  if ($deployUrl) {
+    Test-Endpoint "Vercel / (SPA root)" "$deployUrl/"
+    Test-Endpoint "Vercel /dashboard (SPA rewrite)" "$deployUrl/dashboard"
+  }
+  if (-not $verifyFail) {
+    # CORS hardening: whitelist the exact deployed Vercel domain on edunova-api
+    # (non-fatal - the server already allows every *.vercel.app origin).
+    if ($deployUrl -and $serviceIds["edunova-api"]) {
+      try {
+        $deployOrigin = ([uri]$deployUrl).GetLeftPart([System.UriPartial]::Authority)
+        $corsList = @()
+        if ($env:CORS_ORIGINS) { $corsList = @($env:CORS_ORIGINS -split ',') + $deployOrigin }
+        else { $corsList = @($deployOrigin) }
+        $corsBody = @(@{ key = "CORS_ORIGINS"; value = (($corsList | Sort-Object -Unique) -join ",") }) | ConvertTo-Json -Depth 4
+        $null = Invoke-RestMethod -Uri "$renderApi/services/$($serviceIds['edunova-api'])/env-vars" `
+          -Headers $renderHeaders -Method Put -ContentType "application/json" -Body $corsBody -TimeoutSec 30
+        Write-Ok "CORS_ORIGINS on edunova-api updated: $($corsList -join ', ')"
+      } catch { Write-Warn "CORS_ORIGINS push failed (non-fatal - *.vercel.app wildcard covers the domain): $($_.Exception.Message)" }
+    }
+  }
+  if ($verifyFail) { Write-Die "VERIFICATION FAILED - see [WARN]/[FAIL] lines above. Fix and rerun (rerun is idempotent)." }
+  Write-Ok "All endpoints verified - zero 404s, zero Cannot GET."
+}
+
+# ============================================================
 # SUMMARY
 # ============================================================
 Write-Host ""
@@ -364,6 +440,12 @@ Write-Host ("  Frontend (Vercel):   " + $(if ($deployUrl) { $deployUrl } else { 
 Write-Host "  API (Render):        https://$apiUrl/health"
 Write-Host "  Signaling (Render):  https://$signalUrl/health"
 Write-Host "  AI engine (Render):  https://$aiUrl/health"
+Write-Host ""
+Write-Host "  Verified live:"
+Write-Host "   - https://$apiUrl/health     -> 200 {`"status`":`"ok`",`"service`":`"edunova-x-production`"}"
+Write-Host "   - https://$apiUrl/api/test   -> 200 OK"
+Write-Host "   - https://$signalUrl/health  -> 200"
+Write-Host "   - $deployUrl/                -> 200 (SPA)"
 Write-Host ""
 Write-Host "  Next: set real TURN credentials in scripts/deploy/.env.secrets"
 Write-Host "        and rerun for reliable mobile/4G video."

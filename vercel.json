@@ -4,6 +4,12 @@
   "installCommand": "cd frontend && npm install",
   "buildCommand": "cd frontend && npm run build",
   "outputDirectory": "frontend/dist",
+  "env": {
+    "VITE_API_URL": "https://edunova-api.onrender.com/api",
+    "VITE_SIGNAL_URL": "https://edunova-signal.onrender.com",
+    "VITE_API_PORT": "4000",
+    "VITE_SIGNAL_PORT": "5000"
+  },
   "rewrites": [
     {
       "source": "/((?!assets/|.*\\..*).*)",

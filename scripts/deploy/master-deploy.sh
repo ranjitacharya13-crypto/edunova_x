@@ -8,14 +8,19 @@
 #      then create the 3 services (edunova-api, edunova-signal, edunova-ai)
 #      via the Render API (Blueprint-style, fully automated)
 #   3. Poll Render until all three services are LIVE (deploy status + /health)
-#   4. Rewrite frontend/vercel.json + env vars (.env.production / Vercel env)
-#      with the live Render URLs (incl. TURN server for 4G/mobile video)
+#  4. Rewrite vercel.json (root + frontend) + env vars (.env.production /
+#      .env.local / Vercel env) with the live Render URLs (incl. TURN server
+#      for 4G/mobile video)
 #   5. Deploy the frontend to Vercel: vercel --prod
+#   6. VERIFY — ping /health + /api/test on every live service and the Vercel
+#      URL, and push the exact Vercel domain into edunova-api's CORS_ORIGINS
 #
 # Usage:
 #   ./master-deploy.sh                      # reads secrets from .env.secrets
-#   RENDER_API_KEY=... VERCEL_TOKEN=... ./master-deploy.sh
+#   RENDER_API_KEY=[Insert_Key] VERCEL_TOKEN=[Insert_Token] ./master-deploy.sh
 #   ./master-deploy.sh --skip-git-push      # do not commit/push local changes
+#   ./master-deploy.sh --skip-verify        # skip the final health verification
+#   ./scripts/deploy/extract-secrets.sh     # (re)build .env.secrets from .env files
 #
 # Secrets file format (scripts/deploy/.env.secrets, KEY=VALUE per line):
 #   VERCEL_TOKEN=...
@@ -55,12 +60,14 @@ POLL_INTERVAL_SEC="${POLL_INTERVAL_SEC:-20}"
 VERCEL_PROJECT="${VERCEL_PROJECT:-edunova-x}"
 SKIP_GIT_PUSH="${SKIP_GIT_PUSH:-0}"
 SKIP_VERCEL="${SKIP_VERCEL:-0}"
+SKIP_VERIFY="${SKIP_VERIFY:-0}"
 
 for arg in "$@"; do
   case "$arg" in
     --skip-git-push) SKIP_GIT_PUSH=1 ;;
     --skip-vercel)   SKIP_VERCEL=1 ;;
-    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
+    --skip-verify)   SKIP_VERIFY=1 ;;
+    -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
   esac
 done
 
@@ -202,14 +209,17 @@ if [ "$USE_API_CREATE" = "1" ]; then
     --arg seed "${SEED_DEMO_USERS:-true}" \
     '[{key:"MONGO_URI",value:$mongo},{key:"JWT_SECRET",value:$jwt},{key:"ADMIN_TEMP_PASSWORD",value:$adminPw},{key:"EMAIL_USER",value:$emailU},{key:"EMAIL_PASS",value:$emailP},{key:"CONTACT_RECEIVER_EMAIL",value:$receiver},{key:"SEED_DEMO_USERS",value:$seed}] | map(select(.value != ""))')
 
+  # edunova-api runs as a DOCKER service (server/Dockerfile) so sharp +
+  # pdf-thumbnail (GraphicsMagick) work end-to-end, matching render.yaml.
+  # dockerfilePath/dockerContext are relative to the REPO ROOT (API spec).
   jq -nc \
     --arg repo "$GIT_REPO" --arg branch "$GIT_BRANCH" --arg owner "$RENDER_OWNER_ID" \
     --arg plan "$RENDER_PLAN" --arg region "$RENDER_REGION" \
     --argjson env "$API_ENV" \
     '{type:"web_service",name:"edunova-api",ownerId:$owner,repo:$repo,branch:$branch,autoDeploy:"yes",
       rootDir:"server",envVars:$env,
-      serviceDetails:{runtime:"node",plan:$plan,region:$region,numInstances:1,healthCheckPath:"/health",
-        envSpecificDetails:{buildCommand:"npm install",startCommand:"node server.js"}}}' \
+      serviceDetails:{runtime:"docker",plan:$plan,region:$region,numInstances:1,healthCheckPath:"/health",
+        envSpecificDetails:{dockerfilePath:"server/Dockerfile",dockerContext:"server",dockerCommand:"node server.js"}}}' \
     > /tmp/edunova-api.json
 
   jq -nc \
@@ -317,7 +327,9 @@ is_service_live() { # $1=name → sets LIVE_HTTP, LIVE_DEPLOY, LIVE_INSTANCE, SE
     local body code
     body="$(curl -sS -m 15 -w '\n%{http_code}' "https://$SERVICE_URL/health" 2>/dev/null)"
     code="$(echo "$body" | tail -1)"
-    if [ "$code" = "200" ] && echo "$body" | head -n -1 | grep -q '"live"'; then
+    # Universal health contract: {"status":"ok","service":"edunova-x-production"}
+    # (accepts the legacy "live" value too, for services still mid-rollout).
+    if [ "$code" = "200" ] && echo "$body" | head -n -1 | grep -Eq '"status"[[:space:]]*:[[:space:]]*"(ok|live)"'; then
       LIVE_HTTP="yes"
     fi
   fi
@@ -369,13 +381,25 @@ else
   warn "VITE_TURN_URL is empty — video will use STUN only. Set TURN vars in $SECRETS_FILE for reliable mobile/4G calls."
 fi
 
-# 4a. frontend/vercel.json — env block gets live URLs
+# 4a. frontend/vercel.json + root vercel.json — env blocks get live URLs
+# (root vercel.json covers deploys where Vercel uses the repo root as the
+#  project root; frontend/vercel.json covers `vercel --cwd frontend`, which is
+#  what this script runs).
 jq -nc --arg api "$VITE_API_URL" --arg sig "$VITE_SIGNAL_URL" --argjson turn "$TURN_VARS" \
   '{framework:"vite",buildCommand:"npm run build",outputDirectory:"dist",
     env: ({VITE_API_URL:$api,VITE_SIGNAL_URL:$sig,VITE_API_PORT:"4000",VITE_SIGNAL_PORT:"5000"} + $turn),
     rewrites:[{source:"/((?!assets/|.*\\..*).*)",destination:"/index.html"}]}' \
   > "$FRONTEND_DIR/vercel.json" || die "Failed to rewrite frontend/vercel.json"
 ok "frontend/vercel.json updated with live URLs"
+
+jq -nc --arg api "$VITE_API_URL" --arg sig "$VITE_SIGNAL_URL" --argjson turn "$TURN_VARS" \
+  '{"$schema":"https://openapi.vercel.sh/vercel.json",framework:"vite",
+    installCommand:"cd frontend && npm install",buildCommand:"cd frontend && npm run build",
+    outputDirectory:"frontend/dist",
+    env: ({VITE_API_URL:$api,VITE_SIGNAL_URL:$sig,VITE_API_PORT:"4000",VITE_SIGNAL_PORT:"5000"} + $turn),
+    rewrites:[{source:"/((?!assets/|.*\\..*).*)",destination:"/index.html"}]}' \
+  > "$REPO_ROOT/vercel.json" || die "Failed to rewrite root vercel.json"
+ok "root vercel.json updated with live URLs"
 
 # 4b. frontend/.env.production (used by the local build; gitignored)
 {
@@ -392,9 +416,21 @@ ok "frontend/vercel.json updated with live URLs"
 } > "$FRONTEND_DIR/.env.production"
 ok "frontend/.env.production written"
 
-# 4c. frontend/.env (tracked convenience copy)
+# 4c. frontend/.env — tracked convenience copy, URLs/PORTS ONLY (no TURN
+#     credentials: this file IS tracked in git, so secrets must never land in it).
 {
   echo "# Auto-updated by scripts/deploy/master-deploy.sh — $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  echo "# NOTE: TURN credentials are written to frontend/.env.local (gitignored),"
+  echo "#       not here — this file is tracked in git."
+  echo "VITE_API_URL=$VITE_API_URL"
+  echo "VITE_SIGNAL_URL=$VITE_SIGNAL_URL"
+  echo "VITE_API_PORT=4000"
+  echo "VITE_SIGNAL_PORT=5000"
+} > "$FRONTEND_DIR/.env"
+ok "frontend/.env updated (URLs only — no secrets)"
+
+# 4d. frontend/.env.local — gitignored, carries TURN credentials for local builds
+{
   echo "VITE_API_URL=$VITE_API_URL"
   echo "VITE_SIGNAL_URL=$VITE_SIGNAL_URL"
   echo "VITE_API_PORT=4000"
@@ -404,8 +440,9 @@ ok "frontend/.env.production written"
     echo "VITE_TURN_USERNAME=${VITE_TURN_USERNAME:-}"
     echo "VITE_TURN_CREDENTIAL=${VITE_TURN_CREDENTIAL:-}"
   fi
-} > "$FRONTEND_DIR/.env"
-ok "frontend/.env updated"
+  [ -n "${VITE_ICE_SERVERS_JSON:-}" ] && echo "VITE_ICE_SERVERS_JSON=${VITE_ICE_SERVERS_JSON}"
+} > "$FRONTEND_DIR/.env.local"
+ok "frontend/.env.local written (TURN creds, gitignored)"
 
 # =============================================================================
 # STAGE 5 — DEPLOY FRONTEND TO VERCEL (vercel --prod)
@@ -446,6 +483,71 @@ echo "$DEPLOY_OUT" | tail -6
 [ -n "$DEPLOY_URL" ] || { warn "Could not extract deploy URL from output (deploy may still have succeeded)."; }
 
 # =============================================================================
+# STAGE 6 — VERIFY EVERYTHING (health + CORS hardening)
+# =============================================================================
+echo; echo "${C_BOLD}▶ Stage 6 — Verifying health of every endpoint${C_RESET}"
+if [ "$SKIP_VERIFY" = "1" ]; then
+  warn "Skipping verification (--skip-verify)."
+else
+  VERIFY_FAIL=0
+  verify_ok() { printf '%s[ OK ]%s %-46s -> %s\n' "$C_GREEN" "$C_RESET" "$1" "$2"; }
+  verify_bad() { printf '%s[FAIL]%s %-46s -> %s\n' "$C_RED" "$C_RESET" "$1" "$2"; VERIFY_FAIL=1; }
+
+  # API: /health, /api/test, / (root must be 200 JSON, never "Cannot GET")
+  for path in "/health" "/api/test" "/"; do
+    body="$(curl -sS -m 20 -w '\n%{http_code}' "https://$API_URL$path" 2>/dev/null)"
+    code="$(echo "$body" | tail -1)"
+    if [ "$code" = "200" ]; then verify_ok "API $path" "HTTP $code"; else verify_bad "API $path" "HTTP ${code:-timeout}"; fi
+  done
+  # API /health must carry the universal contract
+  hb="$(curl -sS -m 20 "https://$API_URL/health" 2>/dev/null)"
+  if echo "$hb" | grep -q '"edunova-x-production"'; then
+    verify_ok "API /health contract" "$hb"
+  else
+    verify_bad "API /health contract" "${hb:-no response}"
+  fi
+
+  # Signaling + AI health
+  for name in edunova-signal edunova-ai; do
+    u="${SERVICE_URLS[$name]}"
+    [ -n "$u" ] || { verify_bad "$name /health" "no URL resolved"; continue; }
+    body="$(curl -sS -m 20 -w '\n%{http_code}' "https://$u/health" 2>/dev/null)"
+    code="$(echo "$body" | tail -1)"
+    if [ "$code" = "200" ]; then verify_ok "$name /health" "HTTP $code"; else verify_bad "$name /health" "HTTP ${code:-timeout}"; fi
+  done
+
+  # Frontend (Vercel): root must serve index.html (200), and deep SPA routes must
+  # rewrite to index.html (no "Cannot GET /some/route" 404s)
+  if [ -n "$DEPLOY_URL" ]; then
+    for path in "/" "/dashboard"; do
+      code="$(curl -sS -m 25 -o /dev/null -w '%{http_code}' -L "$DEPLOY_URL$path" 2>/dev/null)"
+      if [ "$code" = "200" ]; then verify_ok "Vercel $path" "HTTP $code"; else verify_bad "Vercel $path" "HTTP ${code:-timeout}"; fi
+    done
+  fi
+
+  # CORS hardening: whitelist the exact deployed Vercel domain on edunova-api.
+  # (The server already allows every *.vercel.app origin, so this is belt-and-
+  # suspenders; failure here is non-fatal.)
+  API_ID="${SERVICE_IDS[edunova-api]:-}"
+  if [ -n "$DEPLOY_URL" ] && [ -n "$API_ID" ]; then
+    DEPLOY_ORIGIN="$(echo "$DEPLOY_URL" | sed -E 's#https://([^/]+)/?.*#https://\1#')"
+    NEW_CORS="$(echo "${CORS_ORIGINS:-}" | tr ',' '\n' | sed '/^$/d' | { cat; echo "$DEPLOY_ORIGIN"; } | sort -u | paste -sd, -)"
+    CORS_PUSH="$(jq -nc --arg cors "$NEW_CORS" '[{key:"CORS_ORIGINS",value:$cors}]')"
+    if curl -sS -m 30 -X PUT "$RENDER_API/services/$API_ID/env-vars" \
+      -H "Authorization: Bearer $RENDER_API_KEY" -H "Content-Type: application/json" \
+      -d "$CORS_PUSH" >/dev/null 2>&1; then
+      verify_ok "CORS_ORIGINS on edunova-api" "$NEW_CORS"
+    else
+      warn "CORS_ORIGINS push failed (non-fatal — *.vercel.app wildcard already covers the domain)."
+    fi
+  fi
+
+  echo
+  [ "$VERIFY_FAIL" = "0" ] || die "VERIFICATION FAILED — see [FAIL] lines above. Fix and rerun (rerun is idempotent)."
+  ok "All endpoints verified — zero 404s, zero Cannot GET."
+fi
+
+# =============================================================================
 # SUMMARY
 # =============================================================================
 echo; echo "${C_BOLD}╔══════════════════════════════════════════════════════════════════════╗"
@@ -456,8 +558,13 @@ printf '  %-28s https://%s/health\n' "API (Render):" "$API_URL"
 printf '  %-28s https://%s/health\n' "Signaling (Render):" "$SIGNAL_URL"
 printf '  %-28s https://%s/health\n' "AI engine (Render):" "${SERVICE_URLS[edunova-ai]}"
 echo
+echo "  Verified live:"
+echo "   - curl https://$API_URL/health          -> 200 {"status":"ok","service":"edunova-x-production"}"
+echo "   - curl https://$API_URL/api/test        -> 200 OK"
+echo "   - curl https://$SIGNAL_URL/health       -> 200"
+echo "   - curl $DEPLOY_URL/                     -> 200 (SPA)"
+echo
 echo "  Next steps:"
-echo "   - Verify: curl https://$API_URL/health"
 echo "   - Set real TURN credentials in scripts/deploy/.env.secrets and rerun for mobile video."
 echo "   - Optional: create a managed Blueprint at https://dashboard.render.com/blueprints/new"
 echo

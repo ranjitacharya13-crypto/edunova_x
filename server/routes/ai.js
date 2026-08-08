@@ -16,7 +16,12 @@ router.post("/query", async (req, res) => {
       });
     }
 
-    const aiBaseUrl = process.env.AI_ENGINE_URL || "http://localhost:8001";
+    // Normalize AI_ENGINE_URL: Render's RENDER_EXTERNAL_HOSTNAME is a bare
+    // hostname (edunova-ai.onrender.com) — always prepend a scheme if missing.
+    let aiBaseUrl = (process.env.AI_ENGINE_URL || "http://localhost:8001").trim();
+    if (!/^https?:\/\//i.test(aiBaseUrl)) {
+      aiBaseUrl = `https://${aiBaseUrl}`;
+    }
     const payload = {
       message: cleanMessage,
       email: cleanEmail,

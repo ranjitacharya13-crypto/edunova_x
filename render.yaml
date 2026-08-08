@@ -8,43 +8,36 @@
 #
 # Every service:
 #   - reads the port from $PORT (Render injects it — nothing is hardcoded),
-#   - exposes GET /health -> 200 {"status":"live",...} (healthCheckPath below),
-#   - uses buildCommand npm install (node) / pip install (python).
-#
-# Secrets (MONGO_URI, JWT_SECRET, EMAIL_PASS, ADMIN_TEMP_PASSWORD) are marked
-# `sync: false`: you fill them once in the Render Dashboard, OR the master
-# script scripts/deploy/master-deploy.{sh,ps1} injects them automatically from
-# server/.env via the Render API after services are created.
+#   - exposes GET /health -> 200 {"status":"ok","service":"edunova-x-production"}
+#     (healthCheckPath below),
+#   - runs on Node 20+ (.nvmrc / .node-version in each service root + the
+#     NODE_VERSION env var below are belt-and-suspenders).
 #
 # NATIVE DEPENDENCIES (sharp / pdf-thumbnail):
-#   - sharp 0.32 ships prebuilt libvips binaries — works out of the box.
-#   - pdf-thumbnail shells out to GraphicsMagick (gm) which is NOT present in
-#     Render's native Node runtime. Thumbnail generation is wrapped in try/catch
-#     in server/routes/study.js & syllabus.js, so uploads still work — only PDF
-#     thumbnails are skipped. To get full PDF thumbnails, switch edunova-api to
-#     Docker (uncomment `dockerfilePath` + `dockerCommand` below; the existing
-#     server/Dockerfile installs graphicsmagick + ghostscript).
+#   edunova-api builds from server/Dockerfile (runtime: docker) because
+#   pdf-thumbnail shells out to GraphicsMagick + Ghostscript, which Render's
+#   native Node runtime does not ship. The Dockerfile installs them, and sharp
+#   installs prebuilt libvips binaries via npm — thumbnails work end-to-end.
+#   dockerfilePath/dockerContext are relative to the REPO ROOT (Render spec);
+#   server/Dockerfile itself is written against the server/ build context.
 # =============================================================================
 
 services:
   # ---------------------------------------------------------------------------
-  # 1) edunova-api — Express + Socket.IO backend
+  # 1) edunova-api — Express + Socket.IO backend (Docker: sharp + pdf-thumbnail)
   # ---------------------------------------------------------------------------
   - type: web
     name: edunova-api
-    runtime: node
+    runtime: docker
     region: oregon
     plan: free
     branch: main
     rootDir: server
-    buildCommand: npm install
-    startCommand: node server.js
+    dockerfilePath: ./server/Dockerfile
+    dockerContext: ./server
+    dockerCommand: node server.js
     healthCheckPath: /health
     autoDeploy: true
-    # Optional: full PDF-thumbnail support via the existing Dockerfile
-    # (graphicsmagick + ghostscript). Uncomment to switch from native to Docker.
-    # dockerfilePath: ./Dockerfile
-    # dockerCommand: node server.js
     envVars:
       - key: MONGO_URI
         sync: false
@@ -52,14 +45,21 @@ services:
         sync: false
       - key: ADMIN_TEMP_PASSWORD
         sync: false
-      - key: EMAIL_PASS
-        sync: false
       - key: EMAIL_USER
+        sync: false
+      - key: EMAIL_PASS
         sync: false
       - key: CONTACT_RECEIVER_EMAIL
         sync: false
       - key: SEED_DEMO_USERS
         value: "true"
+      - key: NODE_VERSION
+        value: "20"
+      # Comma-separated extra CORS origins (e.g. your custom domain). The
+      # server already whitelists every *.vercel.app deployment, localhost and
+      # ngrok — CORS_ORIGINS is only needed for additional domains.
+      - key: CORS_ORIGINS
+        sync: false
       - key: AI_ENGINE_URL
         fromService:
           name: edunova-ai
@@ -82,6 +82,9 @@ services:
     startCommand: node index.js
     healthCheckPath: /health
     autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
 
   # ---------------------------------------------------------------------------
   # 3) edunova-ai — FastAPI AI engine

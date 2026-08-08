@@ -46,7 +46,10 @@ async def root():
 
 @app.get("/health")
 async def health():
-    return {"status": "live", "service": "edunova-ai"}
+    # Universal health contract shared by every EduNova_X backend component.
+    # Render's LB polls this (healthCheckPath: /health) — must not depend on
+    # MongoDB, so the process answers 200 even while the DB is connecting.
+    return {"status": "ok", "service": "edunova-x-production"}
 
 
 # ------------------------

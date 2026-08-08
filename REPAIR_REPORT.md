@@ -124,3 +124,77 @@ Before running: **fill `VITE_TURN_URL`, `VITE_TURN_USERNAME`, `VITE_TURN_CREDENT
 3. Connect a custom domain on Render (free instances spin down after 15 min idle — a wake-up is recommended, e.g. cron ping of `/health`).
 4. Delete the stale `server/index.js` and the `* 1.js / * 2.js / * 3.js` backup duplicates from git history.
 5. Add `VITE_TURN_URL` etc. also to the Capacitor/Electron builds (`frontend/.env.production` covers Vite builds; native shells need their own env wiring).
+
+---
+
+## 6. Round 2 — Production-hardening pass (2026-08-08, `arena/019fdfba-edunova-x`)
+
+Verified-against-the-running-code follow-up that closes the remaining gaps:
+
+### Health contract unified
+All three backends now return the exact universal contract requested for
+production probes — `200 {"status":"ok","service":"edunova-x-production"}` on
+`GET /health` (`server/server.js`, `signaling/index.js`, `ai_engine/main.py`).
+`edunova-signal` also returns `200` JSON on `/` (Render's default LB probe).
+The master scripts' LIVE poll accepts `"status":"ok"` (and the legacy `"live"`
+for services mid-rollout).
+
+### "Cannot GET" eliminated
+Both Express apps now end with a JSON 404 fallback (`{success:false,error:
+"Not Found",hint:…}`) — the raw HTML `Cannot GET /…` page can no longer appear,
+on any path, in production logs.
+
+### Node 20+ pinning
+`.nvmrc` (=20) + `.node-version` (20.18.0) added to `server/`, `signaling/`,
+`frontend/` (Render resolves these per service `rootDir`; Vercel reads them
+for the frontend), `frontend/package.json` declares `engines.node >= 20`, and
+`render.yaml` sets `NODE_VERSION: "20"` on both Node services.
+
+### Native dependencies → guaranteed
+`edunova-api` switched to `runtime: docker` in `render.yaml`
+(`dockerfilePath: ./server/Dockerfile`, `dockerContext: ./server` — both
+relative to the repo root per the Blueprint spec). The Dockerfile installs
+`graphicsmagick` + `ghostscript`, so **pdf-thumbnail actually works**, and
+sharp uses prebuilt libvips. Native Node runtime remains a documented fallback.
+
+### CORS production whitelist
+`server/server.js` + `signaling/index.js` replaced `origin: true` / `origin: '*'`
+with an allowlist: every `*.vercel.app` deployment, localhost/ngrok/capacitor
+dev origins, plus `CORS_ORIGINS` env var (comma-separated). The master script
+appends the exact deployed Vercel domain to `CORS_ORIGINS` on `edunova-api`.
+Verified locally: Vercel origins echoed, `evil.example.com` blocked.
+
+### Secret extraction (new)
+`scripts/deploy/extract-secrets.{mjs,sh,ps1}` parse `server/.env` +
+`frontend/.env` and generate `scripts/deploy/.env.secrets` (gitignored) plus
+printed Render Blueprint `envVars` YAML and Vercel env JSON. Generates
+`ADMIN_TEMP_PASSWORD` if absent; never clobbers existing tokens.
+
+### Master script upgrades
+- Stage 3 poll accepts the new health contract.
+- Stage 4 rewrites **both** `vercel.json` files (root + frontend) with live
+  URLs; TURN credentials now go to gitignored `.env.local`/`.env.production`
+  (the tracked `frontend/.env` carries URLs only — no secret leakage).
+- **Stage 6 verification**: pings `/health`, `/api/test`, `/` on the API;
+  `/health` on signaling + AI; SPA root + a deep route on the Vercel URL; and
+  hardens `CORS_ORIGINS` with the exact deployed domain. Fails loudly (exit≠0)
+  on any non-200 unless `--skip-verify`.
+
+### Local smoke verification (this sandbox)
+| Check | Result |
+|---|---|
+| API `/health`, `/api/test`, `/` | ✅ 200, universal contract, "OK" |
+| API unknown path `/unknown`, `/api/bogus` | ✅ JSON 404 + hint (no "Cannot GET" HTML) |
+| API CORS: `*.vercel.app`, preview URL, `localhost:5173`, `CORS_ORIGINS` | ✅ ACAO echoed |
+| API CORS: unknown origin | ✅ no ACAO (blocked) |
+| API + signaling Socket.IO handshake (Vercel origin) | ✅ 200 |
+| Signaling `/health`, `/` | ✅ 200 |
+| AI engine `/health`, `/` | ✅ 200 |
+| `extract-secrets.mjs` → `.env.secrets` (gitignored) | ✅ parsed by master script loop |
+| jq-generated `vercel.json` (root + frontend) | ✅ valid JSON, correct rewrite regex |
+| bash syntax (`bash -n`), node syntax (`node --check`) | ✅ |
+
+> Sandbox note: `sharp`'s libvips download from GitHub is blocked here, so the
+> API server smoke test stubbed `sharp` after `npm install --ignore-scripts`
+> (sharp isn't touched by any health/test path). On a real machine / on Render
+> it installs normally — no code change is required for that.

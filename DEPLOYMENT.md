@@ -4,6 +4,118 @@ EduNova X frontend is a **Vite + React** app that can be hosted on **Cloudflare 
 
 ---
 
+# ⚡ Recommended: One-command production deploy (Vercel + Render)
+
+The repo ships a fully automated pipeline for the production topology
+**Vercel (frontend) + Render (3 backend services)**. It is idempotent —
+safe to rerun; it repairs rather than duplicates.
+
+```
+scripts/deploy/
+├── master-deploy.sh            # Bash pipeline (macOS/Linux/WSL/Git-Bash)
+├── master-deploy.ps1           # PowerShell pipeline (Windows)
+├── extract-secrets.mjs/.sh/.ps1  # auto-pull secrets from local .env files
+├── .env.secrets.example        # template (committed)
+└── .env.secrets                # YOUR secrets — gitignored, never committed
+```
+
+## 1. Prepare secrets (2 minutes)
+
+```bash
+./scripts/deploy/extract-secrets.sh      # or: powershell -File extract-secrets.ps1
+```
+
+This reads `server/.env` (MONGO_URI, JWT_SECRET, email creds) and
+`frontend/.env` (TURN vars) and writes `scripts/deploy/.env.secrets`,
+then prints the Render Blueprint `envVars` YAML + Vercel env JSON.
+Open that file and add the two tokens:
+
+```bash
+VERCEL_TOKEN=[Insert_Token]     # Vercel access token
+RENDER_API_KEY=[Insert_Key]     # Render API key (rnd_...)
+```
+
+## 2. Deploy (one command)
+
+```bash
+cd scripts/deploy
+./master-deploy.sh              # Bash
+powershell -File master-deploy.ps1   # Windows
+```
+
+The script:
+1. **Authenticates** — verifies the Render API key (`GET /v1/owners`) and the
+   Vercel token (`vercel whoami`).
+2. **Pushes the blueprint** — commits/pushes this repo, validates `render.yaml`
+   against the Blueprint spec, then creates/updates the three services
+   `edunova-api` → `./server`, `edunova-signal` → `./signaling`,
+   `edunova-ai` → `./ai_engine` (via a Blueprint instance if one exists,
+   otherwise via the Render API with the exact same config), and injects the
+   secrets (`MONGO_URI`, `JWT_SECRET`, email creds, `AI_ENGINE_URL`).
+3. **Waits for LIVE** — polls each service until deploy status is `live` **and**
+   `GET https://<url>/health` returns `200 {"status":"ok","service":"edunova-x-production"}`.
+4. **Updates the frontend env** — rewrites root + `frontend/vercel.json` and
+   writes `frontend/.env.production` / `.env.local` with the live Render URLs
+   and your TURN credentials, and pushes them to the Vercel project
+   (`vercel env add … production`).
+5. **Deploys** — `vercel --prod --yes --cwd frontend`.
+6. **Verifies** — pings `/health` + `/api/test` on every service and the SPA
+   root on Vercel, and whitelists the exact deployed domain in the API's
+   `CORS_ORIGINS`.
+
+Optional flags: `--skip-git-push`, `--skip-vercel`, `--skip-verify`.
+
+## Health contract (all three backends)
+
+```js
+app.get("/health", (req, res) =>
+  res.status(200).json({ status: "ok", service: "edunova-x-production" })
+);
+```
+
+`edunova-signal` also answers `GET /` with `200` JSON so Render's default root
+probe passes, and unknown paths return JSON 404s (never the raw HTML
+`Cannot GET …` page).
+
+## Node version
+
+- `server/.nvmrc`, `signaling/.nvmrc`, `frontend/.nvmrc` → `20`
+  (plus `.node-version` and `NODE_VERSION: "20"` in `render.yaml`).
+- `frontend/package.json` declares `engines.node >= 20`.
+
+## Native dependencies (sharp / pdf-thumbnail)
+
+- `edunova-api` builds from `server/Dockerfile` (`runtime: docker` in
+  `render.yaml`) because **pdf-thumbnail requires GraphicsMagick**, which
+  Render's native Node runtime does not ship. The Dockerfile installs
+  `graphicsmagick` + `ghostscript`; **sharp** installs prebuilt libvips
+  binaries via npm.
+- Thumbnail generation is additionally wrapped in `try/catch` in
+  `server/routes/study.js` & `syllabus.js`, so uploads never break even if a
+  native tool is missing.
+
+## CORS whitelist (production)
+
+`server/server.js` and `signaling/index.js` allow:
+- every `*.vercel.app` origin (any production/preview deployment),
+- `localhost`, `127.0.0.1:*`, ngrok tunnels (dev),
+- any origin in the `CORS_ORIGINS` env var (comma-separated; the master
+  script appends the exact deployed Vercel domain automatically).
+
+Everything else is blocked at the browser by the absence of
+`Access-Control-Allow-Origin`.
+
+## TURN (video on 4G/mobile)
+
+Set `VITE_TURN_URL`, `VITE_TURN_USERNAME`, `VITE_TURN_CREDENTIAL` in
+`scripts/deploy/.env.secrets` (or `frontend/.env`) — the master script injects
+them into the Vercel build, `frontend/vercel.json`, and `.env.local`.
+Without them the app falls back to Google STUN, which does **not** traverse
+mobile carrier NAT. `frontend/src/Components/Views/LiveView.jsx` /
+`pages/LiveRoom.jsx` already consume these vars.
+
+---
+
 # Option 1: Deploying to Cloudflare (Workers & Pages)
 
 EduNova X is pre-configured with `wrangler.toml`, `wrangler.jsonc`, and `_redirects` for zero-config Cloudflare builds.

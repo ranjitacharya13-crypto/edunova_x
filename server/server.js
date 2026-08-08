@@ -27,15 +27,50 @@ const app = express();
 const server = http.createServer(app);
 
 // ==========================
-// CORS CONFIG (IMPORTANT)
+// CORS CONFIG (PRODUCTION SAFE)
 // ==========================
-// Allows:
-// - localhost (desktop)
-// - ngrok URLs (mobile)
-// - any testing device
+// Whitelists the production Vercel domain (any *.vercel.app deployment,
+// including previews) plus localhost/ngrok for dev, and any explicit origins
+// listed in the CORS_ORIGINS env var (comma-separated, e.g. a custom domain).
+// Requests from any other origin get NO CORS headers and are blocked by the
+// browser. Non-browser clients (curl, Render LB health checks) have no Origin
+// header and are always allowed through.
+function buildCorsOriginAllowlist() {
+  const extra = String(process.env.CORS_ORIGINS || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const exact = new Set([
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "http://localhost:8080",
+    "http://localhost",
+    "capacitor://localhost",
+    "https://edunova-x.vercel.app",
+    ...extra,
+  ]);
+
+  const patterns = [
+    /^https:\/\/[a-z0-9-]+\.vercel\.app$/i, // any Vercel prod/preview deployment
+    /^https?:\/\/[a-z0-9-]+\.ngrok(-free)?\.dev$/i, // ngrok tunnels (mobile dev)
+    /^http:\/\/127\.0\.0\.1:\d+$/,
+    /^http:\/\/localhost:\d+$/,
+  ];
+
+  return function corsOrigin(origin, callback) {
+    if (!origin) return callback(null, false); // curl / LB probes / non-browser
+    if (exact.has(origin)) return callback(null, origin);
+    for (const re of patterns) {
+      if (re.test(origin)) return callback(null, origin);
+    }
+    return callback(null, false); // unknown origin -> browser blocks it
+  };
+}
+
 app.use(
   cors({
-    origin: true,
+    origin: buildCorsOriginAllowlist(),
     credentials: false,
   })
 );
@@ -46,8 +81,9 @@ app.use(
 // WebRTC media is peer-to-peer; this server is for signaling + chat only.
 const io = new Server(server, {
   cors: {
-    origin: true,
+    origin: buildCorsOriginAllowlist(),
     credentials: false,
+    methods: ["GET", "POST"],
   },
 });
 
@@ -120,12 +156,13 @@ app.use(express.json());
 // ==========================
 // HEALTH CHECK (Render LB)
 // ==========================
-// Render's load balancer polls this path (healthCheckPath: /health in render.yaml).
-// It must NOT depend on MongoDB — the process must answer 200 even while the
-// database connection is still being established, otherwise Render restarts the
-// service in a loop and marks it unhealthy.
+// Universal health contract used by every EduNova_X backend component.
+// Render's load balancer polls this path (healthCheckPath: /health in
+// render.yaml). It must NOT depend on MongoDB — the process must answer 200
+// even while the database connection is still being established, otherwise
+// Render restarts the service in a loop and marks it unhealthy.
 app.get("/health", (req, res) =>
-  res.status(200).json({ status: "live", service: "edunova-api" })
+  res.status(200).json({ status: "ok", service: "edunova-x-production" })
 );
 
 // ==========================
@@ -314,6 +351,20 @@ if (fs.existsSync(distDir)) {
 }
 
 const PORT = process.env.PORT || 4000;
+
+// ==========================
+// JSON 404 FALLBACK
+// ==========================
+// Any unknown path (e.g. a stale /api route) returns a JSON 404 instead of the
+// raw HTML "Cannot GET …" page that previously appeared in production logs.
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    error: "Not Found",
+    path: req.originalUrl,
+    hint: "Known endpoints: /health, /api/test, /api/auth, /api/timetable, /api/study, /api/syllabus, /api/assignments, /api/teacher-timetable, /api/admin, /api/ai, /api/contact",
+  });
+});
 
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Backend server running on port ${PORT}`);
