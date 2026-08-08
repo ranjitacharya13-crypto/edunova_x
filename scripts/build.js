@@ -39,7 +39,7 @@ if (fs.existsSync(frontendDist)) {
 
   // Ensure _redirects, _headers, and _routes.json exist in root dist
   const publicDir = path.join(frontendDir, 'public');
-  ['manifest.json', 'edu-assistance-snn.svg', '_redirects', '_headers', '_routes.json', '_worker.js'].forEach(file => {
+  ['manifest.json', 'edu-assistance-snn.svg', '_redirects', '_headers', '_routes.json', '_worker.js', '.assetsignore'].forEach(file => {
     const src = path.join(publicDir, file);
     const dest = path.join(rootDist, file);
     if (fs.existsSync(src) && !fs.existsSync(dest)) {
