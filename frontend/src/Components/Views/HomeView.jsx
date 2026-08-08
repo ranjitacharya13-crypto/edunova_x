@@ -2,6 +2,8 @@ import React, { useEffect, useMemo, useState } from "react";
 import {
   getTodayTimetable,
   getTodayTeacherTimetable,
+  apiUrl,
+  API,
 } from "../../api/api";
 
 function normalizeRoom(room) {
@@ -171,8 +173,10 @@ export default function HomeView({ user, setView }) {
 
       setSessionsLoading(true);
       try {
-        const res = await fetch(`/api/timetable/live-sessions/today?rooms=${encodeURIComponent(rooms.join(","))}`);
-        const data = await res.json();
+        const res = await API.get(
+          `/timetable/live-sessions/today?rooms=${encodeURIComponent(rooms.join(","))}`
+        );
+        const data = res.data;
         if (cancelled) return;
         setSessionsByRoom(data?.byRoom || {});
       } catch (e) {
@@ -359,7 +363,7 @@ export default function HomeView({ user, setView }) {
                                       onClick={() =>
                                         setRecordingModal({
                                           title: subjectLabel || "Recording",
-                                          url: session.recordingUrl,
+                                          url: apiUrl(session.recordingUrl),
                                           time: p.time || "",
                                         })
                                       }
@@ -485,7 +489,7 @@ export default function HomeView({ user, setView }) {
                                       onClick={() =>
                                         setRecordingModal({
                                           title: classLabel || "Recording",
-                                          url: session.recordingUrl,
+                                          url: apiUrl(session.recordingUrl),
                                           time: p.time || "",
                                         })
                                       }

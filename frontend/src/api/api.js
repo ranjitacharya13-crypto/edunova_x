@@ -22,6 +22,19 @@ const API = axios.create({
   withCredentials: false,
 });
 
+// Resolve a relative API path ("/study", "/assignments/x/preview") against the
+// configured base URL. Absolute URLs (https://...) pass through untouched.
+// Use this everywhere a URL is rendered (previews, recordings, downloads) —
+// plain "/api/..." strings break on static hosts (Render Static Site).
+export const apiUrl = (path) => {
+  const p = String(path || "");
+  if (/^https?:\/\//i.test(p)) return p;
+  if (!p) return baseURL;
+  return `${baseURL}${p.startsWith("/") ? p : `/${p}`}`;
+};
+
+export { API };
+
 // ==========================
 // AUTH APIs
 // ==========================

@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import { queryAIEngine } from "../api/api";
 
 const AVATAR_SRC = "/edu-assistance-snn.svg";
 const AVATAR_FALLBACK = "https://ui-avatars.com/api/?name=SNN&background=0F766E&color=fff";
@@ -36,28 +37,16 @@ export default function FloatingAIChat({ user }) {
     setLoading(true);
 
     try {
-      const response = await fetch("/api/ai/query", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          message: userMessage,
-          email: user?.email || "guest",
-        }),
+      const data = await queryAIEngine({
+        message: userMessage,
+        email: user?.email || "guest",
       });
-
-      if (!response.ok) {
-        throw new Error(`AI route failed: ${response.status}`);
-      }
-
-      const data = await response.json();
       setMessages((prev) => [
         ...prev,
         {
           id: `assistant_${Date.now()}_${Math.random().toString(16).slice(2)}`,
           role: "assistant",
-          content: data.reply || "No response",
+          content: data?.reply || "No response",
         },
       ]);
     } catch {

@@ -1,5 +1,6 @@
-﻿import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { io } from "socket.io-client";
+import { API, apiUrl } from "../../api/api";
 
 const defaultSignalUrl = (() => {
   const configured = import.meta.env.VITE_SIGNAL_URL;
@@ -581,14 +582,14 @@ export default function LiveView({ user }) {
     if (!id) return;
     setAssignmentsLoading(true);
     try {
-      const res = await fetch(`/api/assignments?room=${encodeURIComponent(id)}`);
-      const data = await res.json();
+      const res = await API.get(`/assignments?room=${encodeURIComponent(id)}`);
+      const data = res.data;
       const list = Array.isArray(data?.assignments) ? data.assignments : [];
       setAssignments(
         list.map((a) => ({
           ...a,
           fileUrl: a?._id
-            ? `/api/assignments/${a._id}/preview?name=${encodeURIComponent(a.filename || a.title || "assignment.pdf")}`
+            ? apiUrl(`/assignments/${a._id}/preview?name=${encodeURIComponent(a.filename || a.title || "assignment.pdf")}`)
             : a?.fileUrl,
           description: a?.description || (a?.filename ? `PDF: ${a.filename}` : ""),
         }))
@@ -620,19 +621,20 @@ export default function LiveView({ user }) {
 
     const token = localStorage.getItem("token");
     try {
-      const res = await fetch("/api/timetable/live-sessions/start", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: token ? `Bearer ${token}` : undefined,
-        },
-        body: JSON.stringify({
+      const res = await API.post(
+        "/timetable/live-sessions/start",
+        {
           roomId: id,
           className: id,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || "Failed to start session");
+        },
+        {
+          headers: {
+            Authorization: token ? `Bearer ${token}` : undefined,
+          },
+        }
+      );
+      const data = res.data;
+      if (!data?.session) throw new Error(data?.error || "Failed to start session");
       const sessionId = data?.session?._id || null;
       liveSessionIdRef.current = sessionId;
       return sessionId;
@@ -698,9 +700,7 @@ export default function LiveView({ user }) {
       const form = new FormData();
       form.append("sessionId", sessionId);
       try {
-        await fetch("/api/timetable/live-sessions/end", {
-          method: "POST",
-          body: form,
+        await API.post("/timetable/live-sessions/end", form, {
           headers: {
             Authorization: token ? `Bearer ${token}` : undefined,
           },
@@ -739,9 +739,7 @@ export default function LiveView({ user }) {
       const form = new FormData();
       form.append("sessionId", sessionId);
       try {
-        await fetch("/api/timetable/live-sessions/end", {
-          method: "POST",
-          body: form,
+        await API.post("/timetable/live-sessions/end", form, {
           headers: {
             Authorization: token ? `Bearer ${token}` : undefined,
           },
@@ -759,15 +757,13 @@ export default function LiveView({ user }) {
     form.append("recording", blob, `recording_${sessionId}.webm`);
 
     try {
-      const res = await fetch("/api/timetable/live-sessions/end", {
-        method: "POST",
-        body: form,
+      const res = await API.post("/timetable/live-sessions/end", form, {
         headers: {
           Authorization: token ? `Bearer ${token}` : undefined,
         },
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || "Failed to upload recording");
+      const data = res.data;
+      if (!data?.session) throw new Error(data?.error || "Failed to upload recording");
     } catch (e) {
       console.error("Recording upload failed", e);
       setRecordingState("error");
@@ -803,15 +799,13 @@ export default function LiveView({ user }) {
 
     setAssignmentUploading(true);
     try {
-      const res = await fetch("/api/assignments", {
-        method: "POST",
-        body: form,
+      const res = await API.post("/assignments", form, {
         headers: {
           Authorization: token ? `Bearer ${token}` : undefined,
         },
       });
-      const data = await res.json();
-      if (!res.ok) {
+      const data = res.data;
+      if (!data?.assignment) {
         alert(data?.error || "Upload failed");
         return;
       }
@@ -824,17 +818,13 @@ export default function LiveView({ user }) {
       try {
         const sessionId = liveSessionIdRef.current;
         const fileUrl = data?.assignment?._id
-          ? `/api/assignments/${data.assignment._id}/preview?name=${encodeURIComponent(
+          ? apiUrl(`/assignments/${data.assignment._id}/preview?name=${encodeURIComponent(
               data.assignment.filename || data.assignment.title || "assignment.pdf"
-            )}`
+            )}`)
           : "";
-        await fetch("/api/timetable/live-sessions/assignment", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: token ? `Bearer ${token}` : undefined,
-          },
-          body: JSON.stringify({
+        await API.post(
+          "/timetable/live-sessions/assignment",
+          {
             sessionId,
             roomId: id,
             assignment: {
@@ -842,8 +832,13 @@ export default function LiveView({ user }) {
               description: "PDF assignment",
               fileUrl,
             },
-          }),
-        });
+          },
+          {
+            headers: {
+              Authorization: token ? `Bearer ${token}` : undefined,
+            },
+          }
+        );
       } catch (e) {
         console.error("Failed to link assignment to session", e);
       }

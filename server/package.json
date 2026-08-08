@@ -18,7 +18,7 @@
     "nodemailer": "^8.0.1",
     "pdf-parse": "^1.1.1",
     "pdf-thumbnail": "1.0.1",
-    "sharp": "^0.32.1",
+    "sharp": "^0.33.4",
     "socket.io": "^4.8.1"
   }
 }
