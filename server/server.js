@@ -29,26 +29,28 @@ const server = http.createServer(app);
 // ==========================
 // CORS CONFIG (IMPORTANT)
 // ==========================
-// Allows:
-// - localhost (desktop)
-// - ngrok URLs (mobile)
-// - any testing device
-app.use(
-  cors({
-    origin: true,
-    credentials: false,
-  })
-);
+// Production: set CORS_ORIGIN to a comma-separated list of allowed browser
+// origins (e.g. "https://edunova-frontend.onrender.com"). When unset, any
+// origin is allowed — convenient for local dev / desktop / ngrok, but you
+// should set CORS_ORIGIN in production.
+const corsOrigin = (process.env.CORS_ORIGIN || "")
+  .split(",")
+  .map((o) => o.trim())
+  .filter(Boolean);
+
+const corsOptions = {
+  origin: corsOrigin.length ? corsOrigin : true,
+  credentials: false,
+};
+
+app.use(cors(corsOptions));
 
 // ==========================
 // SOCKET.IO (SIGNALING)
 // ==========================
 // WebRTC media is peer-to-peer; this server is for signaling + chat only.
 const io = new Server(server, {
-  cors: {
-    origin: true,
-    credentials: false,
-  },
+  cors: corsOptions,
 });
 
 const CHAT_HISTORY_LIMIT = 200;
@@ -144,11 +146,14 @@ const contactTransporter = nodemailer.createTransport({
 // ==========================
 // DATABASE CONNECTION
 // ==========================
+if (!process.env.MONGO_URI) {
+  console.error(
+    "❌ MONGO_URI is not set. Add it in Render → edunova-api → Environment " +
+      "(or in server/.env for local development)."
+  );
+}
 mongoose
-  .connect(process.env.MONGO_URI, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
-  })
+  .connect(process.env.MONGO_URI)
   .then(async () => {
     console.log("✅ MongoDB connected");
 

@@ -1,7 +1,8 @@
 # =============================================================================
 # EduNova_X — Render Blueprint (Infrastructure as Code)
 # -----------------------------------------------------------------------------
-# Defines the three backend web services:
+# Defines the frontend static site + three backend web services:
+#   0. edunova-frontend (React/Vite static site)     publishPath: frontend/dist
 #   1. edunova-api      (Express API + Socket.IO)   rootDir: ./server
 #   2. edunova-signal   (WebRTC signaling server)   rootDir: ./signaling
 #   3. edunova-ai       (FastAPI AI engine)         rootDir: ./ai_engine
@@ -27,6 +28,27 @@
 # =============================================================================
 
 services:
+  # ---------------------------------------------------------------------------
+  # 0) edunova-frontend — React/Vite static site (production build, no dev server)
+  # ---------------------------------------------------------------------------
+  - type: static
+    name: edunova-frontend
+    runtime: node
+    region: oregon
+    branch: main
+    buildCommand: npm install --prefix frontend && npm run build --prefix frontend
+    publishPath: frontend/dist
+    autoDeploy: true
+    envVars:
+      # URL of the deployed Node backend, e.g. https://edunova-api.onrender.com
+      # (the /api suffix is appended automatically by the frontend API client).
+      # Vite inlines this at build time — set it BEFORE the first deploy.
+      - key: VITE_API_URL
+        sync: false
+      # URL of the deployed signaling service, e.g. https://edunova-signal.onrender.com
+      - key: VITE_SIGNAL_URL
+        sync: false
+
   # ---------------------------------------------------------------------------
   # 1) edunova-api — Express + Socket.IO backend
   # ---------------------------------------------------------------------------
@@ -57,6 +79,10 @@ services:
       - key: EMAIL_USER
         sync: false
       - key: CONTACT_RECEIVER_EMAIL
+        sync: false
+      - key: CORS_ORIGIN
+        # Comma-separated allowed browser origins, e.g. https://edunova-frontend.onrender.com
+        # Leave empty to allow any origin (local development only).
         sync: false
       - key: SEED_DEMO_USERS
         value: "true"

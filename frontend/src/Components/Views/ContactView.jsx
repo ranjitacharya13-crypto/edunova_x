@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { API } from "../../api/api";
 
 export default function ContactView() {
   const [name, setName] = useState("");
@@ -24,18 +25,14 @@ export default function ContactView() {
 
     setLoading(true);
     try {
-      const res = await fetch("/api/contact", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: trimmedName,
-          email: trimmedEmail,
-          message: trimmedMsg,
-        }),
+      const res = await API.post("/contact", {
+        name: trimmedName,
+        email: trimmedEmail,
+        message: trimmedMsg,
       });
 
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.success) {
+      const data = res.data;
+      if (!data.success) {
         throw new Error(data.message || "Failed to send message");
       }
 

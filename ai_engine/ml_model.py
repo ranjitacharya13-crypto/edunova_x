@@ -8,9 +8,7 @@ from pymongo import MongoClient
 from sklearn.linear_model import LinearRegression
 
 
-DEFAULT_MONGO_URI = (
-    "mongodb+srv://ranjit5201314_db_user:admin12345@cluster1edunovax.8q5lafw.mongodb.net/edunova"
-)
+DEFAULT_MONGO_URI = os.getenv("MONGO_URI", "")
 
 SUPPORTED_INTENTS = {
     "TIMETABLE_QUERY",
@@ -73,6 +71,11 @@ def _today_bounds_utc():
 def get_db():
     global _MONGO_CLIENT
     mongo_uri = os.getenv("MONGO_URI") or DEFAULT_MONGO_URI
+    if not mongo_uri:
+        raise RuntimeError(
+            "MONGO_URI is not set. Set it in Render → edunova-ai → Environment "
+            "(or in server/.env for local development)."
+        )
 
     if _MONGO_CLIENT is None:
         _MONGO_CLIENT = MongoClient(mongo_uri, serverSelectionTimeoutMS=10000)

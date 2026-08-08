@@ -225,7 +225,9 @@ router.post(
 
       if (req.file?.path) {
         session.recordingPath = req.file.path;
-        session.recordingUrl = `/api/timetable/live-sessions/${session._id}/recording`;
+        // Absolute URL so the static frontend (different origin) can play it.
+        const origin = `${req.protocol}://${req.get("host")}`;
+        session.recordingUrl = `${origin}/api/timetable/live-sessions/${session._id}/recording`;
       }
 
       await session.save();

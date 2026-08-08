@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
+import { apiUrl } from "../../api/api";
 
-const API = "/api";
+const API = apiUrl("");
 
 export default function SyllabusView({ user }) {
   const [files, setFiles] = useState([]);

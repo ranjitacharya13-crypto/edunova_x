@@ -76,17 +76,37 @@ The three backend services are Docker-ready. Each folder has its own `Dockerfile
 
 > **Note:** `server/` **already embeds the exact same Socket.IO signaling** as `signaling/`. You can skip service #2 entirely and point `VITE_SIGNAL_URL` at the API server (e.g. `https://edunova-api.onrender.com`). Deploy `signaling/` separately only if you want to scale it independently.
 
-## Option 1 — Render (one-click Blueprint)
+## Option 1 — Render (one-click Blueprint) — RECOMMENDED FULL-STACK SETUP
 
-1. Vercel dashboard is separate; go to **Render Dashboard → Blueprints → New Blueprint Instance**
-2. Connect GitHub and pick `edunova_x` — Render reads [`render.yaml`](./render.yaml) and creates **edunova-api**, **edunova-signal**, and **edunova-ai**
-3. When prompted, fill in the `sync: false` variables (`JWT_SECRET` is auto-generated):
-   - `MONGO_URI` — your MongoDB Atlas connection string (same one you use locally)
-   - `AI_ENGINE_URL` — set **after** the first deploy, once you know the AI service URL (e.g. `https://edunova-ai.onrender.com`)
-   - `EMAIL_USER` / `EMAIL_PASS` / `CONTACT_RECEIVER_EMAIL` — optional, only for the contact form (Gmail + App Password)
-4. Render injects `PORT` automatically — all three services already read it.
+The repo ships [`render.yaml`](./render.yaml) which creates **four** services:
 
-**Manual alternative:** New → Web Service → pick the repo → set **Root Directory** to `server` (or `signaling` / `ai_engine`) → Runtime: Docker. Repeat per service.
+| Service | Type | Root dir | Build | Start |
+|---|---|---|---|---|
+| `edunova-frontend` | Static Site | repo root (publish `frontend/dist`) | `npm install --prefix frontend && npm run build --prefix frontend` | — (static) |
+| `edunova-api` | Web Service | `server` | `npm install` | `node server.js` |
+| `edunova-signal` | Web Service | `signaling` | `npm install` | `node index.js` |
+| `edunova-ai` | Web Service | `ai_engine` | `pip install -r requirements.txt` | `uvicorn main:app --host 0.0.0.0 --port $PORT` |
+
+> All services bind `0.0.0.0` and read Render's injected `PORT`. No service uses
+> `npm.cmd`, `py`, `set "..."`, or localhost between services.
+
+### Blueprint steps
+
+1. **Render Dashboard → New → Blueprint** → connect GitHub → pick `edunova_x`.
+2. Render creates the four services and prompts for the `sync: false` secrets:
+   - `MONGO_URI` (on **edunova-api** and **edunova-ai**) — your MongoDB Atlas connection string.
+   - `JWT_SECRET` (edunova-api) — long random string.
+   - `EMAIL_USER` / `EMAIL_PASS` / `CONTACT_RECEIVER_EMAIL` — optional (contact form).
+   - `CORS_ORIGIN` (edunova-api) — the frontend URL, e.g. `https://edunova-frontend.onrender.com`.
+   - `VITE_API_URL` / `VITE_SIGNAL_URL` (edunova-frontend) — see "Wire the frontend" below.
+   - `AI_ENGINE_URL` is wired automatically from the `edunova-ai` service URL
+     (`fromService` in render.yaml); the backend adds `https://` if needed.
+3. After the first deploy, copy each service's `.onrender.com` URL from the
+   dashboard. Set `VITE_API_URL` + `VITE_SIGNAL_URL` on the static site and
+   redeploy the frontend (Vite inlines them at build time).
+4. **Manual alternative** (no blueprint): create each service individually —
+   Static Site (`frontend/dist`) and three Web Services with the root
+   directories and commands from the table above.
 
 ## Option 2 — Railway
 
@@ -102,7 +122,8 @@ The three backend services are Docker-ready. Each folder has its own `Dockerfile
 |---|---|---|
 | `MONGO_URI` | ✅ | MongoDB Atlas connection string |
 | `JWT_SECRET` | ✅ | any long random string (Render Blueprint auto-generates it) |
-| `AI_ENGINE_URL` | ⚠️ for AI chat | URL of the deployed ai_engine, no trailing slash |
+| `AI_ENGINE_URL` | ⚠️ for AI chat | URL of the deployed ai_engine (scheme-less hostnames get `https://` automatically) |
+| `CORS_ORIGIN` | ⚠️ for browser access | comma-separated frontend origin(s), e.g. `https://edunova-frontend.onrender.com` |
 | `PORT` | auto | injected by the platform |
 | `SEED_DEMO_USERS` | optional | `"false"` disables demo teacher/student accounts |
 | `ADMIN_TEMP_PASSWORD` | optional | first-boot admin password; random if unset (printed to logs) |
@@ -120,14 +141,17 @@ The three backend services are Docker-ready. Each folder has its own `Dockerfile
 
 ## Wire the frontend to the backends
 
-After the backends are live, in **Vercel → Project Settings → Environment Variables**:
+After the backends are live, set these on the frontend host (Render **Static
+Site** → Environment, or Vercel → Project Settings → Environment Variables):
 
 | Variable | Value |
 |---|---|
-| `VITE_API_URL` | `https://<edunova-api>.onrender.com/api` — **include `/api`** |
-| `VITE_SIGNAL_URL` | `https://<edunova-api>.onrender.com` (or the signaling service URL if deployed separately) |
+| `VITE_API_URL` | `https://edunova-api.onrender.com` (the `/api` suffix is auto-appended by `frontend/src/api/api.js`) |
+| `VITE_SIGNAL_URL` | `https://edunova-signal.onrender.com` (the WebRTC signaling service) |
 
-Then ** redeploy** the Vercel frontend (Vite inlines env vars at build time).
+Then **redeploy** the frontend — Vite inlines env vars at build time. The
+frontend is a static site; it never proxies `/api` — every request goes
+directly to the backend's HTTPS URL via the configured API client.
 
 ## Free-tier cold starts
 

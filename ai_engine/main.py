@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 import os
 import traceback
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,22 +9,41 @@ from pydantic import BaseModel
 from pymongo import MongoClient
 from bson import ObjectId
 
-app = FastAPI()
+# Local-dev convenience: load MONGO_URI from ../server/.env when present.
+# In production (Render) the MONGO_URI env var is injected directly, so no
+# credentials are ever hardcoded in this repository.
+try:
+    from dotenv import load_dotenv
 
+    _server_env = Path(__file__).resolve().parents[1] / "server" / ".env"
+    if _server_env.exists():
+        load_dotenv(_server_env)
+except ImportError:
+    pass
+
+app = FastAPI(title="EduNova_X AI Engine", version="1.0.0")
+
+# CORS: allow the deployed frontend. Comma-separated list via CORS_ORIGIN;
+# defaults to "*" (any origin) when unset or empty.
+_cors_raw = os.getenv("CORS_ORIGIN", "").strip()
+CORS_ORIGINS = [o.strip() for o in _cors_raw.split(",") if o.strip()] or ["*"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-MONGO_URI = os.getenv(
-    "MONGO_URI",
-    "mongodb+srv://ranjit5201314_db_user:admin12345@cluster1edunovax.8q5lafw.mongodb.net/edunova",
-)
+MONGO_URI = os.getenv("MONGO_URI", "").strip()
+if not MONGO_URI:
+    raise RuntimeError(
+        "MONGO_URI is not set. Set it in Render → edunova-ai → Environment "
+        "(or in server/.env for local development)."
+    )
 client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=10000)
-db = client["edunova"]
+DB_NAME = os.getenv("MONGO_DB_NAME", "edunova")
+db = client[DB_NAME]
 STUDENT_TIMETABLE_ID = os.getenv("STUDENT_TIMETABLE_ID", "693c1a9a3ea4ac84aaf771cd")
 TEACHER_TIMETABLE_ID = os.getenv("TEACHER_TIMETABLE_ID", "6943f4e22fc13232ae03fe2a")
 
