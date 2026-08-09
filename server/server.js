@@ -374,31 +374,24 @@ app.post("/api/contact", async (req, res) => {
 // TEST ROUTES (VERY IMPORTANT)
 // ==========================
 
-// Health check (USE THIS TO FIND BACKEND URL)
+// Health check (USE THIS TO FIND BACKEND URL).
+// Returns JSON so it is unambiguous for load balancers, uptime monitors and
+// browsers. It must NOT depend on MongoDB or on any frontend build artifact.
 app.get("/api/test", (req, res) => {
-  console.log("✅ Backend test route hit");
-  res.send("OK");
+  res.status(200).json({ status: "OK" });
 });
 
-const fs = require("fs");
-// The React frontend is built and hosted by Cloudflare in production — Render
-// is an API-only backend and MUST NOT require frontend/dist/index.html to
-// exist. The built SPA is served by this Express process ONLY when the
-// artifact is actually present (local / ngrok convenience). We guard on the
-// FILE (index.html), not just the directory, so a missing or partial dist can
-// never produce "ENOENT .../frontend/dist/index.html" on Render.
-const distDir = path.join(__dirname, "..", "frontend", "dist");
-const distIndex = path.join(distDir, "index.html");
-const hasFrontendBuild = fs.existsSync(distIndex);
-
+// ==========================
+// ROOT ROUTE
+// ==========================
+// The React frontend is built and hosted by Cloudflare in production
+// (https://edunova-x.ranjitacharya13.workers.dev). Render is an API-only
+// backend and MUST NEVER serve frontend/dist/index.html: that file does not
+// exist on Render (frontend/dist is gitignored and Render is backend-only),
+// and every attempt to sendFile/stat it produces the repeated
+// "ENOENT .../frontend/dist/index.html" errors. `/` therefore only describes
+// the API. The SPA itself is served by Cloudflare's static assets / worker.
 app.get("/", (req, res) => {
-  if (hasFrontendBuild) {
-    return res.sendFile(distIndex, (err) => {
-      if (err && !res.headersSent) {
-        res.status(404).json({ error: "Not found" });
-      }
-    });
-  }
   res.json({
     success: true,
     service: "edunova-api",
@@ -414,19 +407,16 @@ app.get("/", (req, res) => {
   });
 });
 
-// SPA fallback — registered ONLY when the built frontend actually exists.
-// In production (Render) hasFrontendBuild is false, so non-API paths are not
-// routed into sendFile at all and no ENOENT can ever be logged.
-if (hasFrontendBuild) {
-  app.use(express.static(distDir));
-  app.get(/^\/(?!api).*/, (req, res) => {
-    res.sendFile(distIndex, (err) => {
-      if (err && !res.headersSent) {
-        res.status(404).json({ error: "Not found" });
-      }
-    });
-  });
-}
+// ==========================
+// 404 HANDLER (API-ONLY BACKEND)
+// ==========================
+// Unknown routes get a JSON 404. The backend NEVER returns the React app for
+// unknown paths — Cloudflare owns frontend routing, so there is no SPA
+// fallback here. This also means Render's health checks can never resolve a
+// request to frontend/dist/index.html.
+app.use((req, res) => {
+  res.status(404).json({ error: "Route not found" });
+});
 
 // Render (and every other PaaS) injects the port to listen on via PORT.
 // Binding to 0.0.0.0 is REQUIRED — binding to localhost makes the port
