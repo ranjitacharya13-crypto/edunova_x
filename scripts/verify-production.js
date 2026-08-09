@@ -13,8 +13,8 @@
  *
  * Overrides (env vars):
  *   PROD_FRONTEND_URL  (default https://edunova-x.ranjitacharya13.workers.dev)
- *   PROD_API_URL       (default https://edunova-x.onrender.com)
- *   PROD_AI_URL        (default: read from PROD_AI_URL; optional)
+ *   PROD_API_URL       (default https://edunova-api-y3rx.onrender.com)
+ *   PROD_AI_URL        (default https://edunova-ai-o2vy.onrender.com)
  *
  * Exit code 0 = every check passed. Non-zero = at least one check failed.
  * TURN is a browser-side ICE configuration: this script verifies the app
@@ -29,9 +29,12 @@ const path = require("path");
 const FRONTEND_URL = (
   process.env.PROD_FRONTEND_URL || "https://edunova-x.ranjitacharya13.workers.dev"
 ).replace(/\/+$/, "");
-const API_URL = (process.env.PROD_API_URL || "https://edunova-x.onrender.com").replace(/\/+$/, "");
-const AI_URL = (process.env.PROD_AI_URL || process.argv.find((a, i) => a === "--ai-url" && process.argv[i + 1]) || "")
-  .replace(/\/+$/, "");
+const API_URL = (process.env.PROD_API_URL || "https://edunova-api-y3rx.onrender.com").replace(/\/+$/, "");
+const AI_URL = (
+  process.env.PROD_AI_URL ||
+  process.argv.find((a, i) => a === "--ai-url" && process.argv[i + 1]) ||
+  "https://edunova-ai-o2vy.onrender.com"
+).replace(/\/+$/, "");
 
 const results = [];
 const record = (name, ok, detail) => results.push({ name, ok, detail });
