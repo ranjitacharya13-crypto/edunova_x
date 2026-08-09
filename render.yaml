@@ -47,7 +47,10 @@ services:
     # nodemailer) and fails loudly if the lockfile and package.json disagree.
     buildCommand: npm ci --omit=dev
     startCommand: npm start
-    healthCheckPath: /health
+    # /api/test is a pure in-process endpoint (no MongoDB, no frontend
+    # artifact). The old /health route still exists in server.js and keeps
+    # working for existing dashboards, but /api/test is the canonical one.
+    healthCheckPath: /api/test
     autoDeploy: true
     envVars:
       - key: NODE_VERSION

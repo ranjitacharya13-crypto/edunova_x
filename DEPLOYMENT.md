@@ -61,7 +61,7 @@ settings.
 | **Root Directory** | **`server`** |
 | Build Command | `npm ci --omit=dev` |
 | Start Command | `npm start` |
-| Health Check Path | `/health` |
+| Health Check Path | `/api/test` |
 
 > **If you leave Root Directory blank** (deploying from the repo root), the
 > build must still install the backend's dependencies. The root `package.json`
@@ -249,8 +249,8 @@ Create `server/.env` from [`server/.env.example`](./server/.env.example) for
 
 ```bash
 # 1. API is up and its port is open
-curl https://<your-render-api>.onrender.com/health
-# -> {"status":"live","service":"edunova-api","mongo":"connected",...}
+curl https://<your-render-api>.onrender.com/api/test
+# -> {"status":"OK"}
 
 # 2. AI engine is up
 curl https://<your-ai-service>.onrender.com/health
@@ -263,8 +263,9 @@ curl -i -X OPTIONS https://<your-render-api>.onrender.com/api/auth/login \
 # -> 204 with access-control-allow-origin matching the Cloudflare URL
 ```
 
-`"mongo":"connected"` in `/health` confirms Atlas connectivity. If it reports
-`disconnected`, check `MONGO_URI` and the Atlas Network Access rule.
+`"mongo":"connected"` in `GET /health` (a richer alias that still exists on the
+API) confirms Atlas connectivity. If it reports `disconnected`, check
+`MONGO_URI` and the Atlas Network Access rule.
 
 ---
 
