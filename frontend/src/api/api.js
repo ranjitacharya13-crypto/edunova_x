@@ -24,7 +24,7 @@ import axios from "axios";
 // never lets a Cloudflare build silently dial the visitor's own origin for
 // /api. Local development is unaffected: in dev mode it still defaults to
 // "/api", which the Vite dev proxy forwards to the local backend on port 4000.
-const DEFAULT_PROD_API_URL = "https://edunova-x.onrender.com/api";
+const DEFAULT_PROD_API_URL = "https://edunova-api-y3rx.onrender.com/api";
 
 let baseURL =
   import.meta.env.VITE_API_URL ||

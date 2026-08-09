@@ -21,8 +21,8 @@ Link: [Cloudflare Workers & Pages Dashboard](https://dash.cloudflare.com/)
    | Variable | Value | Description |
    |---|---|---|
    | `NODE_VERSION` | `20` | Ensures modern Node.js runtime in Cloudflare CI |
-   | `VITE_API_URL` | `https://<your-render-api>.onrender.com/api` | Your deployed backend REST API (include `/api`) |
-   | `VITE_SIGNAL_URL` | `https://<your-render-api>.onrender.com` | Your deployed WebRTC Socket.IO signaling URL |
+   | `VITE_API_URL` | `https://edunova-api-y3rx.onrender.com/api` | Your deployed backend REST API (include `/api`) |
+   | `VITE_SIGNAL_URL` | `https://edunova-signal.onrender.com` | Your deployed WebRTC Socket.IO signaling URL |
 5. Click **Save and Deploy**.
 
 ---

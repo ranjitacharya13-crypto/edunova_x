@@ -78,7 +78,7 @@ Set these in **Render → your API service → Environment**:
 | `MONGO_URI` | ✅ | MongoDB Atlas connection string |
 | `JWT_SECRET` | ✅ | Long random string (`openssl rand -hex 32`) |
 | `CORS_ORIGIN` | ✅ | `https://edunova-x.ranjitacharya13.workers.dev` |
-| `AI_ENGINE_URL` | for AI chat | Public HTTPS URL of the AI service, no trailing slash |
+| `AI_ENGINE_URL` | for AI chat | Public HTTPS URL of the AI service, no trailing slash (`https://edunova-ai-o2vy.onrender.com`) |
 | `EMAIL_USER` / `EMAIL_PASS` | for contact form | Gmail address + 16-char App Password |
 | `CONTACT_RECEIVER_EMAIL` | optional | Where contact messages are sent |
 | `ADMIN_TEMP_PASSWORD` | optional | Otherwise a random one is printed to logs once |
@@ -134,8 +134,8 @@ any change.
 
 | Variable | Value |
 |---|---|
-| `VITE_API_URL` | `https://<your-render-api>.onrender.com/api` — **include `/api`** |
-| `VITE_SIGNAL_URL` | `https://<your-render-api>.onrender.com` — **no `/api`** |
+| `VITE_API_URL` | `https://edunova-api-y3rx.onrender.com/api` — **include `/api`** |
+| `VITE_SIGNAL_URL` | `https://edunova-signal.onrender.com` — **no `/api`** |
 | `VITE_TURN_URL` | `turn:<your-turn-host>:3478` (or `turns:…:5349`) — **required for reliable video on mobile/4G** |
 | `VITE_TURN_USERNAME` | TURN username (temporary credential if the provider supports it) |
 | `VITE_TURN_CREDENTIAL` | TURN password / credential — **secret, never commit** |
@@ -249,15 +249,15 @@ Create `server/.env` from [`server/.env.example`](./server/.env.example) for
 
 ```bash
 # 1. API is up and its port is open
-curl https://<your-render-api>.onrender.com/api/test
+curl https://edunova-api-y3rx.onrender.com/api/test
 # -> {"status":"OK"}
 
 # 2. AI engine is up
-curl https://<your-ai-service>.onrender.com/health
+curl https://edunova-ai-o2vy.onrender.com/health
 # -> {"status":"live","service":"edunova-ai"}
 
 # 3. CORS preflight from the Cloudflare frontend succeeds
-curl -i -X OPTIONS https://<your-render-api>.onrender.com/api/auth/login \
+curl -i -X OPTIONS https://edunova-api-y3rx.onrender.com/api/auth/login \
   -H "Origin: https://edunova-x.ranjitacharya13.workers.dev" \
   -H "Access-Control-Request-Method: POST"
 # -> 204 with access-control-allow-origin matching the Cloudflare URL
