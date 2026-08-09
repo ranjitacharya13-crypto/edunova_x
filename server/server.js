@@ -381,12 +381,23 @@ app.get("/api/test", (req, res) => {
 });
 
 const fs = require("fs");
+// The React frontend is built and hosted by Cloudflare in production — Render
+// is an API-only backend and MUST NOT require frontend/dist/index.html to
+// exist. The built SPA is served by this Express process ONLY when the
+// artifact is actually present (local / ngrok convenience). We guard on the
+// FILE (index.html), not just the directory, so a missing or partial dist can
+// never produce "ENOENT .../frontend/dist/index.html" on Render.
 const distDir = path.join(__dirname, "..", "frontend", "dist");
 const distIndex = path.join(distDir, "index.html");
+const hasFrontendBuild = fs.existsSync(distIndex);
 
 app.get("/", (req, res) => {
-  if (fs.existsSync(distIndex)) {
-    return res.sendFile(distIndex);
+  if (hasFrontendBuild) {
+    return res.sendFile(distIndex, (err) => {
+      if (err && !res.headersSent) {
+        res.status(404).json({ error: "Not found" });
+      }
+    });
   }
   res.json({
     success: true,
@@ -403,10 +414,17 @@ app.get("/", (req, res) => {
   });
 });
 
-if (fs.existsSync(distDir)) {
+// SPA fallback — registered ONLY when the built frontend actually exists.
+// In production (Render) hasFrontendBuild is false, so non-API paths are not
+// routed into sendFile at all and no ENOENT can ever be logged.
+if (hasFrontendBuild) {
   app.use(express.static(distDir));
   app.get(/^\/(?!api).*/, (req, res) => {
-    res.sendFile(distIndex);
+    res.sendFile(distIndex, (err) => {
+      if (err && !res.headersSent) {
+        res.status(404).json({ error: "Not found" });
+      }
+    });
   });
 }
 
