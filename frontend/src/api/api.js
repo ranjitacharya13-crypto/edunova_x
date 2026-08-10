@@ -246,10 +246,6 @@ export const getAdminAnalytics = async () => {
 };
 
 export const queryAIEngine = async ({ message, email }) => {
-  try {
-    const res = await API.post("/ai/query", { message, email });
-    return res.data;
-  } catch (err) {
-    return { error: err.response?.data?.error || "edu_assistance query failed" };
-  }
+  const res = await API.post("/ai/query", { message, email });
+  return res.data;
 };
