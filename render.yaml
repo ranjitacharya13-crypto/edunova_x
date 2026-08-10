@@ -71,6 +71,19 @@ services:
         sync: false
       - key: ADMIN_TEMP_PASSWORD
         sync: false
+      # Optional explicit admin bootstrap metadata. Set all three admin fields
+      # together only when creating the first account; no known demo account is
+      # created in production.
+      - key: ADMIN_NAME
+        sync: false
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_USERNAME
+        sync: false
+      - key: JWT_EXPIRES_IN
+        value: 7d
+      - key: AI_ENGINE_TIMEOUT_MS
+        value: "20000"
       # ---- Public configuration --------------------------------------------
       - key: CORS_ORIGIN
         value: https://edunova-x.ranjitacharya13.workers.dev
@@ -82,8 +95,6 @@ services:
       # valid https:// origin.
       - key: AI_ENGINE_URL
         sync: false
-      - key: SEED_DEMO_USERS
-        value: "true"
 
   # ---------------------------------------------------------------------------
   # 2) edunova-ai — FastAPI AI engine (timetable assistant)

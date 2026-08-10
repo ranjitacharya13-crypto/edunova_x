@@ -81,8 +81,9 @@ Set these in **Render → your API service → Environment**:
 | `AI_ENGINE_URL` | for AI chat | Public HTTPS URL of the AI service, no trailing slash (`https://edunova-ai-o2vy.onrender.com`) |
 | `EMAIL_USER` / `EMAIL_PASS` | for contact form | Gmail address + 16-char App Password |
 | `CONTACT_RECEIVER_EMAIL` | optional | Where contact messages are sent |
-| `ADMIN_TEMP_PASSWORD` | optional | Otherwise a random one is printed to logs once |
-| `SEED_DEMO_USERS` | optional | `false` disables demo teacher/student seeding |
+| `JWT_EXPIRES_IN` | optional | JWT lifetime; defaults to `7d` |
+| `AI_ENGINE_TIMEOUT_MS` | optional | Upstream AI timeout; defaults to `20000` ms |
+| `ADMIN_NAME` / `ADMIN_EMAIL` / `ADMIN_USERNAME` / `ADMIN_TEMP_PASSWORD` | optional | Set all four only to bootstrap the first administrator; no demo account is created |
 
 `PORT` is injected by Render — **never set it manually** and never hardcode it.
 The server binds `0.0.0.0:$PORT`.

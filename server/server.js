@@ -8,7 +8,6 @@ const mongoose = require("mongoose");
 const http = require("http");
 const { Server } = require("socket.io");
 const bcrypt = require("bcryptjs");
-const crypto = require("crypto");
 const User = require("./models/User");
 const ContactMessage = require("./models/ContactMessage");
 const nodemailer = require("nodemailer");
@@ -154,7 +153,13 @@ io.on("connection", (socket) => {
 // ==========================
 // MIDDLEWARE
 // ==========================
-app.use(express.json());
+app.use(express.json({ limit: "1mb" }));
+app.use((err, req, res, next) => {
+  if (err?.type === "entity.parse.failed") {
+    return res.status(400).json({ error: "Request body must be valid JSON.", code: "INVALID_JSON" });
+  }
+  return next(err);
+});
 
 // ==========================
 // HEALTH CHECK (Render LB)
@@ -193,7 +198,10 @@ const contactTransporter = nodemailer.createTransport({
 // ==========================
 // DATABASE CONNECTION
 // ==========================
-const MONGO_URI = String(process.env.MONGO_URI || "").trim();
+// MONGO_URI is the canonical deployment variable. MONGODB_URI is accepted as
+// a compatibility alias so a dashboard naming mismatch cannot leave auth and
+// data routes disconnected without a clear health report.
+const MONGO_URI = String(process.env.MONGO_URI || process.env.MONGODB_URI || "").trim();
 
 if (!MONGO_URI) {
   // Fail fast with an actionable message instead of crashing later inside
@@ -227,61 +235,26 @@ mongoConnection
   .then(async () => {
     console.log("✅ MongoDB connected");
 
-    const adminEmail = "ranjitacharya13@gmail.com";
-    const adminName = "Super Admin";
-    const adminUsername = "super_admin";
-    const existingAdmin = await User.findOne({ email: adminEmail });
-
-    if (!existingAdmin) {
-      const tempAdminPassword =
-        process.env.ADMIN_TEMP_PASSWORD || crypto.randomBytes(24).toString("base64url");
-      const adminPasswordHash = await bcrypt.hash(tempAdminPassword, 10);
-
-      await new User({
-        name: adminName,
-        username: adminUsername,
-        email: adminEmail,
-        password: adminPasswordHash,
-        role: "admin",
-      }).save();
-
-      console.log(`Seeded admin user: ${adminEmail}`);
-      if (!process.env.ADMIN_TEMP_PASSWORD) {
-        console.log("ADMIN_TEMP_PASSWORD was not set. Generated temporary admin password:", tempAdminPassword);
+    // Bootstrap is opt-in and always takes credentials from the deployment
+    // environment. This prevents production startup from creating a known
+    // password account or printing a generated password into service logs.
+    const adminPassword = String(process.env.ADMIN_TEMP_PASSWORD || "");
+    const adminEmail = String(process.env.ADMIN_EMAIL || "").trim().toLowerCase();
+    const adminUsername = String(process.env.ADMIN_USERNAME || "").trim();
+    if (adminPassword && adminEmail && adminUsername) {
+      const existingAdmin = await User.findOne({ email: adminEmail });
+      if (!existingAdmin) {
+        await User.create({
+          name: String(process.env.ADMIN_NAME || "Administrator").trim(),
+          username: adminUsername,
+          email: adminEmail,
+          password: await bcrypt.hash(adminPassword, 12),
+          role: "admin",
+        });
+        console.log("✅ Bootstrapped the configured admin account.");
       }
-    } else if (existingAdmin.role !== "admin") {
-      existingAdmin.role = "admin";
-      await existingAdmin.save();
-      console.log(`Updated existing user role to admin: ${adminEmail}`);
-    }
-
-    // Create demo accounts if they don't exist (disable with `SEED_DEMO_USERS=false`).
-    if (String(process.env.SEED_DEMO_USERS || "").toLowerCase() !== "false") {
-      const demoUsers = [
-        {
-          name: "Demo Teacher",
-          username: "teacher_demo",
-          email: "teacher@edunova.com",
-          password: "123456",
-          role: "teacher",
-        },
-        {
-          name: "Demo Student",
-          username: "student_demo",
-          email: "student@edunova.com",
-          password: "123456",
-          role: "student",
-        },
-      ];
-
-      for (const demo of demoUsers) {
-        const existing = await User.findOne({ email: demo.email });
-        if (existing) continue;
-
-        const hashedPassword = await bcrypt.hash(demo.password, 10);
-        await new User({ ...demo, password: hashedPassword }).save();
-        console.log(`✅ Seeded demo user: ${demo.email}`);
-      }
+    } else if (process.env.ADMIN_TEMP_PASSWORD || process.env.ADMIN_EMAIL || process.env.ADMIN_USERNAME) {
+      console.warn("⚠️  Admin bootstrap skipped: ADMIN_EMAIL, ADMIN_USERNAME, and ADMIN_TEMP_PASSWORD must all be configured.");
     }
   })
   .catch((err) => {
@@ -317,6 +290,9 @@ app.use("/api/study", studyRoutes);
 app.use("/api/assignments", assignmentRoutes);
 app.use("/api/timetable", timetableRoute);
 app.use("/api/teacher-timetable", teacherTimetableRoute);
+// Legacy alias retained for existing clients that used camelCase before the
+// canonical /api/teacher-timetable endpoint was introduced.
+app.use("/api/teacherTimetable", teacherTimetableRoute);
 app.use("/api/admin", adminRoutes);
 app.use("/api/ai", aiRoutes);
 

@@ -3,7 +3,7 @@ import os
 import traceback
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from pymongo import MongoClient
@@ -39,15 +39,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-MONGO_URI = os.getenv("MONGO_URI", "").strip()
-if not MONGO_URI:
-    raise RuntimeError(
-        "MONGO_URI is not set. Set it in Render → edunova-ai → Environment "
-        "(or in server/.env for local development)."
-    )
-client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=10000)
+# Do not fail module import when Atlas is temporarily unavailable. Render must
+# be able to bind the port and answer /health while the deployment environment
+# is being fixed; actual AI requests get a controlled 503 instead of a proxy
+# 502 or a fabricated assistant response.
+MONGO_URI = os.getenv("MONGO_URI", os.getenv("MONGODB_URI", "")).strip()
 DB_NAME = os.getenv("MONGO_DB_NAME", "edunova")
-db = client[DB_NAME]
+client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=10000) if MONGO_URI else None
+db = client[DB_NAME] if client else None
+
+
+def ensure_database():
+    if client is None or db is None:
+        raise RuntimeError("AI database is not configured")
+    client.admin.command("ping")
+    return db
 STUDENT_TIMETABLE_ID = os.getenv("STUDENT_TIMETABLE_ID", "693c1a9a3ea4ac84aaf771cd")
 TEACHER_TIMETABLE_ID = os.getenv("TEACHER_TIMETABLE_ID", "6943f4e22fc13232ae03fe2a")
 
@@ -70,7 +76,9 @@ async def root():
 
 @app.get("/health")
 async def health():
-    return {"status": "live", "service": "edunova-ai"}
+    # A process-level health endpoint intentionally stays live even if MongoDB
+    # has a transient outage. Query requests perform the strict database check.
+    return {"status": "live", "service": "edunova-ai", "databaseConfigured": bool(MONGO_URI)}
 
 
 # ------------------------
@@ -98,27 +106,29 @@ def detect_intent(message: str):
 # ------------------------
 
 def get_user_role(email: str | None):
+    database = ensure_database()
     if not email:
         return "student"
-    user = db["users"].find_one({"email": email}, {"role": 1})
+    user = database["users"].find_one({"email": email}, {"role": 1})
     if not user:
         return "student"
     return str(user.get("role", "student")).lower()
 
 
 def get_timetable(email: str | None):
+    database = ensure_database()
     role = get_user_role(email)
     collection = "teacher_timetables" if role == "teacher" else "timetables"
     preferred_id = TEACHER_TIMETABLE_ID if role == "teacher" else STUDENT_TIMETABLE_ID
     timetable = None
 
     try:
-        timetable = db[collection].find_one({"_id": ObjectId(preferred_id)})
+        timetable = database[collection].find_one({"_id": ObjectId(preferred_id)})
     except Exception:
         timetable = None
 
     if not timetable:
-        timetable = db[collection].find_one()
+        timetable = database[collection].find_one()
     return timetable, collection, role
 
 
@@ -351,7 +361,7 @@ def get_next_class(classes):
 async def ai_query(request: QueryRequest):
     try:
         # Validate DB connectivity for every request to avoid silent fallback behaviour.
-        client.admin.command("ping")
+        ensure_database()
 
         intent = detect_intent(request.message)
         email = request.email
@@ -424,10 +434,11 @@ async def ai_query(request: QueryRequest):
             "reply": "I can help you with your timetable. Try asking about today or tomorrow."
         }
 
+    except HTTPException:
+        raise
     except Exception as exc:
+        # Keep the diagnostic in Render logs. Never put provider/database
+        # internals into a successful-looking browser response.
         traceback.print_exc()
-        return {
-            "success": False,
-            "reply": f"AI encountered an internal error: {exc}"
-        }
+        raise HTTPException(status_code=503, detail="EduNova AI is temporarily unavailable. Please try again shortly.") from exc
 

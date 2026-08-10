@@ -81,6 +81,29 @@ async function getJson(url, label) {
     return `HTTP ${res.status}, HTML served`;
   });
 
+  // 1b. PWA manifest and icon assets
+  await check("PWA manifest", async () => {
+    const { json } = await getJson(`${FRONTEND_URL}/manifest.json`, "manifest");
+    const icons = Array.isArray(json.icons) ? json.icons : [];
+    if (!icons.some((icon) => icon.src === "/icon-192.png" && icon.sizes === "192x192")) throw new Error("missing icon-192 manifest entry");
+    if (!icons.some((icon) => icon.src === "/icon-512.png" && icon.sizes === "512x512")) throw new Error("missing icon-512 manifest entry");
+    return "manifest has 192px and 512px PNG entries";
+  });
+  for (const [file, size] of [["icon-192.png", 192], ["icon-512.png", 512]]) {
+    await check(`PWA ${file}`, async () => {
+      const res = await Promise.race([fetch(`${FRONTEND_URL}/${file}`), timeout(20000, file)]);
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!String(res.headers.get("content-type") || "").startsWith("image/png")) throw new Error(`content-type=${res.headers.get("content-type") || "(missing)"}`);
+      const png = [137, 80, 78, 71, 13, 10, 26, 10];
+      if (!png.every((value, index) => bytes[index] === value)) throw new Error("not a PNG signature");
+      const width = (bytes[16] << 24) | (bytes[17] << 16) | (bytes[18] << 8) | bytes[19];
+      const height = (bytes[20] << 24) | (bytes[21] << 16) | (bytes[22] << 8) | bytes[23];
+      if (width !== size || height !== size) throw new Error(`dimensions=${width}x${height}`);
+      return `HTTP ${res.status}, image/png, ${width}x${height}`;
+    });
+  }
+
   // 2. Backend health
   await check("API /health", async () => {
     const { json } = await getJson(`${API_URL}/health`, "api health");
@@ -90,9 +113,9 @@ async function getJson(url, label) {
 
   // 3. Backend smoke endpoints
   await check("GET /api/test", async () => {
-    const { text } = await getJson(`${API_URL}/api/test`, "api test");
-    if (text.trim() !== "OK") throw new Error(`unexpected body: ${text.slice(0, 40)}`);
-    return text.trim();
+    const { json } = await getJson(`${API_URL}/api/test`, "api test");
+    if (json.status !== "OK") throw new Error(`unexpected body: ${JSON.stringify(json).slice(0, 80)}`);
+    return JSON.stringify(json);
   });
   await check("GET /api/syllabus", async () => {
     const { json } = await getJson(`${API_URL}/api/syllabus`, "syllabus");
@@ -108,6 +131,26 @@ async function getJson(url, label) {
     const { json } = await getJson(`${API_URL}/api/timetable/today`, "timetable");
     if (!("day" in json)) throw new Error("missing 'day' field");
     return `day=${json.day}`;
+  });
+  await check("GET /api/teacher-timetable/today", async () => {
+    const { json } = await getJson(`${API_URL}/api/teacher-timetable/today`, "teacher timetable");
+    if (!("day" in json)) throw new Error("missing 'day' field");
+    return `day=${json.day}`;
+  });
+
+  // 3b. Invalid credentials must be rejected without reporting a false success.
+  await check("POST /api/auth/login invalid credentials", async () => {
+    const res = await Promise.race([
+      fetch(`${API_URL}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: "edunova-diagnostic-invalid@example.invalid", password: "not-a-valid-login-password" }),
+      }),
+      timeout(20000, "invalid login"),
+    ]);
+    const json = await res.json().catch(() => ({}));
+    if (res.status !== 401 || json.code !== "INVALID_CREDENTIALS") throw new Error(`expected controlled 401, got HTTP ${res.status}: ${json.error || "no error"}`);
+    return "controlled 401 INVALID_CREDENTIALS";
   });
 
   // 4. CORS preflight from the production frontend origin

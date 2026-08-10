@@ -5,18 +5,20 @@ export default {
   theme: {
     extend: {
       colors: {
-        primary: "#2ec4b6",     // Teal
-        secondary: "#ff6b6b",   // Coral
-        accent: "#ffd166",
+        primary: "#0f9f94",
+        "primary-deep": "#0f766e",
+        secondary: "#f08a75",
+        accent: "#eabf52",
         surface: "#ffffff",
         muted: "#64748b",
       },
       boxShadow: {
-        soft: "0 20px 40px rgba(0,0,0,0.06)",
+        soft: "0 18px 45px rgba(15, 23, 42, 0.08)",
+        "soft-dark": "0 24px 65px rgba(2, 6, 23, 0.23)",
       },
       borderRadius: {
-        xl: "1.25rem",
-        "2xl": "1.5rem",
+        xl: "1.1rem",
+        "2xl": "1.35rem",
       },
     },
   },

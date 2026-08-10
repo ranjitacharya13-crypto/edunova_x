@@ -1,9 +1,13 @@
 const express = require("express");
 const router = express.Router();
+const mongoose = require("mongoose");
 const TeacherTimetable = require("../models/TeacherTimetable");
 
 router.get("/today", async (req, res) => {
   try {
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ error: "Teacher timetable is temporarily unavailable. Please try again shortly.", code: "DATABASE_UNAVAILABLE" });
+    }
     const days = [
       "Sunday",
       "Monday",
