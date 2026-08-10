@@ -1,8 +1,0 @@
-node_modules
-npm-debug.log
-.env
-.env.*
-# duplicated backup files in this repo ("<name> <n>.<ext>")
-* 1.*
-* 2.*
-* 3.*
