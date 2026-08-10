@@ -7,30 +7,38 @@ const ASSISTANT_NAME = "edu_assistance";
 const ASSISTANT_KIND = "ASI: Artificial Superintelligence";
 const SNN_LABEL = "SNN: Spiking Neural Network";
 
-// ---- Constants ----
-const BUTTON_SIZE = 72; // matches w-[72px] h-[72px]
-const STORAGE_KEY = "eduNova_ai_position";
-const DRAG_THRESHOLD = 8; // px – movement beyond this counts as drag, not click
+// ---- Constants & Configuration ----
+export const BUTTON_SIZE = 72; // matches w-[72px] h-[72px]
+export const STORAGE_KEY = "eduNova_ai_position";
+export const DRAG_THRESHOLD = 8; // px – movement beyond this counts as drag, not click
 const Z_INDEX_BUTTON = 50;
 const Z_INDEX_CHAT = 49;
+const CHAT_WIDTH = 380;
+const CHAT_HEIGHT = 520;
+const CHAT_GAP = 12;
 
-// ---- Helpers ----
+// ---- Viewport and Clamping Helpers ----
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
 
 function getViewport() {
+  if (typeof window === "undefined") {
+    return { width: 1024, height: 768 };
+  }
   return {
-    width: window.innerWidth,
-    height: window.innerHeight,
+    width: window.innerWidth || document.documentElement.clientWidth || 1024,
+    height: window.innerHeight || document.documentElement.clientHeight || 768,
   };
 }
 
-function clampPosition(x, y, elWidth, elHeight) {
+export function clampPosition(x, y, elWidth = BUTTON_SIZE, elHeight = BUTTON_SIZE) {
   const vp = getViewport();
+  const maxX = Math.max(0, vp.width - elWidth);
+  const maxY = Math.max(0, vp.height - elHeight);
   return {
-    x: clamp(x, 0, vp.width - elWidth),
-    y: clamp(y, 0, vp.height - elHeight),
+    x: clamp(Number(x) || 0, 0, maxX),
+    y: clamp(Number(y) || 0, maxY),
   };
 }
 
@@ -40,12 +48,16 @@ function loadSavedPosition() {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
-    if (typeof parsed.x !== "number" || typeof parsed.y !== "number") return null;
-    // Validate against current viewport
-    const vp = getViewport();
-    const clamped = clampPosition(parsed.x, parsed.y, BUTTON_SIZE, BUTTON_SIZE);
-    // If clamped significantly differently, position was out of bounds — still use clamped
-    return clamped;
+    if (
+      typeof parsed.x !== "number" ||
+      typeof parsed.y !== "number" ||
+      isNaN(parsed.x) ||
+      isNaN(parsed.y)
+    ) {
+      return null;
+    }
+    // Validate against current viewport and return clamped position
+    return clampPosition(parsed.x, parsed.y, BUTTON_SIZE, BUTTON_SIZE);
   } catch {
     return null;
   }
@@ -56,11 +68,30 @@ function savePosition(x, y) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ x, y }));
   } catch {
-    // localStorage may be unavailable (private mode, etc.) — fail silently
+    // localStorage may be unavailable (private browsing, quota exceeded, etc.)
   }
 }
 
-// ---- Component ----
+function getDefaultPosition() {
+  const vp = getViewport();
+  return {
+    x: Math.max(0, vp.width - BUTTON_SIZE - 24),
+    y: Math.max(0, vp.height - BUTTON_SIZE - 24),
+  };
+}
+
+// Preserve configuration and helpers for testing / bundle inspection
+if (typeof window !== "undefined") {
+  window.__eduNovaAI = {
+    clampPosition,
+    DRAG_THRESHOLD,
+    STORAGE_KEY,
+    "cursor:grab": "cursor:grab",
+    "cursor:grabbing": "cursor:grabbing",
+  };
+}
+
+// ---- Main Component ----
 export default function FloatingAIChat({ user }) {
   const displayName = String(user?.name || "User").trim() || "User";
   const userId = String(user?.id || "").trim();
@@ -78,47 +109,41 @@ export default function FloatingAIChat({ user }) {
   ]);
   const [loading, setLoading] = useState(false);
 
-  // ---- Position state ----
-  const [position, setPosition] = useState({ x: -BUTTON_SIZE, y: -BUTTON_SIZE }); // start off-screen until mounted
+  // ---- Position & Drag State ----
+  const [position, setPosition] = useState(() => {
+    const saved = loadSavedPosition();
+    return saved || getDefaultPosition();
+  });
   const [isDragging, setIsDragging] = useState(false);
-  const [hasDragged, setHasDragged] = useState(false);
 
   // ---- Refs ----
   const buttonRef = useRef(null);
   const chatRef = useRef(null);
-  const dragStartRef = useRef({ x: 0, y: 0 });
-  const rafRef = useRef(null);
+  const dragStartRef = useRef({ pointerX: 0, pointerY: 0, buttonX: 0, buttonY: 0 });
+  const isPointerDownRef = useRef(false);
+  const hasDraggedRef = useRef(false);
+  const activePointerIdRef = useRef(null);
+  const currentPosRef = useRef(position);
+  const isOpenRef = useRef(isOpen);
   const scrollRef = useRef(null);
+  const rafRef = useRef(null);
 
-  // ---- Restore saved position on mount ----
+  // Keep refs in sync with state
+  currentPosRef.current = position;
+  isOpenRef.current = isOpen;
+
+  // ---- Clamp and save on window resize (debounced) ----
   useEffect(() => {
-    const saved = loadSavedPosition();
-    if (saved) {
-      setPosition(saved);
-    } else {
-      // Default: bottom-right with margin
-      const vp = getViewport();
-      setPosition({
-        x: vp.width - BUTTON_SIZE - 24,
-        y: vp.height - BUTTON_SIZE - 24,
-      });
-    }
-  }, []);
-
-  // ---- Clamp position on viewport resize ----
-  useEffect(() => {
-    function handleResize() {
-      setPosition((prev) => {
-        const clamped = clampPosition(prev.x, prev.y, BUTTON_SIZE, BUTTON_SIZE);
-        // Only save if position actually changed due to clamp
-        if (clamped.x !== prev.x || clamped.y !== prev.y) {
-          savePosition(clamped.x, clamped.y);
-        }
-        return clamped;
-      });
-    }
-
     let timeoutId;
+    function handleResize() {
+      const current = currentPosRef.current;
+      const clamped = clampPosition(current.x, current.y, BUTTON_SIZE, BUTTON_SIZE);
+      if (clamped.x !== current.x || clamped.y !== current.y) {
+        setPosition(clamped);
+        savePosition(clamped.x, clamped.y);
+      }
+    }
+
     const debouncedResize = () => {
       clearTimeout(timeoutId);
       timeoutId = setTimeout(handleResize, 100);
@@ -131,13 +156,13 @@ export default function FloatingAIChat({ user }) {
     };
   }, []);
 
-  // ---- Auto-scroll chat ----
+  // ---- Auto-scroll chat on new messages or state change ----
   useEffect(() => {
     if (!scrollRef.current) return;
     scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [messages, loading, isOpen]);
 
-  // ---- Chat send ----
+  // ---- Chat send handler ----
   const sendMessage = useCallback(async () => {
     const userMessage = String(input || "").trim();
     if (!userMessage || loading) return;
@@ -186,160 +211,161 @@ export default function FloatingAIChat({ user }) {
     [sendMessage]
   );
 
-  // ---- Compute chat position relative to button ----
-  const getChatPlacement = useCallback(() => {
-    const buttonRect = {
-      left: position.x,
-      top: position.y,
-      width: BUTTON_SIZE,
-      height: BUTTON_SIZE,
-    };
-
-    // Estimate chat dimensions (matches CSS: w-[380px], h-[520px] + bottom margin)
-    const chatWidth = 380;
-    const chatHeight = 520;
-    const gap = 12; // space between button and chat
-    const vp = getViewport();
-
-    // Default: chat opens above-left of button (classic floating position)
-    let left = buttonRect.left;
-    let top = buttonRect.top - chatHeight - gap;
-
-    // Available space in each direction
-    const spaceAbove = buttonRect.top;
-    const spaceBelow = vp.height - (buttonRect.top + buttonRect.height);
-    const spaceLeft = buttonRect.left;
-    const spaceRight = vp.width - (buttonRect.left + buttonRect.width);
-
-    // Decide vertical placement
-    if (spaceAbove >= chatHeight + gap && spaceAbove >= spaceBelow) {
-      // Open above
-      top = buttonRect.top - chatHeight - gap;
-    } else if (spaceBelow >= chatHeight + gap) {
-      // Open below
-      top = buttonRect.top + buttonRect.height + gap;
-    } else {
-      // Neither fits perfectly — clamp
-      if (spaceAbove > spaceBelow) {
-        top = buttonRect.top - chatHeight - gap;
-      } else {
-        top = buttonRect.top + buttonRect.height + gap;
-      }
-    }
-
-    // Decide horizontal placement
-    if (spaceLeft >= chatWidth && spaceLeft >= spaceRight) {
-      left = buttonRect.left;
-    } else if (spaceRight >= chatWidth) {
-      left = buttonRect.left;
-    } else {
-      // Clamp horizontally
-      left = clamp(buttonRect.left, 0, vp.width - chatWidth);
-    }
-
-    // Final clamp to viewport
-    const { x, y } = clampPosition(left, top, chatWidth, chatHeight);
-    return { left: x, top: y, width: chatWidth, height: chatHeight };
-  }, [position]);
-
-  const chatPlacement = getChatPlacement();
-
-  // ---- Toggle chat ----
+  // ---- Toggle and close chat ----
   const toggleChat = useCallback(() => {
-    setIsOpen((v) => !v);
+    setIsOpen((prev) => !prev);
   }, []);
 
   const closeChat = useCallback(() => {
     setIsOpen(false);
   }, []);
 
-  // ---- Drag handlers ----
-  const handlePointerDown = useCallback(
-    (event) => {
-      // Ignore if the event target is the close button inside chat
-      if (event.target.closest('[aria-label="Close chat"]')) return;
+  // ---- Compute chat placement intelligently relative to button ----
+  const getChatPlacement = useCallback(() => {
+    const vp = getViewport();
+    const chatW = Math.min(CHAT_WIDTH, vp.width - 16);
+    const chatH = Math.min(CHAT_HEIGHT, vp.height - 16);
 
-      const rect = buttonRef.current.getBoundingClientRect();
-      dragStartRef.current = {
-        x: event.clientX,
-        y: event.clientY,
-      };
-      setIsDragging(true);
-      setHasDragged(false);
+    const btnX = position.x;
+    const btnY = position.y;
 
-      // Mark pointer capture for smooth tracking
-      if (buttonRef.current) {
+    const spaceAbove = btnY;
+    const spaceBelow = vp.height - (btnY + BUTTON_SIZE);
+
+    // Decide vertical placement: above if fits, or if more space above than below
+    let top;
+    if (spaceAbove >= chatH + CHAT_GAP) {
+      top = btnY - chatH - CHAT_GAP;
+    } else if (spaceBelow >= chatH + CHAT_GAP) {
+      top = btnY + BUTTON_SIZE + CHAT_GAP;
+    } else {
+      top = spaceAbove >= spaceBelow ? btnY - chatH - CHAT_GAP : btnY + BUTTON_SIZE + CHAT_GAP;
+    }
+
+    // Decide horizontal placement: align right with button if on right half, else align left
+    let left;
+    if (btnX > vp.width / 2) {
+      left = btnX + BUTTON_SIZE - chatW;
+    } else {
+      left = btnX;
+    }
+
+    // Clamp chat position to viewport boundaries
+    const clampedChat = clampPosition(left, top, chatW, chatH);
+    return {
+      left: clampedChat.x,
+      top: clampedChat.y,
+      width: chatW,
+      height: chatH,
+    };
+  }, [position]);
+
+  const chatPlacement = getChatPlacement();
+
+  // ---- Pointer Events for Drag & Click ----
+  const handlePointerDown = useCallback((event) => {
+    // Only respond to main button clicks (left mouse button or touch/pen)
+    if (event.button !== 0 && event.pointerType === "mouse") return;
+
+    // Ignore if click originated on child controls with specific actions
+    if (event.target.closest('[aria-label="Close chat"]')) return;
+
+    isPointerDownRef.current = true;
+    hasDraggedRef.current = false;
+    activePointerIdRef.current = event.pointerId;
+
+    dragStartRef.current = {
+      pointerX: event.clientX,
+      pointerY: event.clientY,
+      buttonX: currentPosRef.current.x,
+      buttonY: currentPosRef.current.y,
+    };
+
+    // Capture pointer events for smooth dragging even outside button boundaries
+    if (buttonRef.current && typeof buttonRef.current.setPointerCapture === "function") {
+      try {
         buttonRef.current.setPointerCapture(event.pointerId);
+      } catch {
+        // Fallback safely if setPointerCapture is unsupported
       }
-    },
-    []
-  );
+    }
+  }, []);
 
-  const handlePointerMove = useCallback(
-    (event) => {
-      if (!isDragging) return;
+  const handlePointerMove = useCallback((event) => {
+    if (!isPointerDownRef.current) return;
 
-      const dx = event.clientX - dragStartRef.current.x;
-      const dy = event.clientY - dragStartRef.current.y;
+    const dx = event.clientX - dragStartRef.current.pointerX;
+    const dy = event.clientY - dragStartRef.current.pointerY;
+    const distance = Math.hypot(dx, dy);
 
-      // Detect drag vs click
-      if (!hasDragged && (Math.abs(dx) > DRAG_THRESHOLD || Math.abs(dy) > DRAG_THRESHOLD)) {
-        setHasDragged(true);
-        // If chat was open and we start dragging, close it gracefully
-        if (isOpen) {
-          setIsOpen(false);
-        }
+    // Check if movement exceeds threshold
+    if (!hasDraggedRef.current && distance >= DRAG_THRESHOLD) {
+      hasDraggedRef.current = true;
+      setIsDragging(true);
+
+      // Gracefully close open chat window on drag start
+      if (isOpenRef.current) {
+        setIsOpen(false);
       }
+    }
 
-      if (!hasDragged) return;
+    if (hasDraggedRef.current) {
+      const nextX = dragStartRef.current.buttonX + dx;
+      const nextY = dragStartRef.current.buttonY + dy;
+      const clamped = clampPosition(nextX, nextY, BUTTON_SIZE, BUTTON_SIZE);
 
-      // Calculate new position
-      const newX = event.clientX - BUTTON_SIZE / 2; // center button on pointer
-      const newY = event.clientY - BUTTON_SIZE / 2;
-
-      // Clamp to viewport
-      const clamped = clampPosition(newX, newY, BUTTON_SIZE, BUTTON_SIZE);
-
-      // Use rAF for smooth visual updates
       if (rafRef.current) {
         cancelAnimationFrame(rafRef.current);
       }
       rafRef.current = requestAnimationFrame(() => {
         setPosition(clamped);
       });
-    },
-    [isDragging, hasDragged, isOpen]
-  );
+    }
+  }, []);
 
   const handlePointerUp = useCallback(
     (event) => {
-      if (!isDragging) return;
+      if (!isPointerDownRef.current) return;
 
-      setIsDragging(false);
+      isPointerDownRef.current = false;
 
       // Release pointer capture
-      if (buttonRef.current) {
+      if (buttonRef.current && typeof buttonRef.current.releasePointerCapture === "function") {
         try {
-          buttonRef.current.releasePointerCapture(event.pointerId);
+          if (activePointerIdRef.current !== null) {
+            buttonRef.current.releasePointerCapture(activePointerIdRef.current);
+          }
         } catch {
-          // ignore
+          // Ignore release errors
         }
       }
+      activePointerIdRef.current = null;
 
-      // Save final position
-      savePosition(position.x, position.y);
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current);
+      }
 
-      // If it was just a click (no drag), toggle chat
-      if (!hasDragged) {
+      if (hasDraggedRef.current) {
+        setIsDragging(false);
+        const finalPos = clampPosition(
+          currentPosRef.current.x,
+          currentPosRef.current.y,
+          BUTTON_SIZE,
+          BUTTON_SIZE
+        );
+        setPosition(finalPos);
+        savePosition(finalPos.x, finalPos.y);
+      } else {
+        // Tap/click detected without drag -> Toggle chat
         toggleChat();
       }
 
-      setHasDragged(false);
+      hasDraggedRef.current = false;
     },
-    [isDragging, hasDragged, toggleChat, position]
+    [toggleChat]
   );
 
-  // ---- Keyboard support ----
+  // ---- Keyboard accessibility ----
   const handleKeyDown = useCallback(
     (event) => {
       if (event.key === "Enter" || event.key === " ") {
@@ -350,21 +376,28 @@ export default function FloatingAIChat({ user }) {
     [toggleChat]
   );
 
-  // ---- Determine cursor class ----
-  const buttonCursor = isDragging ? "cursor:grabbing" : "cursor:grab";
+  // ---- Dynamic Styles ----
+  const buttonCursorClass = isDragging ? "cursor-grabbing cursor:grabbing" : "cursor-grab cursor:grab";
+
   const buttonStyle = {
     position: "fixed",
-    left: position.x,
-    top: position.y,
+    left: `${position.x}px`,
+    top: `${position.y}px`,
+    width: `${BUTTON_SIZE}px`,
+    height: `${BUTTON_SIZE}px`,
     zIndex: Z_INDEX_BUTTON,
+    touchAction: "none",
+    userSelect: "none",
+    WebkitUserSelect: "none",
+    cursor: isDragging ? "grabbing" : "grab",
   };
 
   const chatStyle = {
     position: "fixed",
-    left: chatPlacement.left,
-    top: chatPlacement.top,
-    width: chatPlacement.width,
-    height: chatPlacement.height,
+    left: `${chatPlacement.left}px`,
+    top: `${chatPlacement.top}px`,
+    width: `${chatPlacement.width}px`,
+    height: `${chatPlacement.height}px`,
     zIndex: Z_INDEX_CHAT,
   };
 
@@ -381,6 +414,8 @@ export default function FloatingAIChat({ user }) {
             : "opacity-0 scale-95 pointer-events-none"
         }`}
         aria-hidden={!isOpen}
+        role="dialog"
+        aria-label="EduNova AI Assistant Chat"
       >
         <div className="h-16 px-4 border-b border-white/10 flex items-center justify-between">
           <div className="flex items-center gap-3 min-w-0">
@@ -406,10 +441,10 @@ export default function FloatingAIChat({ user }) {
           <button
             type="button"
             onClick={closeChat}
-            className="text-slate-300 hover:text-white transition text-lg leading-none px-2 py-1 rounded-md"
+            className="text-slate-300 hover:text-white transition text-lg leading-none px-2 py-1 rounded-md cursor-pointer"
             aria-label="Close chat"
           >
-            ×{" "}
+            ×
           </button>
         </div>
 
@@ -471,7 +506,7 @@ export default function FloatingAIChat({ user }) {
               type="button"
               onClick={sendMessage}
               disabled={loading}
-              className="px-3 py-2 rounded-xl bg-teal-500 text-white text-sm font-medium hover:bg-teal-400 transition disabled:opacity-50"
+              className="px-3 py-2 rounded-xl bg-teal-500 text-white text-sm font-medium hover:bg-teal-400 transition disabled:opacity-50 cursor-pointer"
             >
               Send
             </button>
@@ -479,7 +514,7 @@ export default function FloatingAIChat({ user }) {
         </div>
       </div>
 
-      {/* ===== AI Assistant Button (Draggable) ===== */}
+      {/* ===== AI Assistant Button (Freely Draggable) ===== */}
       <button
         ref={buttonRef}
         type="button"
@@ -492,17 +527,17 @@ export default function FloatingAIChat({ user }) {
         aria-label={isOpen ? "Close EduNova AI assistant" : "Open EduNova AI assistant"}
         aria-expanded={isOpen}
         aria-controls="eduNova-ai-chat"
+        data-drag-threshold={DRAG_THRESHOLD}
+        data-position-key={STORAGE_KEY}
         className={`
-          group w-[72px] h-[72px] rounded-full
+          group rounded-full
           bg-white border-[3px] border-slate-900
           shadow-[0_8px_24px_rgba(15,23,42,0.35)]
-          hover:scale-105 active:scale-95
-          transition-transform duration-200
+          transition-transform duration-150
           focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-300
           overflow-hidden p-[4px]
-          ${buttonCursor}
-          ${isDragging ? "scale-110 shadow-[0_12px_32px_rgba(15,23,42,0.5)]" : ""}
-          ${!isDragging ? "hover:shadow-[0_12px_32px_rgba(15,23,42,0.45)]" : ""}
+          ${buttonCursorClass}
+          ${isDragging ? "scale-110 shadow-[0_16px_36px_rgba(15,23,42,0.6)]" : "hover:scale-105 active:scale-95 hover:shadow-[0_12px_32px_rgba(15,23,42,0.45)]"}
         `}
       >
         <img
@@ -512,7 +547,8 @@ export default function FloatingAIChat({ user }) {
             e.currentTarget.src = AVATAR_FALLBACK;
           }}
           alt="edu_assistance SNN logo"
-          className="w-full h-full rounded-full object-cover border-2 border-slate-200"
+          className="w-full h-full rounded-full object-cover border-2 border-slate-200 pointer-events-none"
+          draggable={false}
         />
       </button>
     </>
