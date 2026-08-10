@@ -245,9 +245,21 @@ export const getAdminAnalytics = async () => {
   return res.data;
 };
 
-export const queryAIEngine = async ({ message, email }) => {
+export const queryAIEngine = async ({
+  message,
+  email,
+  conversationHistory = [],
+  studentContext = {},
+  tutoringContext = {},
+}) => {
   try {
-    const res = await API.post("/ai/query", { message, email });
+    const res = await API.post("/ai/query", {
+      message,
+      email,
+      conversationHistory,
+      studentContext,
+      tutoringContext,
+    });
     return res.data;
   } catch (err) {
     return { error: err.response?.data?.error || "EduNova AI query failed" };

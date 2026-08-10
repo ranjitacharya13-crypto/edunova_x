@@ -144,6 +144,102 @@ html.dark body {
 
 /* ===== EduNova AI Assistant ===== */
 
+/* ===== EduNova AI — launcher + chat window sizing & placement =====
+   The launcher stays fixed to the viewport bottom-right and the chat window
+   sits directly above it. Both use dedicated high z-indexes and box-sizing
+   so they never overlap the dashboard or create page scrolling. */
+
+.edunova-ai-launcher {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  width: 68px;
+  height: 68px;
+  z-index: 1000;
+  box-sizing: border-box;
+}
+
+.edunova-ai-chat {
+  position: fixed;
+  right: 24px;
+  bottom: calc(24px + 68px + 16px);
+  width: 420px;
+  height: min(620px, calc(100vh - 24px - 68px - 16px - 16px));
+  max-width: min(430px, calc(100vw - 32px));
+  max-height: min(650px, calc(100vh - 32px));
+  z-index: 1001;
+  box-sizing: border-box;
+}
+
+/* ---- Tablet ---- */
+@media (max-width: 768px) {
+  .edunova-ai-launcher {
+    right: 16px;
+    bottom: 16px;
+  }
+  .edunova-ai-chat {
+    right: 16px;
+    bottom: calc(16px + 68px + 14px);
+  }
+}
+
+/* ---- Mobile ---- */
+@media (max-width: 640px) {
+  .edunova-ai-launcher {
+    right: 12px;
+    bottom: 12px;
+    width: 58px;
+    height: 58px;
+  }
+  .edunova-ai-chat {
+    left: 10px;
+    right: 10px;
+    bottom: 10px;
+    width: auto;
+    max-width: none;
+    height: min(80vh, 680px);
+    max-height: min(80vh, 680px);
+  }
+}
+
+/* ---- Very small screens (< 400px) ---- */
+@media (max-width: 400px) {
+  .edunova-ai-chat {
+    left: 8px;
+    right: 8px;
+    bottom: 8px;
+    height: min(78vh, 640px);
+    max-height: min(78vh, 640px);
+  }
+}
+
+/* Launcher glow pulse — slow, smooth, GPU-friendly (opacity/transform only). */
+.edunova-ai-launcher::after {
+  content: "";
+  position: absolute;
+  inset: -6px;
+  border-radius: 999px;
+  border: 2px solid rgba(20, 184, 166, 0.45);
+  animation: edunova-ai-launcher-pulse 2.6s ease-out infinite;
+  pointer-events: none;
+  box-sizing: border-box;
+}
+
+@keyframes edunova-ai-launcher-pulse {
+  0% {
+    transform: scale(1);
+    opacity: 0.55;
+  }
+  70% {
+    transform: scale(1.18);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1.18);
+    opacity: 0;
+  }
+}
+
 .edunova-ai-scroll {
   scrollbar-width: thin;
   scrollbar-color: rgba(20, 184, 166, 0.38) transparent;

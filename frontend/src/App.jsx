@@ -82,6 +82,17 @@ export default function App() {
       )}
 
       {user && <FloatingAIChat user={user} />}
+
+      {/* Dev-only preview hook: open ?ai=demo to try the EduNova AI tutor chat
+          without logging in. Compiled out of production builds. */}
+      {!user &&
+        import.meta.env.DEV &&
+        typeof window !== "undefined" &&
+        new URLSearchParams(window.location.search).has("ai") && (
+          <FloatingAIChat
+            user={{ name: "Student", email: "guest", role: "student" }}
+          />
+        )}
     </div>
   );
 }

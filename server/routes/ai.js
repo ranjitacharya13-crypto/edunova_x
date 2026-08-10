@@ -5,7 +5,13 @@ const router = express.Router();
 
 router.post("/query", async (req, res) => {
   try {
-    const { message, email } = req.body || {};
+    const {
+      message,
+      email,
+      conversationHistory,
+      studentContext,
+      tutoringContext,
+    } = req.body || {};
 
     const cleanMessage = String(message || "").trim();
     const cleanEmail = String(email || "").trim();
@@ -44,9 +50,23 @@ router.post("/query", async (req, res) => {
     if (aiBaseUrl && !/^https?:\/\//i.test(aiBaseUrl)) {
       aiBaseUrl = `https://${aiBaseUrl}`;
     }
+    // Forward the full tutoring context + history to the AI engine so it can
+    // behave like a real tutor (remember subject/topic/goal, evaluate answers,
+    // adapt difficulty) rather than a stateless chatbot.
     const payload = {
       message: cleanMessage,
       email: cleanEmail,
+      conversationHistory: Array.isArray(conversationHistory)
+        ? conversationHistory
+        : undefined,
+      studentContext:
+        studentContext && typeof studentContext === "object"
+          ? studentContext
+          : undefined,
+      tutoringContext:
+        tutoringContext && typeof tutoringContext === "object"
+          ? tutoringContext
+          : undefined,
     };
     const requestOptions = {
       timeout: 15000,

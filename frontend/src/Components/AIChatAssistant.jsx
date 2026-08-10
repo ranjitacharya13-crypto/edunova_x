@@ -29,18 +29,31 @@ export default function AIChatAssistant({ user }) {
     setError("");
     setResult(null);
 
-    const res = await queryAIEngine({ message: cleanMessage, email });
+    const res = await queryAIEngine({
+      message: cleanMessage,
+      email,
+      conversationHistory: [],
+      studentContext: {
+        name: user?.name || user?.firstName || user?.username || "",
+        email,
+        role: user?.role || "",
+      },
+    });
     setLoading(false);
 
     if (res?.error || res?.success === false) {
       console.error("[EduNova AI] Query failed:", res?.error || res?.reply);
-      setError("Sorry, I couldn't reach EduNova AI right now.");
+      setError(
+        "I'm having trouble connecting to my tutoring service right now. Please try again in a moment."
+      );
       return;
     }
 
     const reply = String(res?.reply || res?.response || res?.data?.reply || "").trim();
     if (!reply || /^AI encountered an internal error/i.test(reply)) {
-      setError("Sorry, I couldn't reach EduNova AI right now.");
+      setError(
+        "I'm having trouble connecting to my tutoring service right now. Please try again in a moment."
+      );
       return;
     }
 
