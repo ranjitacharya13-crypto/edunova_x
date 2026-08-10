@@ -1,63 +1,49 @@
-const { MongoClient } = require('mongodb');
-const bcrypt = require('bcryptjs');
+const { MongoClient } = require("mongodb");
+const bcrypt = require("bcryptjs");
 
+/**
+ * Explicit administrator bootstrap utility.
+ * All identity and password fields are required at invocation time; no default
+ * account and no generated password are written to application logs.
+ */
 async function main() {
-  const uri = process.env.MONGO_URI;
-  if (!uri) {
-    console.error('Please set MONGO_URI environment variable.');
+  const uri = process.env.MONGO_URI || process.env.MONGODB_URI;
+  const username = String(process.env.ADMIN_USERNAME || "").trim();
+  const email = String(process.env.ADMIN_EMAIL || "").trim().toLowerCase();
+  const password = String(process.env.ADMIN_PASSWORD || "");
+
+  if (!uri || !username || !email || !password) {
+    console.error("Set MONGO_URI (or MONGODB_URI), ADMIN_USERNAME, ADMIN_EMAIL, and ADMIN_PASSWORD before running this script.");
+    process.exit(1);
+  }
+  if (password.length < 12) {
+    console.error("ADMIN_PASSWORD must contain at least 12 characters.");
     process.exit(1);
   }
 
   const client = new MongoClient(uri);
   try {
     await client.connect();
-    const db = client.db('edunova');
-    const usersCollection = db.collection('users');
-
-    const username = process.env.ADMIN_USERNAME || "admin";
-    const email = process.env.ADMIN_EMAIL || "admin@edunova.com";
-
-    // The password must NEVER be hardcoded in the repository. Supply it at run
-    // time, e.g.:
-    //   MONGO_URI="..." ADMIN_PASSWORD="<strong-password>" node scripts/create_admin.js
-    // If omitted, a strong random password is generated and printed once.
-    let rawPassword = process.env.ADMIN_PASSWORD;
-    let generated = false;
-    if (!rawPassword) {
-      rawPassword = require("crypto").randomBytes(24).toString("base64url");
-      generated = true;
-    }
-
-    const hashedPassword = await bcrypt.hash(rawPassword, 10);
-
+    const db = client.db(process.env.MONGO_DB_NAME || "edunova");
+    const users = db.collection("users");
     const adminData = {
-      name: "Administrator",
-      username: username,
-      email: email,
-      password: hashedPassword,
+      name: String(process.env.ADMIN_NAME || "Administrator").trim(),
+      username,
+      email,
+      password: await bcrypt.hash(password, 12),
       role: "admin",
       isBlocked: false,
-      updatedAt: new Date()
+      updatedAt: new Date(),
     };
-
-    const res = await usersCollection.updateOne(
-      { $or: [{ username: username }, { email: email }] },
-      { 
-        $set: adminData,
-        $setOnInsert: { createdAt: new Date() }
-      },
+    const result = await users.updateOne(
+      { $or: [{ username }, { email }] },
+      { $set: adminData, $setOnInsert: { createdAt: new Date() } },
       { upsert: true }
     );
-
-    console.log(
-      `✅ Admin user successfully added/updated (${email}). ` +
-        `matched=${res.matchedCount} upserted=${res.upsertedCount}`
-    );
-    if (generated) {
-      console.log("🔑 Generated admin password (shown once, store it now):", rawPassword);
-    }
-  } catch (err) {
-    console.error("❌ Failed to create admin user:", err);
+    console.log(`Admin account updated. matched=${result.matchedCount} upserted=${result.upsertedCount}`);
+  } catch (error) {
+    console.error("Failed to create or update admin:", error.message);
+    process.exitCode = 1;
   } finally {
     await client.close();
   }

@@ -76,25 +76,22 @@ Cloudflare automatically routes all client-side navigation (e.g. `/live/:roomId`
 **Cause:** the Wrangler configuration declares an `[assets]` binding (e.g. `binding = "ASSETS"`)
 but no `main` worker script, so Wrangler treats the deployment as an assets-only Worker.
 
-**Fix (already applied in this repo):** both `wrangler.toml` and `wrangler.jsonc` define
-`main = "./dist/_worker.js"` **together with** `binding = "ASSETS"`. The build script
-(`scripts/build.js`) also validates this at build time and fails with a clear message if the
-config ever regresses.
+**Fix (already applied in this repo):** this project intentionally uses an
+**assets-only Worker**. Both `wrangler.toml` and `wrangler.jsonc` define only
+`assets.directory = "./dist"`; neither declares a Worker `main` entry nor an
+assets binding. `scripts/build.js` validates that combination before building.
 
 If you still see the error after merging:
 
-1. **Deploy the latest `main`** — the error only occurs with a configuration that lacks `main`
-   (the pre-fix state). Redeploy from the dashboard, or run locally:
-   `git pull && npm run build && npx wrangler deploy`.
-2. **Root directory must be `/`** — if the Cloudflare build's root directory is anything other
-   than the repo root, the repository's `wrangler.toml`/`wrangler.jsonc` are not found and
-   Cloudflare may auto-generate an assets-only configuration.
-3. **Trigger a fresh build** — if the project previously deployed as assets-only, a new build
-   from current `main` uploads the Worker script and assets together.
+1. **Deploy the latest `main`** — rebuild and redeploy from the repository root:
+   `npm run build && npx wrangler deploy`.
+2. **Root directory must be `/`** — otherwise Wrangler cannot locate the supplied
+   configuration and may generate a mismatched configuration.
+3. **Do not add `binding = "ASSETS"`** unless you also intentionally add a Worker
+   `main` script which reads that binding.
 
-> Note: `frontend/public/.assetsignore` (copied to `dist/.assetsignore` by the build) excludes
-> `_worker.js` from the static asset upload, so the same file can serve as the Worker's `main`
-> script without being uploaded as a public asset.
+> `_worker.js` remains in `frontend/public` only for compatibility with older
+> Pages deployments. The assets-only Worker deployment does not upload or run it.
 
 ---
 
