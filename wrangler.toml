@@ -1,0 +1,12 @@
+#:schema node_modules/wrangler/config-schema.json
+name = "edunova-x"
+compatibility_date = "2026-07-28"
+
+# Cloudflare Static Assets (SPA)
+[assets]
+directory = "./dist"
+html_handling = "none"
+not_found_handling = "single-page-application"
+
+[build]
+command = "npm run build"

@@ -1,0 +1,14 @@
+<svg width="240" height="240" viewBox="0 0 240 240" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="240" height="240" rx="48" fill="#08111F"/>
+  <circle cx="120" cy="120" r="88" fill="#0F766E" fill-opacity="0.22"/>
+  <circle cx="120" cy="120" r="67" stroke="#2DD4BF" stroke-width="5"/>
+  <path d="M67 131C87 91 111 91 131 131C151 171 175 171 193 131" stroke="#A7F3D0" stroke-width="9" stroke-linecap="round"/>
+  <path d="M47 109C67 149 91 149 111 109C131 69 155 69 173 109" stroke="#38BDF8" stroke-width="9" stroke-linecap="round"/>
+  <circle cx="67" cy="131" r="8" fill="#A7F3D0"/>
+  <circle cx="111" cy="109" r="8" fill="#38BDF8"/>
+  <circle cx="131" cy="131" r="8" fill="#A7F3D0"/>
+  <circle cx="173" cy="109" r="8" fill="#38BDF8"/>
+  <text x="120" y="117" text-anchor="middle" fill="white" font-family="Arial, Helvetica, sans-serif" font-size="38" font-weight="800">SNN</text>
+  <text x="120" y="145" text-anchor="middle" fill="#CCFBF1" font-family="Arial, Helvetica, sans-serif" font-size="17" font-weight="700">ASI</text>
+  <text x="120" y="166" text-anchor="middle" fill="#BAE6FD" font-family="Arial, Helvetica, sans-serif" font-size="10" font-weight="700">SPIKING NEURAL NETWORK</text>
+</svg>

@@ -1,0 +1,11 @@
+__pycache__
+*.pyc
+.venv
+.env
+.env.*
+* 1.py
+* 2.py
+* 3.py
+models/* 1.*
+models/* 2.*
+models/* 3.*
