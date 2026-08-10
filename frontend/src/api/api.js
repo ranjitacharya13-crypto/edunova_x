@@ -250,6 +250,6 @@ export const queryAIEngine = async ({ message, email }) => {
     const res = await API.post("/ai/query", { message, email });
     return res.data;
   } catch (err) {
-    return { error: err.response?.data?.error || "edu_assistance query failed" };
+    return { error: err.response?.data?.error || "EduNova AI query failed" };
   }
 };
