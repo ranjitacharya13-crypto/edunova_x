@@ -12,6 +12,7 @@ router.post("/query", async (req, res) => {
 
     if (!cleanMessage || !cleanEmail) {
       return res.status(400).json({
+        success: false,
         error: "Both message and email are required",
       });
     }
@@ -26,6 +27,7 @@ router.post("/query", async (req, res) => {
         // Degrade gracefully with a clear, actionable message rather than
         // silently dialing localhost and stalling the request for 15s.
         return res.status(503).json({
+          success: false,
           error:
             "AI service is not configured. Set AI_ENGINE_URL on the API service " +
             "to the public URL of the deployed FastAPI AI engine.",
@@ -44,43 +46,103 @@ router.post("/query", async (req, res) => {
     if (aiBaseUrl && !/^https?:\/\//i.test(aiBaseUrl)) {
       aiBaseUrl = `https://${aiBaseUrl}`;
     }
+
     const payload = {
       message: cleanMessage,
       email: cleanEmail,
     };
+
     const requestOptions = {
-      timeout: 15000,
+      timeout: 20000,
+      headers: {
+        "Content-Type": "application/json",
+      },
     };
 
     let aiResponse;
-    try {
-      aiResponse = await axios.post(`${aiBaseUrl}/api/ai/query`, payload, requestOptions);
-    } catch (firstErr) {
-      aiResponse = await axios.post(`${aiBaseUrl}/ai/query`, payload, requestOptions);
+    let lastError;
+
+    // Try the canonical endpoint first (/api/ai/query), then the legacy
+    // endpoint (/ai/query) as a fallback. Both are valid paths depending on
+    // how the AI engine is deployed.
+    const endpoints = ["/api/ai/query", "/ai/query"];
+
+    for (const endpoint of endpoints) {
+      try {
+        aiResponse = await axios.post(
+          `${aiBaseUrl}${endpoint}`,
+          payload,
+          requestOptions
+        );
+        break; // Success — stop trying endpoints
+      } catch (err) {
+        lastError = err;
+        // If we got a response (even an error one), the service is reachable.
+        // Only try the next endpoint for network-level failures or 404s.
+        if (err.response && err.response.status !== 404) {
+          // The AI engine is reachable but returned an error — don't try
+          // the next endpoint, just report the error.
+          break;
+        }
+      }
     }
 
+    if (!aiResponse) {
+      // All endpoints failed
+      throw lastError || new Error("AI engine did not respond");
+    }
+
+    // Forward the AI engine's response directly. The AI engine returns
+    // { success, reply, ... } which the frontend expects.
     return res.json(aiResponse.data);
   } catch (error) {
     // Distinguish "AI service is down/unreachable" (503) from a real error the
     // AI service itself returned, so the frontend can show a useful message.
     const isUnreachable =
       !error.response &&
-      ["ECONNREFUSED", "ENOTFOUND", "ETIMEDOUT", "ECONNABORTED", "EAI_AGAIN"].includes(
-        error.code
-      );
+      [
+        "ECONNREFUSED",
+        "ENOTFOUND",
+        "ETIMEDOUT",
+        "ECONNABORTED",
+        "EAI_AGAIN",
+        "ECONNRESET",
+        "EHOSTUNREACH",
+        "ERR_NETWORK",
+      ].includes(error.code);
 
     if (isUnreachable) {
-      console.error(`[ai] AI engine unreachable (${error.code}):`, error.message);
+      console.error(
+        `[ai] AI engine unreachable (${error.code}): ${error.message}`
+      );
       return res.status(503).json({
+        success: false,
         error:
           "AI service is temporarily unavailable. It may be starting up — please try again shortly.",
       });
     }
 
-    const status = error.response?.status || 500;
-    console.error("[ai] AI engine error:", error.response?.data || error.message);
-    return res.status(status).json({
-      error: error.response?.data?.detail || "AI service unavailable",
+    // If the AI engine returned a response, forward its status and body.
+    if (error.response) {
+      const status = error.response.status || 500;
+      console.error(
+        `[ai] AI engine returned ${status}:`,
+        error.response.data || error.message
+      );
+      return res.status(status >= 400 && status < 600 ? status : 502).json({
+        success: false,
+        error:
+          error.response.data?.detail ||
+          error.response.data?.error ||
+          "AI service returned an error",
+      });
+    }
+
+    // Catch-all for unexpected errors
+    console.error("[ai] Unexpected AI route error:", error.message);
+    return res.status(502).json({
+      success: false,
+      error: "AI service temporarily unavailable. Please try again.",
     });
   }
 });

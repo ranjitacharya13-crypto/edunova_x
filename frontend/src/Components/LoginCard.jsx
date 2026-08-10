@@ -12,19 +12,38 @@ export default function LoginCard({ onLogin }) {
     return <RegisterWizard onBack={() => setShowRegister(false)} />;
   }
 
-  const handleLogin = async () => {
+  const handleLogin = async (e) => {
+    if (e) e.preventDefault();
     setError("");
-    setLoading(true);
 
-    const res = await onLogin(email, password);
+    // Client-side validation
+    const trimmedEmail = String(email || "").trim();
+    const trimmedPassword = String(password || "").trim();
 
-    if (res?.error) {
-      setError(res.error);
-      setLoading(false);
+    if (!trimmedEmail || !trimmedPassword) {
+      setError("Please enter both email and password.");
       return;
     }
 
-    setLoading(false);
+    setLoading(true);
+
+    try {
+      const res = await onLogin(trimmedEmail, trimmedPassword);
+
+      if (res?.error) {
+        setError(
+          res.error === "Missing email or password"
+            ? "Please enter both email and password."
+            : res.error === "Invalid credentials"
+            ? "Invalid email or password. Please try again."
+            : res.error
+        );
+      }
+    } catch {
+      setError("Unable to reach the server. Please check your connection and try again.");
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -35,44 +54,59 @@ export default function LoginCard({ onLogin }) {
       </p>
 
       {error && (
-        <div className="mb-3 text-sm text-red-600 bg-red-50 px-3 py-2 rounded-lg">
+        <div
+          className="mb-3 text-sm text-red-600 bg-red-50 px-3 py-2 rounded-lg border border-red-100"
+          role="alert"
+        >
           {error}
         </div>
       )}
 
-      <input
-        id="email"
-        name="email"
-        type="email"
-        autoComplete="email"
-        placeholder="Email"
-        value={email}
-        onChange={(e) => setEmail(e.target.value)}
-        className="w-full mb-3 px-4 py-3 rounded-xl border border-white/40 bg-white/60 backdrop-blur-md focus:outline-none focus:ring-2 focus:ring-primary/30"
-      />
+      <form onSubmit={handleLogin} noValidate>
+        <label htmlFor="login-email" className="sr-only">
+          Email or username
+        </label>
+        <input
+          id="login-email"
+          name="email"
+          type="email"
+          autoComplete="email"
+          placeholder="Email or username"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          disabled={loading}
+          className="w-full mb-3 px-4 py-3 rounded-xl border border-white/40 bg-white/60 backdrop-blur-md focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:opacity-60"
+        />
 
-      <input
-        id="password"
-        name="password"
-        type="password"
-        autoComplete="current-password"
-        placeholder="Password"
-        value={password}
-        onChange={(e) => setPassword(e.target.value)}
-        className="w-full mb-4 px-4 py-3 rounded-xl border border-white/40 bg-white/60 backdrop-blur-md focus:outline-none focus:ring-2 focus:ring-primary/30"
-      />
+        <label htmlFor="login-password" className="sr-only">
+          Password
+        </label>
+        <input
+          id="login-password"
+          name="password"
+          type="password"
+          autoComplete="current-password"
+          placeholder="Password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          disabled={loading}
+          className="w-full mb-4 px-4 py-3 rounded-xl border border-white/40 bg-white/60 backdrop-blur-md focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:opacity-60"
+        />
+
+        <button
+          type="submit"
+          disabled={loading}
+          className="w-full bg-primary text-white py-3 rounded-xl font-medium hover:bg-primary/90 active:scale-[0.98] transition-all disabled:opacity-60 disabled:cursor-not-allowed"
+        >
+          {loading ? "Signing in..." : "Sign In"}
+        </button>
+      </form>
 
       <button
-        disabled={loading}
-        onClick={handleLogin}
-        className="w-full bg-primary text-white py-3 rounded-xl font-medium"
-      >
-        {loading ? "Signing in..." : "Sign In"}
-      </button>
-
-      <button
+        type="button"
         onClick={() => setShowRegister(true)}
-        className="w-full mt-4 text-primary border border-primary/30 bg-white/40 backdrop-blur-md py-2.5 rounded-xl hover:bg-white/60 transition"
+        disabled={loading}
+        className="w-full mt-4 text-primary border border-primary/30 bg-white/40 backdrop-blur-md py-2.5 rounded-xl hover:bg-white/60 transition disabled:opacity-60"
       >
         Create Account
       </button>

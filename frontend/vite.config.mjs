@@ -7,8 +7,9 @@ export default defineConfig({
   server: {
     port: 5173,
     open: true,
-    host: true,
-    allowedHosts: [".ngrok-free.dev"],
+    host: "0.0.0.0",
+    // Allow all hosts for development/preview environments (ngrok, e2b, etc.)
+    allowedHosts: true,
 
     // Proxy API and socket during local dev
     proxy: {
@@ -26,4 +27,3 @@ export default defineConfig({
     },
   },
 });
-
