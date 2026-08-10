@@ -54,6 +54,19 @@ if (import.meta.env.PROD) {
 const API = axios.create({
   baseURL,
   withCredentials: false,
+  timeout: 25000,
+  headers: { Accept: "application/json" },
+});
+
+// Keep authorization transport in one place. Public routes simply omit the
+// header when the visitor has not signed in; protected API routes receive the
+// JWT without every view having to implement its own request plumbing.
+API.interceptors.request.use((config) => {
+  const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+  if (token && !config.headers?.Authorization) {
+    config.headers = { ...config.headers, Authorization: `Bearer ${token}` };
+  }
+  return config;
 });
 
 // Resolve a relative API path ("/study", "/assignments/x/preview") against the
@@ -87,7 +100,11 @@ export const loginUser = async (formData) => {
     const res = await API.post("/auth/login", formData);
     return res.data;
   } catch (err) {
-    return { error: err.response?.data?.error || "Invalid credentials" };
+    const status = err.response?.status;
+    const fallback = status === 503
+      ? "Sign-in is temporarily unavailable. Please try again shortly."
+      : "Invalid email/username or password.";
+    return { error: err.response?.data?.error || fallback, code: err.response?.data?.code };
   }
 };
 
@@ -250,6 +267,10 @@ export const queryAIEngine = async ({ message, email }) => {
     const res = await API.post("/ai/query", { message, email });
     return res.data;
   } catch (err) {
-    return { error: err.response?.data?.error || "edu_assistance query failed" };
+    const status = err.response?.status;
+    const fallback = status === 400
+      ? "Enter a question before sending."
+      : "EduNova AI is temporarily unavailable. Please try again shortly.";
+    return { error: err.response?.data?.error || fallback, code: err.response?.data?.code };
   }
 };

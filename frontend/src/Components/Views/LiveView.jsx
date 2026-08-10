@@ -10,9 +10,9 @@ const defaultSignalUrl = (() => {
 
   // Default: same-origin Socket.IO.
   // - DEV (Vite): rely on Vite proxy for `/socket.io` -> local signaling server.
-  // - PROD: if VITE_SIGNAL_URL was not set at build time, fall back to the
-  //   deployed Render signaling service origin, which hosts Socket.IO signaling.
-  if (import.meta.env.PROD) return "https://edunova-signal.onrender.com";
+  // - PROD: if VITE_SIGNAL_URL was not set at build time, use the deployed
+  //   Render API origin. The Express API also hosts Socket.IO signaling.
+  if (import.meta.env.PROD) return "https://edunova-api-y3rx.onrender.com";
   return window.location.origin;
 })();
 
@@ -1213,11 +1213,12 @@ export default function LiveView({ user }) {
     <div className="min-w-0">
       {/* Pre-call / room setup (kept minimal so it won’t affect other views/layout). */}
       {!inClass ? (
-        <div className="bg-white/80 backdrop-blur-md rounded-2xl p-4 sm:p-6 shadow-soft">
-          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 min-w-0">
+        <div className="overflow-hidden rounded-3xl border border-white/70 bg-gradient-to-br from-white/90 to-cyan-50/70 p-4 shadow-soft sm:p-6 dark:border-white/10 dark:from-slate-950/70 dark:to-cyan-500/10">
+          <div className="flex min-w-0 flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <div className="min-w-0">
-              <h3 className="text-lg font-semibold text-slate-900">Live Class</h3>
-              <p className="text-sm text-slate-500">Start or join a room</p>
+              <p className="text-xs font-bold uppercase tracking-[0.14em] text-teal-700 dark:text-teal-300">Live learning</p>
+              <h3 className="mt-1 text-xl font-bold tracking-[-0.025em] text-slate-900 dark:text-white">Live class room</h3>
+              <p className="mt-1 text-sm text-slate-500 dark:text-slate-300">Start a session or join your scheduled room.</p>
             </div>
 
             <div className="flex flex-wrap gap-2 items-center justify-start lg:justify-end min-w-0">

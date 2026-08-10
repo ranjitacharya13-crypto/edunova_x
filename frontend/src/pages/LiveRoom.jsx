@@ -7,8 +7,8 @@ const defaultSignalUrl = (() => {
   if (typeof window === "undefined") return "";
   // DEV: same-origin via the Vite proxy (/socket.io -> local backend).
   // PROD: if VITE_SIGNAL_URL was not set at build time, fall back to the
-  // deployed Render signaling service origin, which hosts Socket.IO signaling.
-  if (import.meta.env.PROD) return "https://edunova-signal.onrender.com";
+  // deployed Express API origin. This service also hosts Socket.IO signaling.
+  if (import.meta.env.PROD) return "https://edunova-api-y3rx.onrender.com";
   return window.location.origin;
 })();
 

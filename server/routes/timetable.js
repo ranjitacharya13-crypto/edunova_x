@@ -79,6 +79,9 @@ const recordingUpload = multer({
 // GET today's timetable
 router.get("/today", async (req, res) => {
   try {
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ error: "Timetable is temporarily unavailable. Please try again shortly.", code: "DATABASE_UNAVAILABLE" });
+    }
     const days = [
       "Sunday",
       "Monday",

@@ -207,40 +207,39 @@ export default function HomeView({ user, setView }) {
   return (
     <>
       {/* HEADER */}
-      <div className="mb-6">
-        <h3 className="text-xl font-semibold">
-          Welcome, {user?.name?.split(" ")[0]}!
-        </h3>
-        <p className="text-sm text-slate-500">
-          Here's a quick snapshot of your classes and progress.
-        </p>
-      </div>
+      <header className="mb-5 flex flex-col gap-3 rounded-3xl border border-white/70 bg-gradient-to-br from-white/90 to-teal-50/65 p-5 shadow-soft sm:flex-row sm:items-end sm:justify-between dark:border-white/10 dark:from-slate-950/70 dark:to-teal-500/10">
+        <div>
+          <p className="text-xs font-bold uppercase tracking-[0.14em] text-teal-700 dark:text-teal-300">Your learning day</p>
+          <h3 className="mt-1 text-2xl font-bold tracking-[-0.035em] text-slate-900 dark:text-white">Welcome back, {user?.name?.split(" ")[0] || "Learner"}.</h3>
+          <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">A focused view of today’s timetable and live learning activity.</p>
+        </div>
+        <span className="inline-flex w-fit items-center gap-2 rounded-full border border-teal-100 bg-white/80 px-3 py-1.5 text-xs font-semibold text-teal-800 dark:border-teal-400/20 dark:bg-white/5 dark:text-teal-200"><span className="h-1.5 w-1.5 rounded-full bg-teal-500" />Today</span>
+      </header>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3">
 
         {/* ========================= */}
         {/* UPCOMING CLASS */}
         {/* ========================= */}
-        <div className="bg-white/80 backdrop-blur-md rounded-2xl p-5 shadow-soft">
-          <div className="text-sm font-medium text-slate-500 mb-3">
-            Upcoming Class
+        <div className="group relative overflow-hidden rounded-3xl border border-white/70 bg-gradient-to-br from-teal-700 via-teal-700 to-cyan-700 p-5 text-white shadow-[0_18px_40px_rgba(13,148,136,0.2)] transition duration-200 hover:-translate-y-0.5 dark:border-teal-300/10">
+          <div className="mb-3 text-xs font-bold uppercase tracking-[0.14em] text-teal-100">
+            Upcoming class
           </div>
 
           <div className="flex items-center gap-4">
-            <div className="w-12 h-12 rounded-xl bg-primary/10
-              grid place-items-center text-primary font-semibold">
+            <div className="grid h-12 w-12 place-items-center rounded-2xl bg-white/15 font-bold text-teal-50 ring-1 ring-white/15">
               {upcoming ? (upcoming.subject || upcoming.class || "CL")
                 .toString()
                 .slice(0, 2)
                 .toUpperCase() : "CL"}
             </div>
 
-            <div className="flex-1">
-              <div className="font-semibold text-slate-900">
+            <div className="min-w-0 flex-1">
+              <div className="truncate font-bold text-white">
                 {upcoming ? (upcoming.subject || upcoming.class) : "No upcoming class"}
               </div>
-              <div className="text-xs text-slate-400 mt-1">
-                {upcomingStartText}
+              <div className="mt-1 text-xs text-teal-100">
+                {upcomingStartText || "Your next session will appear here."}
               </div>
 
               <div className="mt-3 flex gap-2">
@@ -255,15 +254,13 @@ export default function HomeView({ user, setView }) {
                     localStorage.setItem("liveRoom", room);
                     setView?.("live");
                   }}
-                  className="text-xs px-4 py-1.5 rounded-xl
-                    bg-primary text-white shadow">
-                  Join Class
+                  className="rounded-xl bg-white px-3 py-2 text-xs font-bold text-teal-800 shadow-sm transition hover:bg-teal-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-white">
+                  Join class
                 </button>
                 <button
                   onClick={() => setView?.("study")}
-                  className="text-xs px-4 py-1.5 rounded-xl
-                    bg-primary/10 text-primary">
-                  View Details
+                  className="rounded-xl border border-white/20 bg-white/10 px-3 py-2 text-xs font-bold text-white transition hover:bg-white/15 focus:outline-none focus-visible:ring-2 focus-visible:ring-white">
+                  Study materials
                 </button>
               </div>
             </div>

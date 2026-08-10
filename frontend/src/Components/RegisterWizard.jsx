@@ -1,132 +1,38 @@
 import React, { useState } from "react";
 import { registerUser } from "../api/api";
+import BrandMark from "./BrandMark";
 
 export default function RegisterWizard({ onComplete, onBack }) {
-  const [form, setForm] = useState({
-    name: "",
-    dob: "",
-    gender: "",
-    username: "",
-    email: "",
-    password: "",
-    role: "student", // ✅ default role
-  });
+  const [form, setForm] = useState({ name: "", dob: "", gender: "", username: "", email: "", password: "", role: "student" });
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const update = (event) => setForm((current) => ({ ...current, [event.target.name]: event.target.value }));
+  const input = "mt-1.5 w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-teal-500 focus:ring-4 focus:ring-teal-400/10 dark:border-white/10 dark:bg-white/5 dark:text-white";
 
-  const handleChange = (e) => {
-    setForm({ ...form, [e.target.name]: e.target.value });
-  };
-
-  const handleRegister = async () => {
-    const { name, email, password, username, role } = form;
-
-    if (!username || !email || !password) {
-      alert("Username, Email and Password are required");
-      return;
-    }
-
-    const res = await registerUser(form);
-
-    if (res?.error) {
-      alert(res.error);
-    } else {
-      alert("Account created successfully");
-      onComplete && onComplete(res.user);
-    }
+  const submit = async (event) => {
+    event.preventDefault(); setError("");
+    if (!form.username.trim() || !form.email.trim() || !form.password) { setError("Username, email, and password are required."); return; }
+    setLoading(true);
+    try {
+      const result = await registerUser(form);
+      if (result?.error) { setError(result.error); return; }
+      await onComplete?.(result, form.password);
+    } catch { setError("Unable to create your account right now. Please try again."); }
+    finally { setLoading(false); }
   };
 
   return (
-    <div className="bg-white/90 backdrop-blur-md p-6 rounded-2xl shadow-soft max-w-md mx-auto">
-      <h2 className="text-xl font-semibold mb-4">Create Account</h2>
-
-      {/* NAME */}
-      <input
-        name="name"
-        placeholder="Full Name"
-        value={form.name}
-        onChange={handleChange}
-        className="w-full mb-3 px-4 py-3 rounded-xl border"
-      />
-
-      {/* DATE OF BIRTH */}
-      <input
-        type="date"
-        name="dob"
-        value={form.dob}
-        onChange={handleChange}
-        className="w-full mb-3 px-4 py-3 rounded-xl border"
-      />
-
-      {/* GENDER */}
-      <select
-        name="gender"
-        value={form.gender}
-        onChange={handleChange}
-        className="w-full mb-3 px-4 py-3 rounded-xl border"
-      >
-        <option value="">Select Gender</option>
-        <option value="Male">Male</option>
-        <option value="Female">Female</option>
-        <option value="Other">Other</option>
-      </select>
-
-      {/* ✅ ROLE SELECTOR (STUDENT / TEACHER) */}
-      <select
-        name="role"
-        value={form.role}
-        onChange={handleChange}
-        className="w-full mb-3 px-4 py-3 rounded-xl border"
-      >
-        <option value="student">Student</option>
-        <option value="teacher">Teacher</option>
-      </select>
-
-      {/* USERNAME */}
-      <input
-        name="username"
-        placeholder="Username"
-        value={form.username}
-        onChange={handleChange}
-        className="w-full mb-3 px-4 py-3 rounded-xl border"
-      />
-
-      {/* EMAIL */}
-      <input
-        type="email"
-        name="email"
-        placeholder="Email"
-        value={form.email}
-        onChange={handleChange}
-        className="w-full mb-3 px-4 py-3 rounded-xl border"
-      />
-
-      {/* PASSWORD */}
-      <input
-        type="password"
-        name="password"
-        placeholder="Password"
-        value={form.password}
-        onChange={handleChange}
-        className="w-full mb-4 px-4 py-3 rounded-xl border"
-      />
-
-      {/* ACTION BUTTONS */}
-      <div className="flex gap-3">
-        <button
-          onClick={handleRegister}
-          className="flex-1 bg-teal-500 text-white py-3 rounded-xl"
-        >
-          Create Account
-        </button>
-
-        {onBack && (
-          <button
-            onClick={onBack}
-            className="flex-1 border py-3 rounded-xl"
-          >
-            Back
-          </button>
-        )}
-      </div>
+    <div className="w-full rounded-2xl border border-white/20 bg-white/95 p-5 text-slate-900 shadow-[0_24px_60px_rgba(2,6,23,0.28)] backdrop-blur-xl sm:p-6 dark:bg-slate-950/90 dark:text-white">
+      <BrandMark className="mb-5" /><h2 className="text-xl font-bold">Create your account</h2><p className="mt-1 text-sm text-slate-500 dark:text-slate-300">Choose a learner or teacher workspace.</p>
+      <form onSubmit={submit} className="mt-5 space-y-3">
+        {error && <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2.5 text-sm text-rose-700 dark:border-rose-400/20 dark:bg-rose-500/10 dark:text-rose-200">{error}</p>}
+        <div className="grid gap-3 sm:grid-cols-2"><label className="block text-sm font-semibold text-slate-700 dark:text-slate-200">Full name<input name="name" value={form.name} onChange={update} placeholder="Your name" className={input} /></label><label className="block text-sm font-semibold text-slate-700 dark:text-slate-200">Date of birth<input type="date" name="dob" value={form.dob} onChange={update} className={input} /></label></div>
+        <div className="grid gap-3 sm:grid-cols-2"><label className="block text-sm font-semibold text-slate-700 dark:text-slate-200">Role<select name="role" value={form.role} onChange={update} className={input}><option value="student">Student</option><option value="teacher">Teacher</option></select></label><label className="block text-sm font-semibold text-slate-700 dark:text-slate-200">Gender <span className="font-normal text-slate-400">(optional)</span><select name="gender" value={form.gender} onChange={update} className={input}><option value="">Select</option><option value="Male">Male</option><option value="Female">Female</option><option value="Other">Other</option></select></label></div>
+        <label className="block text-sm font-semibold text-slate-700 dark:text-slate-200">Username<input required name="username" autoComplete="username" value={form.username} onChange={update} placeholder="Choose a username" className={input} /></label>
+        <label className="block text-sm font-semibold text-slate-700 dark:text-slate-200">Email address<input required type="email" name="email" autoComplete="email" value={form.email} onChange={update} placeholder="you@example.com" className={input} /></label>
+        <label className="block text-sm font-semibold text-slate-700 dark:text-slate-200">Password<input required minLength="6" type="password" name="password" autoComplete="new-password" value={form.password} onChange={update} placeholder="At least 6 characters" className={input} /></label>
+        <div className="flex gap-3 pt-2"><button type="submit" disabled={loading} className="min-h-11 flex-1 rounded-xl bg-teal-700 px-4 text-sm font-bold text-white transition hover:bg-teal-600 disabled:opacity-60 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500">{loading ? "Creating…" : "Create account"}</button><button type="button" onClick={onBack} className="min-h-11 rounded-xl border border-slate-200 px-4 text-sm font-bold text-slate-600 transition hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 dark:border-white/10 dark:text-slate-200 dark:hover:bg-white/5">Back</button></div>
+      </form>
     </div>
   );
 }

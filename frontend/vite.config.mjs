@@ -8,7 +8,9 @@ export default defineConfig({
     port: 5173,
     open: true,
     host: true,
-    allowedHosts: [".ngrok-free.dev"],
+    // Arena previews are hosted under *.e2b.app; keep that explicit alongside
+    // local/ngrok development rather than rejecting a valid preview Host header.
+    allowedHosts: [".ngrok-free.dev", ".e2b.app"],
 
     // Proxy API and socket during local dev
     proxy: {

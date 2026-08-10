@@ -1,87 +1,85 @@
+const crypto = require("crypto");
 const express = require("express");
 const axios = require("axios");
 
 const router = express.Router();
+const UPSTREAM_TIMEOUT_MS = Number(process.env.AI_ENGINE_TIMEOUT_MS || 20000);
+
+function publicError(res, status, code, error) {
+  return res.status(status).json({ error, code });
+}
+
+function resolveAiEndpoint(rawUrl) {
+  const configured = String(rawUrl || "").trim();
+  if (!configured) return null;
+  const withProtocol = /^https?:\/\//i.test(configured) ? configured : `https://${configured}`;
+  const parsed = new URL(withProtocol);
+  if (process.env.NODE_ENV === "production" && /^(localhost|127\.0\.0\.1|\[::1\])$/i.test(parsed.hostname)) {
+    throw new Error("AI_ENGINE_URL cannot point to a loopback host in production");
+  }
+  // Deployment setting is the service origin. Tolerate an old setting with a
+  // trailing route so the upgrade cannot produce a double /api/ai/query path.
+  const pathname = parsed.pathname.replace(/\/+$/, "").replace(/\/(api\/ai\/query|ai\/query)$/i, "");
+  return `${parsed.origin}${pathname}/api/ai/query`;
+}
 
 router.post("/query", async (req, res) => {
+  const requestId = crypto.randomUUID();
+  const message = String(req.body?.message || "").trim();
+  const email = String(req.body?.email || "").trim();
+
+  if (!message) return publicError(res, 400, "MISSING_MESSAGE", "A question is required.");
+  if (message.length > 4000) return publicError(res, 400, "MESSAGE_TOO_LONG", "Keep your question under 4,000 characters.");
+
+  let endpoint;
   try {
-    const { message, email } = req.body || {};
-
-    const cleanMessage = String(message || "").trim();
-    const cleanEmail = String(email || "").trim();
-
-    if (!cleanMessage || !cleanEmail) {
-      return res.status(400).json({
-        error: "Both message and email are required",
-      });
-    }
-
-    // The AI engine is a SEPARATE deployment. In production it must be reached
-    // over its public HTTPS URL — never 127.0.0.1/localhost, which on Render
-    // would point back at this container and hang until timeout.
-    const configuredAiUrl = String(process.env.AI_ENGINE_URL || "").trim();
-
-    if (!configuredAiUrl) {
-      if (process.env.NODE_ENV === "production") {
-        // Degrade gracefully with a clear, actionable message rather than
-        // silently dialing localhost and stalling the request for 15s.
-        return res.status(503).json({
-          error:
-            "AI service is not configured. Set AI_ENGINE_URL on the API service " +
-            "to the public URL of the deployed FastAPI AI engine.",
-        });
-      }
-      console.warn(
-        "[ai] AI_ENGINE_URL is not set — falling back to http://localhost:8001 (development only)."
-      );
-    }
-
-    // Normalize: a scheme-less hostname (e.g. "my-ai.onrender.com") gets https://
-    // so the request always goes over the public URL, never a relative path.
-    let aiBaseUrl = (configuredAiUrl || "http://localhost:8001")
-      .trim()
-      .replace(/\/+$/, "");
-    if (aiBaseUrl && !/^https?:\/\//i.test(aiBaseUrl)) {
-      aiBaseUrl = `https://${aiBaseUrl}`;
-    }
-    const payload = {
-      message: cleanMessage,
-      email: cleanEmail,
-    };
-    const requestOptions = {
-      timeout: 15000,
-    };
-
-    let aiResponse;
-    try {
-      aiResponse = await axios.post(`${aiBaseUrl}/api/ai/query`, payload, requestOptions);
-    } catch (firstErr) {
-      aiResponse = await axios.post(`${aiBaseUrl}/ai/query`, payload, requestOptions);
-    }
-
-    return res.json(aiResponse.data);
+    endpoint = resolveAiEndpoint(process.env.AI_ENGINE_URL);
   } catch (error) {
-    // Distinguish "AI service is down/unreachable" (503) from a real error the
-    // AI service itself returned, so the frontend can show a useful message.
-    const isUnreachable =
-      !error.response &&
-      ["ECONNREFUSED", "ENOTFOUND", "ETIMEDOUT", "ECONNABORTED", "EAI_AGAIN"].includes(
-        error.code
-      );
+    console.error(`[ai:${requestId}] invalid configuration:`, error.message);
+    return publicError(res, 503, "AI_NOT_CONFIGURED", "EduNova AI is temporarily unavailable. Please try again shortly.");
+  }
 
-    if (isUnreachable) {
-      console.error(`[ai] AI engine unreachable (${error.code}):`, error.message);
-      return res.status(503).json({
-        error:
-          "AI service is temporarily unavailable. It may be starting up — please try again shortly.",
-      });
+  if (!endpoint) {
+    console.error(`[ai:${requestId}] AI_ENGINE_URL is not configured.`);
+    return publicError(res, 503, "AI_NOT_CONFIGURED", "EduNova AI is temporarily unavailable. Please try again shortly.");
+  }
+
+  try {
+    const upstream = await axios.post(
+      endpoint,
+      { message, ...(email ? { email } : {}) },
+      {
+        timeout: Number.isFinite(UPSTREAM_TIMEOUT_MS) ? UPSTREAM_TIMEOUT_MS : 20000,
+        headers: { "Content-Type": "application/json", "X-Request-ID": requestId },
+        validateStatus: () => true,
+      }
+    );
+
+    if (upstream.status >= 200 && upstream.status < 300 && upstream.data?.success !== false && String(upstream.data?.reply || "").trim()) {
+      return res.status(200).json(upstream.data);
     }
 
-    const status = error.response?.status || 500;
-    console.error("[ai] AI engine error:", error.response?.data || error.message);
-    return res.status(status).json({
-      error: error.response?.data?.detail || "AI service unavailable",
-    });
+    // The API is a gateway here; an unhealthy AI service must not leak its raw
+    // exception or configuration into the browser. Preserve diagnostics only in
+    // server logs, keyed by a correlation id.
+    console.error(`[ai:${requestId}] upstream returned ${upstream.status}:`, JSON.stringify(upstream.data).slice(0, 800));
+    const status = upstream.status === 400 || upstream.status === 422 ? 400 : 502;
+    return publicError(
+      res,
+      status,
+      status === 400 ? "INVALID_AI_REQUEST" : "AI_UPSTREAM_ERROR",
+      status === 400 ? "EduNova AI could not process that question." : "EduNova AI is temporarily unavailable. Please try again shortly."
+    );
+  } catch (error) {
+    const timedOut = ["ECONNABORTED", "ETIMEDOUT"].includes(error.code);
+    const unavailable = ["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "ECONNRESET"].includes(error.code) || timedOut;
+    console.error(`[ai:${requestId}] upstream ${unavailable ? "unavailable" : "request failed"} (${error.code || "unknown"}):`, error.message);
+    return publicError(
+      res,
+      unavailable ? 503 : 502,
+      unavailable ? "AI_UPSTREAM_UNAVAILABLE" : "AI_UPSTREAM_ERROR",
+      "EduNova AI is temporarily unavailable. Please try again shortly."
+    );
   }
 });
 
