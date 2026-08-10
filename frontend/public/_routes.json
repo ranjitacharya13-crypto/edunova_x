@@ -1,5 +1,12 @@
 {
   "version": 1,
-  "include": ["/*"],
-  "exclude": ["/assets/*", "/edu-assistance-snn.svg", "/manifest.json", "/_headers", "/_redirects"]
+  "include": [
+    "/*"
+  ],
+  "exclude": [
+    "/assets/*",
+    "/manifest.json",
+    "/_headers",
+    "/_redirects"
+  ]
 }
