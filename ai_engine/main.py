@@ -3,7 +3,7 @@ import os
 import traceback
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from pymongo import MongoClient
@@ -424,10 +424,10 @@ async def ai_query(request: QueryRequest):
             "reply": "I can help you with your timetable. Try asking about today or tomorrow."
         }
 
-    except Exception:
-        # Keep diagnostics in Render logs, never expose infrastructure or Mongo
-        # details in a student-facing reply. The Node gateway maps this to its
-        # documented safe 502 response.
+    except Exception as exc:
         traceback.print_exc()
-        raise HTTPException(status_code=503, detail="AI service temporarily unavailable")
+        return {
+            "success": False,
+            "reply": f"AI encountered an internal error: {exc}"
+        }
 

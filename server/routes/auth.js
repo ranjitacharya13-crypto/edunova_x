@@ -80,33 +80,23 @@ router.post("/register", async (req, res) => {
 // ==========================
 router.post("/login", async (req, res) => {
   try {
-    // `email` is the established client contract; it deliberately accepts
-    // either a registered email address or username for a friendlier sign-in.
-    const identity = String(req.body?.email || "").trim();
-    const password = String(req.body?.password || "");
+    const { email, password } = req.body;
+    console.log("LOGIN INPUT:", email);
 
-    if (!identity || !password) {
-      return res.status(400).json({ error: "Email or username and password are required" });
-    }
-    if (!process.env.JWT_SECRET) {
-      console.error("[auth] JWT_SECRET is not configured");
-      return res.status(503).json({ error: "Authentication is temporarily unavailable" });
+    if (!email || !password) {
+      return res.status(400).json({ error: "Missing email or password" });
     }
 
-    // Emails are case-insensitive; usernames retain their original semantics.
+    // 🔍 find user by email or username
     const user = await User.findOne({
-      $or: [{ email: identity.toLowerCase() }, { username: identity }]
+      $or: [{ email: email }, { username: email }]
     });
 
     if (!user) {
       return res.status(400).json({ error: "Invalid credentials" });
     }
 
-    if (user.isBlocked) {
-      return res.status(403).json({ error: "This account has been blocked. Please contact support." });
-    }
-
-    // Passwords are bcrypt hashes; never log identities, passwords, or hashes.
+    // 🔐 compare hashed password
     const isMatch = await bcrypt.compare(password, user.password);
 
     if (!isMatch) {

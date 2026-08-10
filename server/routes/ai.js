@@ -10,11 +10,11 @@ router.post("/query", async (req, res) => {
     const cleanMessage = String(message || "").trim();
     const cleanEmail = String(email || "").trim();
 
-    if (!cleanMessage) {
-      return res.status(400).json({ error: "A message is required" });
+    if (!cleanMessage || !cleanEmail) {
+      return res.status(400).json({
+        error: "Both message and email are required",
+      });
     }
-    // The AI engine accepts an omitted email and treats it as a student query.
-    // This avoids coupling the assistant to an optional profile field.
 
     // The AI engine is a SEPARATE deployment. In production it must be reached
     // over its public HTTPS URL — never 127.0.0.1/localhost, which on Render
@@ -56,17 +56,9 @@ router.post("/query", async (req, res) => {
     try {
       aiResponse = await axios.post(`${aiBaseUrl}/api/ai/query`, payload, requestOptions);
     } catch (firstErr) {
-      // Only use the legacy endpoint when the current endpoint is absent.
-      // Retrying a provider 502/503 at a different path masks the root cause
-      // and unnecessarily doubles latency during an outage.
-      if (firstErr.response?.status !== 404) throw firstErr;
       aiResponse = await axios.post(`${aiBaseUrl}/ai/query`, payload, requestOptions);
     }
 
-    if (!aiResponse.data?.success || !aiResponse.data?.reply) {
-      console.error("[ai] AI engine returned an invalid response");
-      return res.status(502).json({ error: "AI service temporarily unavailable" });
-    }
     return res.json(aiResponse.data);
   } catch (error) {
     // Distinguish "AI service is down/unreachable" (503) from a real error the
@@ -85,13 +77,10 @@ router.post("/query", async (req, res) => {
       });
     }
 
-    // Provider errors are never passed through to students: provider HTML,
-    // stack traces, and infrastructure details are not part of our API contract.
-    const upstreamStatus = error.response?.status;
-    console.error(`[ai] AI engine request failed (upstream ${upstreamStatus || "network"}):`, error.message);
-    return res.status(502).json({
-      success: false,
-      error: "AI service temporarily unavailable",
+    const status = error.response?.status || 500;
+    console.error("[ai] AI engine error:", error.response?.data || error.message);
+    return res.status(status).json({
+      error: error.response?.data?.detail || "AI service unavailable",
     });
   }
 });
