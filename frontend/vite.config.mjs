@@ -2,28 +2,15 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
 export default defineConfig({
-  base: process.env.VITE_BASE || "/",
   plugins: [react()],
   server: {
+    host: "0.0.0.0",
     port: 5173,
-    open: true,
-    host: true,
-    allowedHosts: [".ngrok-free.dev"],
-
-    // Proxy API and socket during local dev
-    proxy: {
-      "/api": {
-        target: "http://127.0.0.1:4000",
-        changeOrigin: true,
-        secure: false,
-      },
-      "/socket.io": {
-        target: "http://127.0.0.1:4000",
-        ws: true,
-        changeOrigin: true,
-        secure: false,
-      },
-    },
+    allowedHosts: ["*", "5173-ir6v61hzw47wgxrktuu6t.e2b.app"],
+  },
+  preview: {
+    host: "0.0.0.0",
+    port: 4173,
+    allowedHosts: ["*", "4173-ir6v61hzw47wgxrktuu6t.e2b.app"],
   },
 });
-
