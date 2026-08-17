@@ -30,10 +30,12 @@ const server = http.createServer(app);
 // CORS CONFIG (IMPORTANT)
 // ==========================
 // Production: set CORS_ORIGIN to a comma-separated list of allowed browser
-// origins (e.g. "https://edunova-frontend.onrender.com"). When unset, any
-// origin is allowed — convenient for local dev / desktop / ngrok, but you
-// should set CORS_ORIGIN in production.
-const corsOrigin = (process.env.CORS_ORIGIN || "")
+// origins (e.g. "https://edunova-frontend.onrender.com"). FRONTEND_URL is an
+// optional single-origin alias. When unset, only the committed production and
+// local-development origins below are allowed.
+const corsOrigin = [process.env.CORS_ORIGIN, process.env.FRONTEND_URL]
+  .filter(Boolean)
+  .join(",")
   .split(",")
   .map((o) => o.trim().replace(/\/+$/, "")) // tolerate a trailing slash in the env var
   .filter(Boolean);
@@ -422,7 +424,7 @@ app.use((req, res) => {
 // Binding to 0.0.0.0 is REQUIRED — binding to localhost makes the port
 // unreachable from outside the container and Render reports
 // "No open ports detected".
-const PORT = process.env.PORT || 4000;
+const PORT = process.env.PORT || process.env.BACKEND_PORT || 4000;
 
 server.on("error", (err) => {
   if (err.code === "EADDRINUSE") {

@@ -1,433 +1,240 @@
-from datetime import datetime, timedelta
+"""FastAPI entrypoint for the EduNova autonomous AI agent."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
 import os
-import traceback
 from pathlib import Path
+import secrets
+from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from pymongo import MongoClient
-from bson import ObjectId
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, ConfigDict, Field
 
-# Local-dev convenience: load MONGO_URI from ../server/.env when present.
-# In production (Render) the MONGO_URI env var is injected directly, so no
-# credentials are ever hardcoded in this repository.
+# Local development convenience only. Production injects environment variables.
 try:
     from dotenv import load_dotenv
 
-    _server_env = Path(__file__).resolve().parents[1] / "server" / ".env"
-    if _server_env.exists():
-        load_dotenv(_server_env)
+    load_dotenv(Path(__file__).resolve().parent / ".env")
+    load_dotenv(Path(__file__).resolve().parents[1] / "server" / ".env")
 except ImportError:
     pass
 
-app = FastAPI(title="EduNova_X AI Engine", version="1.0.0")
+from agent.engine import AgentEngine
+from agent.llm import LLMConfigurationError, LLMResponseError, OpenAICompatibleLLM
+from agent.memory import ConversationStore
+from agent.tools import ToolRegistry, build_web_tools
+from config import load_settings
 
-# CORS: allow the deployed frontend. Comma-separated list via CORS_ORIGIN;
-# defaults to "*" (any origin) when unset or empty.
-_cors_raw = os.getenv("CORS_ORIGIN", "").strip()
-CORS_ORIGINS = [o.strip() for o in _cors_raw.split(",") if o.strip()] or [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-    "https://edunova-x.ranjitacharya13.workers.dev",
-]
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=CORS_ORIGINS,
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+logger = logging.getLogger("edunova.api")
+settings = load_settings()
+
+registry = ToolRegistry(allowed_permissions={"READ_EXTERNAL"})
+for definition in build_web_tools(settings):
+    registry.register(definition)
+llm = OpenAICompatibleLLM(settings)
+agent = AgentEngine(settings, llm, registry)
+conversations = ConversationStore(
+    max_turns=settings.conversation_max_turns,
+    ttl_seconds=settings.conversation_ttl_seconds,
 )
 
-MONGO_URI = os.getenv("MONGO_URI", "").strip()
-if not MONGO_URI:
-    raise RuntimeError(
-        "MONGO_URI is not set. Set it in Render → edunova-ai → Environment "
-        "(or in server/.env for local development)."
-    )
-client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=10000)
-DB_NAME = os.getenv("MONGO_DB_NAME", "edunova")
-db = client[DB_NAME]
-STUDENT_TIMETABLE_ID = os.getenv("STUDENT_TIMETABLE_ID", "693c1a9a3ea4ac84aaf771cd")
-TEACHER_TIMETABLE_ID = os.getenv("TEACHER_TIMETABLE_ID", "6943f4e22fc13232ae03fe2a")
+app = FastAPI(
+    title="EduNova AI Agent",
+    version="2.0.0",
+    description="Goal-oriented learning and research agent with permissioned tools.",
+)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=list(settings.cors_origins),
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-AI-Internal-Token"],
+)
 
 
-class QueryRequest(BaseModel):
-    message: str
-    email: str | None = None
+class ChatRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    message: str = Field(min_length=1, max_length=12_000)
+    conversation_id: str | None = Field(default=None, alias="conversationId", max_length=100)
+    owner_id: str | None = Field(default=None, alias="ownerId", max_length=200)
+    email: str | None = Field(default=None, max_length=320)  # Legacy client compatibility.
+    stream: bool = False
 
 
 @app.get("/")
-async def root():
+async def root() -> dict[str, Any]:
     return {
         "success": True,
-        "service": "edu_assistance",
-        "system": "ASI: Artificial Superintelligence",
-        "architecture": "SNN: Spiking Neural Network",
-        "message": "Service is running. Use POST /api/ai/query for edu_assistance responses.",
+        "service": "edunova-agent",
+        "version": "2.0.0",
+        "architecture": "autonomous-agent-loop",
+        "endpoint": "POST /api/ai/chat",
     }
 
 
 @app.get("/health")
-async def health():
-    return {"status": "live", "service": "edunova-ai"}
-
-
-# ------------------------
-# INTENT DETECTION
-# ------------------------
-
-def detect_intent(message: str):
-    msg = message.lower()
-
-    if "today" in msg and "tomorrow" in msg:
-        return "today_and_tomorrow"
-    if "today's and tomorrow's" in msg:
-        return "today_and_tomorrow"
-    if "tomorrow" in msg:
-        return "tomorrow"
-    if "today" in msg:
-        return "today"
-    if "next class" in msg:
-        return "next"
-    return "general"
-
-
-# ------------------------
-# DATABASE FETCH
-# ------------------------
-
-def get_user_role(email: str | None):
-    if not email:
-        return "student"
-    user = db["users"].find_one({"email": email}, {"role": 1})
-    if not user:
-        return "student"
-    return str(user.get("role", "student")).lower()
-
-
-def get_timetable(email: str | None):
-    role = get_user_role(email)
-    collection = "teacher_timetables" if role == "teacher" else "timetables"
-    preferred_id = TEACHER_TIMETABLE_ID if role == "teacher" else STUDENT_TIMETABLE_ID
-    timetable = None
-
-    try:
-        timetable = db[collection].find_one({"_id": ObjectId(preferred_id)})
-    except Exception:
-        timetable = None
-
-    if not timetable:
-        timetable = db[collection].find_one()
-    return timetable, collection, role
-
-
-def get_day_name(offset=0):
-    day = datetime.now() + timedelta(days=offset)
-    return day.strftime("%A")
-
-
-def get_classes_for_day(day_name, email: str | None):
-    timetable, collection, role = get_timetable(email)
-    if not timetable:
-        return [], collection, role
-    return timetable.get(day_name, []), collection, role
-
-
-# ------------------------
-# HUMAN RESPONSE
-# ------------------------
-
-PERIOD_TIME_MAP = {
-    1: "9:30 - 10:15",
-    2: "10:15 - 11:00",
-    3: "11:00 - 11:45",
-    4: "11:45 - 12:30",
-    5: "12:30 - 1:00",
-    6: "1:30 - 2:15",
-    7: "2:15 - 3:00",
-    8: "3:00 - 3:45",
-    9: "3:45 - 4:00",
-}
-
-
-def get_subject_suggestion(class_name: str):
-    name = str(class_name or "").lower()
-    if "math" in name:
-        return {
-            "focus_tip": "Break each problem into steps and verify your final answer calmly.",
-            "quick_action": "Solve one extra practice question after class.",
-            "energy_line": "Math confidence grows with every solved step.",
-        }
-    if "physics" in name:
-        return {
-            "focus_tip": "Watch the formula, units, and concept meaning together.",
-            "quick_action": "Write one real-life example for today's concept.",
-            "energy_line": "Think concept first, formula second.",
-        }
-    if "chemistry" in name:
-        return {
-            "focus_tip": "Track reactions carefully and notice why each step happens.",
-            "quick_action": "Revise one equation pair before your next period.",
-            "energy_line": "Small revision now saves big effort later.",
-        }
-    if "biology" in name:
-        return {
-            "focus_tip": "Visualize the process using diagrams and keywords.",
-            "quick_action": "Summarize the topic in 3 bullet points.",
-            "energy_line": "Diagram memory is your superpower here.",
-        }
-    if "science" in name:
-        return {
-            "focus_tip": "Connect the theory with a practical example.",
-            "quick_action": "Note one key concept and one question to ask.",
-            "energy_line": "Curiosity makes science easier.",
-        }
-    if "english" in name:
-        return {
-            "focus_tip": "Read actively and observe tone, structure, and key words.",
-            "quick_action": "Use 2 new words in your own sentence.",
-            "energy_line": "Strong language = strong expression.",
-        }
-    if "social" in name or "history" in name or "civics" in name or "geography" in name:
-        return {
-            "focus_tip": "Link events, places, and causes like a story map.",
-            "quick_action": "Create one quick timeline or concept map.",
-            "energy_line": "Context turns facts into memory.",
-        }
-    if "tamil" in name or "hindi" in name or "language" in name:
-        return {
-            "focus_tip": "Read with pronunciation, rhythm, and meaning in mind.",
-            "quick_action": "Recite one paragraph and summarize it simply.",
-            "energy_line": "Fluency improves with short daily practice.",
-        }
-    if "library" in name or "revision" in name:
-        return {
-            "focus_tip": "Use this period to close one weak area fully.",
-            "quick_action": "Revise notes and mark one doubt to clear today.",
-            "energy_line": "Revision is where marks become stable.",
-        }
-    if "pt" in name or "activity" in name:
-        return {
-            "focus_tip": "Stay active, hydrated, and keep your breathing steady.",
-            "quick_action": "Reset your focus for the next academic period.",
-            "energy_line": "A fresh body supports a sharp mind.",
-        }
+async def health() -> dict[str, Any]:
     return {
-        "focus_tip": "Stay engaged and capture one key takeaway from this class.",
-        "quick_action": "Write one line summary before moving to the next period.",
-        "energy_line": "Consistency beats intensity in learning.",
+        "status": "live",
+        "service": "edunova-agent",
+        "llmConfigured": settings.llm_configured,
+        "webSearchConfigured": settings.search_configured,
+        "internalAuthConfigured": bool(settings.ai_internal_token),
+        "internalAuthRequired": settings.ai_require_internal_token,
+        "tools": [spec["name"] for spec in registry.specs()],
+        "limits": {
+            "maxIterations": settings.max_agent_iterations,
+            "maxToolCalls": settings.max_tool_calls,
+            "maxRuntimeSeconds": settings.max_agent_runtime_seconds,
+        },
     }
 
 
-def resolve_time(period, raw_time):
-    text = str(raw_time or "").strip()
-    if text:
-        return text
-    try:
-        key = int(period)
-    except Exception:
-        return "time will be confirmed soon"
-    return PERIOD_TIME_MAP.get(key, "time will be confirmed soon")
-
-
-def get_teacher_suggestion(class_name: str):
-    name = str(class_name or "").lower()
-    if "lunch" in name or "break" in name:
-        return {
-            "focus_tip": "Take a real reset so your next class gets your best energy.",
-            "quick_action": "Use 5 minutes to prep your first board line for the next session.",
-        }
-    if "meeting" in name:
-        return {
-            "focus_tip": "Capture clear decisions and one immediate action to close the loop.",
-            "quick_action": "Note top 3 takeaways before you leave the room.",
-        }
-    if "math" in name:
-        return {
-            "focus_tip": "Set one anchor problem early to build momentum in the room.",
-            "quick_action": "Use a quick checkpoint question before moving to the next concept.",
-        }
-    if "physics" in name or "chemistry" in name or "biology" in name or "science" in name:
-        return {
-            "focus_tip": "Open with a real-world hook to trigger curiosity in the first 2 minutes.",
-            "quick_action": "Close with one practical example students can relate to today.",
-        }
-    if "english" in name or "language" in name or "hindi" in name or "tamil" in name:
-        return {
-            "focus_tip": "Start with one expressive prompt and pull responses from multiple students.",
-            "quick_action": "End with a short reflection line to build confidence and fluency.",
-        }
-    if "history" in name or "social" in name or "geography" in name or "civics" in name:
-        return {
-            "focus_tip": "Frame the topic as a story, then connect it to one current-day example.",
-            "quick_action": "Ask one cause-and-effect question before wrapping up.",
-        }
-    if "pt" in name or "activity" in name:
-        return {
-            "focus_tip": "Keep transitions crisp and end with one reflection point.",
-            "quick_action": "Reinforce one discipline habit students should carry forward.",
-        }
-    return {
-        "focus_tip": "Stay engaged and capture one key takeaway from this class.",
-        "quick_action": "Write one line summary before moving to the next period.",
-    }
-
-
-def format_schedule(classes, label, role="student"):
-    if not classes:
-        if role == "teacher":
-            return (
-                f"Nice! You have no classes {label}. "
-                "Take a reset break, plan one high-impact activity, and return stronger."
-            )
-        return (
-            f"Nice! You have no classes {label}. "
-            "Take a reset break, then do a quick 20-minute revision to stay sharp."
+def _authorize_internal_request(token: str | None) -> None:
+    if settings.ai_require_internal_token and not settings.ai_internal_token:
+        raise HTTPException(
+            status_code=503,
+            detail="AI internal authentication is required but not configured",
         )
+    if settings.ai_internal_token and not secrets.compare_digest(
+        str(token or ""), settings.ai_internal_token
+    ):
+        raise HTTPException(status_code=401, detail="AI service authorization failed")
 
-    day_phrase = "today" if label == "today" else "tomorrow"
-    opening = (
-        f"Let's make {day_phrase} count. You have {len(classes)} classes lined up.\n"
-        "Here is your flow, with a quick smart tip for each one:\n"
+
+def _owner(request: ChatRequest) -> str:
+    return str(request.owner_id or request.email or "anonymous")[:200]
+
+
+def _safe_error(exc: Exception) -> tuple[int, str]:
+    if isinstance(exc, asyncio.TimeoutError):
+        return 504, "EduNova AI reached its runtime safety limit. Please narrow the request and try again."
+    if isinstance(exc, LLMConfigurationError):
+        return 503, str(exc)
+    if isinstance(exc, LLMResponseError):
+        return 502, "The AI model provider is temporarily unavailable. Please try again."
+    logger.exception("Agent request failed")
+    return 500, "EduNova AI could not complete this request. Please try again."
+
+
+async def _run_non_stream(request: ChatRequest) -> dict[str, Any]:
+    conversation = conversations.get_or_create(request.conversation_id, _owner(request))
+    result = await asyncio.wait_for(
+        agent.run(
+            goal=request.message.strip(),
+            conversation=list(conversation.messages),
+            conversation_id=conversation.id,
+        ),
+        timeout=settings.max_agent_runtime_seconds,
     )
-    reply = opening + "\n"
+    conversations.append_turn(conversation, request.message.strip(), result.message)
+    return result.public()
 
-    for idx, c in enumerate(classes, start=1):
-        class_name = c.get("class") or c.get("subject") or "Class"
-        period = c.get("period", idx)
-        time = resolve_time(period, c.get("time"))
 
-        if role == "teacher":
-            grade = c.get("grade") or c.get("standard") or c.get("year") or ""
-            section = c.get("section") or c.get("batch") or ""
-            title = " ".join([p for p in [grade, section] if p]).strip() or class_name
-            tip = get_teacher_suggestion(class_name)
-            reply += (
-                f"{idx}. Period {period} • {title}\n"
-                f"   ⏰ {time}\n"
-                f"   🎯 {tip['focus_tip']}\n"
-                f"   ⚡ {tip['quick_action']}\n"
-            )
-        else:
-            suggestion = get_subject_suggestion(class_name)
-            reply += (
-                f"{idx}. Period {period} • {class_name}\n"
-                f"   ⏰ {time}\n"
-                f"   🎯 {suggestion['focus_tip']}\n"
-                f"   ⚡ {suggestion['quick_action']}\n"
-            )
+async def _stream(request: ChatRequest):
+    conversation = conversations.get_or_create(request.conversation_id, _owner(request))
+    queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
 
-        if idx == 3 and len(classes) > 4:
-            reply += "   🔥 Pace check: Great rhythm so far. Keep the focus tight.\n"
-        reply += "\n"
+    async def event_callback(event: dict[str, Any]) -> None:
+        await queue.put(event)
 
-    reply += "You are on track. One focused class at a time and you'll finish strong."
-    return reply
-def get_next_class(classes):
-    now = datetime.now()
-    for c in classes:
-        start_time = str(c.get("time", "")).split("-")[0].strip()
+    async def runner() -> None:
         try:
-            class_time = datetime.strptime(start_time, "%H:%M").replace(
-                year=now.year, month=now.month, day=now.day
+            result = await asyncio.wait_for(
+                agent.run(
+                    goal=request.message.strip(),
+                    conversation=list(conversation.messages),
+                    conversation_id=conversation.id,
+                    event_callback=event_callback,
+                ),
+                timeout=settings.max_agent_runtime_seconds,
             )
-            if class_time > now:
-                class_name = c.get("class") or c.get("subject") or "Class"
-                return (
-                    f"Your next class is {class_name} at {c.get('time', 'time will be confirmed soon')}.\n"
-                    "Quick prep: open your notes now, review for 2 minutes, and join a little early."
-                )
-        except Exception:
-            continue
-    return "Great job, you've wrapped up all classes for today. Take a short break and revise one key concept before you log off."
+            conversations.append_turn(conversation, request.message.strip(), result.message)
+            await queue.put({"type": "answer", **result.public()})
+        except Exception as exc:  # The HTTP stream is already open; report a safe SSE error.
+            status, message = _safe_error(exc)
+            await queue.put(
+                {
+                    "type": "error",
+                    "success": False,
+                    "status": status,
+                    "message": message,
+                    "agentStatus": "failed",
+                    "conversationId": conversation.id,
+                }
+            )
+        finally:
+            await queue.put(None)
 
-
-# ------------------------
-# MAIN ROUTE
-# ------------------------
-
-@app.post("/api/ai/query")
-async def ai_query(request: QueryRequest):
+    task = asyncio.create_task(runner())
     try:
-        # Validate DB connectivity for every request to avoid silent fallback behaviour.
-        client.admin.command("ping")
+        while True:
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=15)
+            except asyncio.TimeoutError:
+                # Keeps proxies from closing the stream during a long provider call.
+                yield ": keep-alive\n\n"
+                continue
+            if event is None:
+                break
+            yield "data: " + json.dumps(event, ensure_ascii=False) + "\n\n"
+    finally:
+        if not task.done():
+            task.cancel()
 
-        intent = detect_intent(request.message)
-        email = request.email
 
-        if intent == "today_and_tomorrow":
-            today = get_day_name(0)
-            tomorrow = get_day_name(1)
-            today_classes, collection, role = get_classes_for_day(today, email)
-            tomorrow_classes, _, _ = get_classes_for_day(tomorrow, email)
-            print("Detected intent:", intent)
-            print("Today:", today)
-            print("Tomorrow:", tomorrow)
-            print("Classes found:", {"today": today_classes, "tomorrow": tomorrow_classes})
-            return {
-                "success": True,
-                "reply": f"{format_schedule(today_classes, 'today', role)}\n\n{format_schedule(tomorrow_classes, 'tomorrow', role)}",
-                "source_collection": collection,
-                "role": role,
-            }
+@app.post("/api/ai/chat")
+async def chat(
+    payload: ChatRequest,
+    request: Request,
+    x_ai_internal_token: str | None = Header(default=None),
+):
+    _authorize_internal_request(x_ai_internal_token)
+    clean_message = payload.message.strip()
+    if not clean_message:
+        raise HTTPException(status_code=422, detail="message cannot be blank")
+    payload.message = clean_message
 
-        if intent == "today":
-            today = get_day_name(0)
-            classes, collection, role = get_classes_for_day(today, email)
-            print("Detected intent:", intent)
-            print("Today:", get_day_name(0))
-            print("Tomorrow:", get_day_name(1))
-            print("Classes found:", classes)
-            return {
-                "success": True,
-                "reply": format_schedule(classes, "today", role),
-                "source_collection": collection,
-                "role": role,
-            }
-
-        if intent == "tomorrow":
-            tomorrow = get_day_name(1)
-            classes, collection, role = get_classes_for_day(tomorrow, email)
-            print("Detected intent:", intent)
-            print("Today:", get_day_name(0))
-            print("Tomorrow:", get_day_name(1))
-            print("Classes found:", classes)
-            return {
-                "success": True,
-                "reply": format_schedule(classes, "tomorrow", role),
-                "source_collection": collection,
-                "role": role,
-            }
-
-        if intent == "next":
-            today = get_day_name(0)
-            classes, collection, role = get_classes_for_day(today, email)
-            print("Detected intent:", intent)
-            print("Today:", get_day_name(0))
-            print("Tomorrow:", get_day_name(1))
-            print("Classes found:", classes)
-            return {
-                "success": True,
-                "reply": get_next_class(classes),
-                "source_collection": collection,
-                "role": role,
-            }
-
-        classes = []
-        print("Detected intent:", intent)
-        print("Today:", get_day_name(0))
-        print("Tomorrow:", get_day_name(1))
-        print("Classes found:", classes)
-        return {
-            "success": True,
-            "reply": "I can help you with your timetable. Try asking about today or tomorrow."
-        }
-
+    wants_stream = payload.stream or "text/event-stream" in request.headers.get("accept", "")
+    if wants_stream:
+        return StreamingResponse(
+            _stream(payload),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
+            },
+        )
+    try:
+        return await _run_non_stream(payload)
     except Exception as exc:
-        traceback.print_exc()
-        return {
-            "success": False,
-            "reply": f"AI encountered an internal error: {exc}"
-        }
+        status, message = _safe_error(exc)
+        raise HTTPException(status_code=status, detail=message) from exc
 
+
+# Backward-compatible endpoint for older deployed Node clients. It invokes the
+# same agent engine; there is no separate fixed timetable workflow.
+@app.post("/api/ai/query")
+@app.post("/ai/query")
+async def legacy_query(
+    payload: ChatRequest,
+    x_ai_internal_token: str | None = Header(default=None),
+):
+    _authorize_internal_request(x_ai_internal_token)
+    payload.stream = False
+    try:
+        return await _run_non_stream(payload)
+    except Exception as exc:
+        status, message = _safe_error(exc)
+        raise HTTPException(status_code=status, detail=message) from exc

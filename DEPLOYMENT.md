@@ -79,6 +79,9 @@ Set these in **Render → your API service → Environment**:
 | `JWT_SECRET` | ✅ | Long random string (`openssl rand -hex 32`) |
 | `CORS_ORIGIN` | ✅ | `https://edunova-x.ranjitacharya13.workers.dev` |
 | `AI_ENGINE_URL` | for AI chat | Public HTTPS URL of the AI service, no trailing slash (`https://edunova-ai-o2vy.onrender.com`) |
+| `AI_INTERNAL_TOKEN` | recommended | Random shared secret; use the exact same value on the AI service |
+| `AGENT_REQUEST_TIMEOUT` | optional | Agent proxy timeout in ms (default `210000`) |
+| `AI_RATE_LIMIT_MAX_REQUESTS` | optional | Authenticated requests per user/window (default `20`) |
 | `EMAIL_USER` / `EMAIL_PASS` | for contact form | Gmail address + 16-char App Password |
 | `CONTACT_RECEIVER_EMAIL` | optional | Where contact messages are sent |
 | `ADMIN_TEMP_PASSWORD` | optional | Otherwise a random one is printed to logs once |
@@ -103,12 +106,24 @@ IPs are dynamic, so an IP allowlist will intermittently fail.
 | Start Command | `uvicorn main:app --host 0.0.0.0 --port $PORT` |
 | Health Check Path | `/health` |
 
-Environment: `MONGO_URI` (required), `CORS_ORIGIN`, and optionally
-`MONGO_DB_NAME`, `STUDENT_TIMETABLE_ID`, `TEACHER_TIMETABLE_ID`.
+Required agent environment:
 
-After it deploys, copy its public URL into the API service's `AI_ENGINE_URL`.
-If `AI_ENGINE_URL` is unset in production, `/api/ai/query` returns a clean
-`503` instead of hanging.
+| Variable | Notes |
+|---|---|
+| `LLM_API_KEY` | Server-side model credential |
+| `LLM_MODEL` | OpenAI-compatible model name |
+| `LLM_BASE_URL` | Compatible `/v1` base URL |
+| `WEB_SEARCH_API_KEY` | Brave, Tavily, or Serper credential |
+| `WEB_SEARCH_PROVIDER` | `brave`, `tavily`, or `serper` |
+| `AI_INTERNAL_TOKEN` | Required in production; exact same value as API service |
+| `AI_REQUIRE_INTERNAL_TOKEN` | Set `true` in production (blueprint default) |
+| `MAX_AGENT_ITERATIONS` / `MAX_TOOL_CALLS` | Defaults `12` / `15` |
+| `WEB_REQUEST_TIMEOUT` / `WEB_MAX_CONTENT_LENGTH` | Defaults `10` / `200000` |
+
+The AI agent does not need MongoDB. Express remains the authenticated database
+and application API. After the agent deploys, copy its public URL into the API
+service's `AI_ENGINE_URL`. If that is unset, `/api/ai/chat` returns a clean `503`
+instead of hanging. See `AGENT_ARCHITECTURE.md` for all limits and providers.
 
 ---
 

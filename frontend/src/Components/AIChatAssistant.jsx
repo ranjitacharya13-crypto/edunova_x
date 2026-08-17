@@ -1,5 +1,5 @@
-import React, { useMemo, useState } from "react";
-import { queryAIEngine } from "../api/api";
+import React, { useRef, useState } from "react";
+import { streamAIEngine } from "../api/api";
 import EduNovaAIAvatar from "./EduNovaAIAvatar";
 
 const ASSISTANT_NAME = "EduNova AI";
@@ -12,13 +12,13 @@ const QUICK_PROMPTS = [
   "Summarize my study material",
 ];
 
-export default function AIChatAssistant({ user }) {
+export default function AIChatAssistant() {
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
+  const [agentStatus, setAgentStatus] = useState("Ready to help");
   const [error, setError] = useState("");
   const [result, setResult] = useState(null);
-
-  const email = useMemo(() => String(user?.email || "guest").trim(), [user]);
+  const conversationIdRef = useRef(null);
 
   const handleSubmit = async (event, promptOverride = "") => {
     event?.preventDefault?.();
@@ -26,26 +26,38 @@ export default function AIChatAssistant({ user }) {
     if (!cleanMessage || loading) return;
 
     setLoading(true);
+    setAgentStatus("Understanding your question...");
     setError("");
     setResult(null);
 
-    const res = await queryAIEngine({ message: cleanMessage, email });
-    setLoading(false);
+    try {
+      const res = await streamAIEngine({
+        message: cleanMessage,
+        conversationId: conversationIdRef.current,
+        onEvent: (eventData) => {
+          if (eventData?.type === "status" && eventData?.message) {
+            setAgentStatus(eventData.message);
+          }
+        },
+      });
+      if (res?.conversationId) conversationIdRef.current = res.conversationId;
+      if (res?.error || res?.success === false) {
+        throw new Error(res?.error || res?.message || "EduNova AI request failed");
+      }
 
-    if (res?.error || res?.success === false) {
-      console.error("[EduNova AI] Query failed:", res?.error || res?.reply);
-      setError("Sorry, I couldn't reach EduNova AI right now.");
-      return;
+      const reply = String(res?.reply || res?.message || res?.response || "").trim();
+      if (!reply || /^AI encountered an internal error/i.test(reply)) {
+        throw new Error("EduNova AI returned an empty response");
+      }
+      setResult({ ...res, reply });
+      setMessage("");
+    } catch (requestError) {
+      console.error("[EduNova AI] Query failed:", requestError);
+      setError(requestError?.message || "Sorry, I couldn't reach EduNova AI right now.");
+    } finally {
+      setLoading(false);
+      setAgentStatus("Ready to help");
     }
-
-    const reply = String(res?.reply || res?.response || res?.data?.reply || "").trim();
-    if (!reply || /^AI encountered an internal error/i.test(reply)) {
-      setError("Sorry, I couldn't reach EduNova AI right now.");
-      return;
-    }
-
-    setResult({ ...res, reply });
-    setMessage("");
   };
 
   return (
@@ -58,7 +70,7 @@ export default function AIChatAssistant({ user }) {
             <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">{ASSISTANT_SUBTITLE}</p>
             <div className="mt-2 inline-flex items-center gap-2 rounded-full border border-teal-200 bg-teal-50 px-3 py-1 text-xs font-semibold text-teal-700 dark:border-teal-400/20 dark:bg-teal-400/10 dark:text-teal-200">
               <span className="edunova-ai-status-dot" aria-hidden="true" />
-              Ready to help
+              {loading ? agentStatus : "Ready to help"}
             </div>
           </div>
         </div>
@@ -118,10 +130,13 @@ export default function AIChatAssistant({ user }) {
           {loading && (
             <div className="flex items-start gap-3">
               <EduNovaAIAvatar size={36} decorative />
-              <div className="flex items-center gap-1.5 rounded-2xl border border-slate-200 bg-white px-4 py-3 dark:border-white/10 dark:bg-white/[0.07]">
-                <span className="edunova-ai-typing-dot" />
-                <span className="edunova-ai-typing-dot [animation-delay:120ms]" />
-                <span className="edunova-ai-typing-dot [animation-delay:240ms]" />
+              <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 dark:border-white/10 dark:bg-white/[0.07]">
+                <div className="flex items-center gap-1.5">
+                  <span className="edunova-ai-typing-dot" />
+                  <span className="edunova-ai-typing-dot [animation-delay:120ms]" />
+                  <span className="edunova-ai-typing-dot [animation-delay:240ms]" />
+                </div>
+                <p className="mt-2 text-xs font-medium text-slate-500 dark:text-slate-300">{agentStatus}</p>
               </div>
             </div>
           )}
@@ -138,6 +153,24 @@ export default function AIChatAssistant({ user }) {
                 <EduNovaAIAvatar size={36} decorative />
                 <div className="rounded-2xl rounded-tl-md border border-slate-200 bg-white px-4 py-3 text-sm leading-6 text-slate-700 shadow-sm dark:border-white/10 dark:bg-white/[0.07] dark:text-slate-100">
                   <p className="whitespace-pre-wrap">{result.reply}</p>
+                  {Array.isArray(result.sources) && result.sources.length > 0 && (
+                    <div className="mt-4 border-t border-slate-200 pt-3 dark:border-white/10">
+                      <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.14em] text-slate-400">Sources checked</p>
+                      <div className="space-y-1.5">
+                        {result.sources.slice(0, 6).map((source) => (
+                          <a
+                            key={`${source.id}-${source.url}`}
+                            href={source.url}
+                            target="_blank"
+                            rel="noreferrer noopener"
+                            className="block truncate rounded-lg bg-slate-50 px-2.5 py-1.5 text-xs font-semibold text-teal-700 hover:bg-teal-50 dark:bg-white/[0.05] dark:text-teal-200"
+                          >
+                            {source.id ? `${source.id} · ` : ""}{source.title || source.domain || source.url}
+                          </a>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
 

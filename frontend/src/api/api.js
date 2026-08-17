@@ -245,11 +245,83 @@ export const getAdminAnalytics = async () => {
   return res.data;
 };
 
-export const queryAIEngine = async ({ message, email }) => {
+function aiAuthHeaders(extra = {}) {
+  const token = localStorage.getItem("token");
+  return {
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...extra,
+  };
+}
+
+export const queryAIEngine = async ({ message, conversationId }) => {
   try {
-    const res = await API.post("/ai/query", { message, email });
+    const res = await API.post(
+      "/ai/chat",
+      { message, conversationId },
+      { headers: aiAuthHeaders() }
+    );
     return res.data;
   } catch (err) {
-    return { error: err.response?.data?.error || "EduNova AI query failed" };
+    return {
+      error:
+        err.response?.data?.error ||
+        err.response?.data?.detail ||
+        "EduNova AI query failed",
+    };
   }
+};
+
+// Consume the safe high-level SSE event stream from the autonomous agent. Tool
+// observations and private model reasoning never reach this browser API.
+export const streamAIEngine = async ({ message, conversationId, onEvent }) => {
+  const response = await fetch(apiUrl("/ai/chat"), {
+    method: "POST",
+    headers: aiAuthHeaders({
+      "Content-Type": "application/json",
+      Accept: "text/event-stream",
+    }),
+    body: JSON.stringify({ message, conversationId }),
+  });
+
+  if (!response.ok) {
+    let detail = "EduNova AI request failed";
+    try {
+      const body = await response.json();
+      detail = body.error || body.detail || detail;
+    } catch {
+      // Keep a user-safe fallback for non-JSON proxy responses.
+    }
+    throw new Error(detail);
+  }
+  if (!response.body) throw new Error("This browser cannot receive the AI response stream");
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let finalAnswer = null;
+
+  const consumeBlock = (block) => {
+    const dataText = block
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trimStart())
+      .join("\n");
+    if (!dataText) return;
+    const event = JSON.parse(dataText);
+    onEvent?.(event);
+    if (event.type === "answer") finalAnswer = event;
+    if (event.type === "error") throw new Error(event.message || "EduNova AI request failed");
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+    const blocks = buffer.split(/\r?\n\r?\n/);
+    buffer = blocks.pop() || "";
+    for (const block of blocks) consumeBlock(block);
+    if (done) break;
+  }
+  if (buffer.trim()) consumeBlock(buffer);
+  if (!finalAnswer) throw new Error("EduNova AI ended without an answer");
+  return finalAnswer;
 };

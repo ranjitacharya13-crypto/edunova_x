@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { queryAIEngine } from "../api/api";
+import { streamAIEngine } from "../api/api";
 import EduNovaAIAvatar from "./EduNovaAIAvatar";
 
 const ASSISTANT_NAME = "EduNova AI";
@@ -131,12 +131,13 @@ if (typeof window !== "undefined") {
 }
 
 // ---- Main Component ----
-export default function FloatingAIChat({ user }) {
+export default function FloatingAIChat() {
   // ---- Chat state ----
   const [isOpen, setIsOpen] = useState(false);
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [agentStatus, setAgentStatus] = useState(STATUS_LABEL);
   const [showInfo, setShowInfo] = useState(false);
 
   // ---- Position & Drag State ----
@@ -159,6 +160,7 @@ export default function FloatingAIChat({ user }) {
   const currentPosRef = useRef(position);
   const isOpenRef = useRef(isOpen);
   const rafRef = useRef(null);
+  const conversationIdRef = useRef(null);
 
   // Keep refs in sync with state
   currentPosRef.current = position;
@@ -235,16 +237,23 @@ export default function FloatingAIChat({ user }) {
       }
       setInput("");
       setLoading(true);
+      setAgentStatus("Understanding your question...");
 
       try {
-        const data = await queryAIEngine({
+        const data = await streamAIEngine({
           message: userMessage,
-          email: user?.email || "guest",
+          conversationId: conversationIdRef.current,
+          onEvent: (event) => {
+            if (event?.type === "status" && event?.message) {
+              setAgentStatus(event.message);
+            }
+          },
         });
 
         if (data?.error || data?.success === false) {
-          throw new Error(data?.error || data?.reply || "EduNova AI request failed");
+          throw new Error(data?.error || data?.message || "EduNova AI request failed");
         }
+        if (data?.conversationId) conversationIdRef.current = data.conversationId;
 
         const reply = extractAIReply(data);
         if (!reply || /^AI encountered an internal error/i.test(reply)) {
@@ -253,7 +262,13 @@ export default function FloatingAIChat({ user }) {
 
         setMessages((prev) => [
           ...prev,
-          { id: makeMessageId("assistant"), role: "assistant", content: reply },
+          {
+            id: makeMessageId("assistant"),
+            role: "assistant",
+            content: reply,
+            sources: Array.isArray(data.sources) ? data.sources : [],
+            usedWeb: Boolean(data.usedWeb),
+          },
         ]);
       } catch (error) {
         console.error("[EduNova AI] Query failed:", error);
@@ -263,15 +278,16 @@ export default function FloatingAIChat({ user }) {
             id: makeMessageId("assistant_err"),
             role: "assistant",
             type: "error",
-            content: "Sorry, I couldn't reach EduNova AI right now.",
+            content: error?.message || "Sorry, I couldn't reach EduNova AI right now.",
             retryMessage: userMessage,
           },
         ]);
       } finally {
         setLoading(false);
+        setAgentStatus(STATUS_LABEL);
       }
     },
-    [loading, user]
+    [loading]
   );
 
   const sendMessage = useCallback(() => {
@@ -528,7 +544,7 @@ export default function FloatingAIChat({ user }) {
                 </p>
                 <div className="mt-1 flex items-center gap-1.5 text-[11px] font-medium text-teal-700 dark:text-teal-200">
                   <span className="edunova-ai-status-dot" aria-hidden="true" />
-                  <span>{STATUS_LABEL}</span>
+                  <span>{loading ? agentStatus : STATUS_LABEL}</span>
                 </div>
               </div>
             </div>
@@ -574,7 +590,7 @@ export default function FloatingAIChat({ user }) {
               {messages.map((message) => (
                 <ChatMessage key={message.id} message={message} onRetry={handleRetry} retryDisabled={loading} />
               ))}
-              {loading && <TypingIndicator />}
+              {loading && <TypingIndicator status={agentStatus} />}
             </div>
           )}
         </section>
@@ -706,6 +722,27 @@ function ChatMessage({ message, onRetry, retryDisabled }) {
         }`}
       >
         <RichMessage content={message.content} />
+        {!isError && Array.isArray(message.sources) && message.sources.length > 0 && (
+          <div className="mt-3 border-t border-slate-200/80 pt-3 dark:border-white/10">
+            <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.14em] text-slate-400 dark:text-slate-500">
+              Sources checked
+            </p>
+            <div className="space-y-1.5">
+              {message.sources.slice(0, 5).map((source) => (
+                <a
+                  key={`${source.id}-${source.url}`}
+                  href={source.url}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className="block truncate rounded-lg bg-slate-50 px-2.5 py-1.5 text-xs font-semibold text-teal-700 transition hover:bg-teal-50 hover:text-teal-800 dark:bg-white/[0.05] dark:text-teal-200 dark:hover:bg-teal-400/10"
+                  title={source.title || source.url}
+                >
+                  {source.id ? `${source.id} · ` : ""}{source.title || source.domain || source.url}
+                </a>
+              ))}
+            </div>
+          </div>
+        )}
         {isError && (
           <button
             type="button"
@@ -722,14 +759,19 @@ function ChatMessage({ message, onRetry, retryDisabled }) {
   );
 }
 
-function TypingIndicator() {
+function TypingIndicator({ status }) {
   return (
-    <div className="flex items-start gap-2.5" aria-label="EduNova AI is typing">
+    <div className="flex items-start gap-2.5" aria-label={status || "EduNova AI is working"}>
       <EduNovaAIAvatar size={34} decorative />
-      <div className="flex items-center gap-1.5 rounded-2xl rounded-tl-md border border-slate-200/80 bg-white/92 px-4 py-3 shadow-sm dark:border-white/10 dark:bg-white/[0.07]">
-        <span className="edunova-ai-typing-dot" />
-        <span className="edunova-ai-typing-dot [animation-delay:120ms]" />
-        <span className="edunova-ai-typing-dot [animation-delay:240ms]" />
+      <div className="rounded-2xl rounded-tl-md border border-slate-200/80 bg-white/92 px-4 py-3 shadow-sm dark:border-white/10 dark:bg-white/[0.07]">
+        <div className="flex items-center gap-1.5">
+          <span className="edunova-ai-typing-dot" />
+          <span className="edunova-ai-typing-dot [animation-delay:120ms]" />
+          <span className="edunova-ai-typing-dot [animation-delay:240ms]" />
+        </div>
+        <p className="mt-2 max-w-[14rem] text-xs font-medium text-slate-500 dark:text-slate-300">
+          {status || "Working on your request..."}
+        </p>
       </div>
     </div>
   );
