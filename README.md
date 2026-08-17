@@ -1,3 +1,14 @@
+## 🤖 EduNova Autonomous AI Agent
+
+EduNova now includes a goal-oriented learning and research agent with dynamic
+tool selection, iterative observation/replanning, real source tracking, SSRF
+protection, bounded execution, authenticated API access, and safe streamed
+statuses. It answers stable learning questions directly and decides for itself
+when current web research is necessary.
+
+See **[AGENT_ARCHITECTURE.md](./AGENT_ARCHITECTURE.md)** for configuration,
+API examples, security controls, deployment details, and tests.
+
 ## 📦 One-Step Installation
 
 EduNova X is now available as a globally installable CLI tool or a direct-download package.

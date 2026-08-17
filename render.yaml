@@ -82,11 +82,20 @@ services:
       # valid https:// origin.
       - key: AI_ENGINE_URL
         sync: false
+      # Optional but recommended: set the same random value on both services.
+      - key: AI_INTERNAL_TOKEN
+        sync: false
+      - key: AGENT_REQUEST_TIMEOUT
+        value: "210000"
+      - key: AI_RATE_LIMIT_WINDOW_MS
+        value: "60000"
+      - key: AI_RATE_LIMIT_MAX_REQUESTS
+        value: "20"
       - key: SEED_DEMO_USERS
         value: "true"
 
   # ---------------------------------------------------------------------------
-  # 2) edunova-ai — FastAPI AI engine (timetable assistant)
+  # 2) edunova-ai — FastAPI autonomous learning/research agent
   #    rootDir: ai_engine  ->  `main:app` resolves to ai_engine/main.py
   # ---------------------------------------------------------------------------
   - type: web
@@ -102,15 +111,41 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.9"
-      - key: MONGO_URI
-        sync: false
       - key: CORS_ORIGIN
         value: https://edunova-x.ranjitacharya13.workers.dev
-      # Optional overrides for the timetable documents the assistant reads.
-      - key: STUDENT_TIMETABLE_ID
+      # ---- Agent credentials: AI service only, never frontend ---------------
+      - key: LLM_API_KEY
         sync: false
-      - key: TEACHER_TIMETABLE_ID
+      - key: LLM_MODEL
+        value: gpt-4.1-mini
+      - key: LLM_BASE_URL
+        value: https://api.openai.com/v1
+      - key: WEB_SEARCH_API_KEY
         sync: false
+      - key: WEB_SEARCH_PROVIDER
+        value: brave
+      # Optional but recommended: same value as on edunova-api.
+      - key: AI_INTERNAL_TOKEN
+        sync: false
+      - key: AI_REQUIRE_INTERNAL_TOKEN
+        value: "true"
+      # ---- Bounded autonomous execution -------------------------------------
+      - key: MAX_AGENT_ITERATIONS
+        value: "12"
+      - key: MAX_TOOL_CALLS
+        value: "15"
+      - key: MAX_AGENT_RUNTIME_SECONDS
+        value: "180"
+      - key: WEB_SEARCH_MAX_RESULTS
+        value: "5"
+      - key: WEB_REQUEST_TIMEOUT
+        value: "10"
+      - key: WEB_MAX_CONTENT_LENGTH
+        value: "200000"
+      - key: WEB_MAX_EXTRACTED_CHARS
+        value: "45000"
+      - key: AGENT_MAX_CONTEXT_CHARS
+        value: "90000"
 
   # ---------------------------------------------------------------------------
   # 3) edunova-signal — OPTIONAL standalone WebRTC signaling service.
