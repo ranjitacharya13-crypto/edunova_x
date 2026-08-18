@@ -37,3 +37,8 @@ __pycache__/
 .DS_Store
 Thumbs.db
 .vscode/
+
+# Backup files (created by text editors with auto-save or version conflicts)
+* 1.*
+* 2.*
+* 3.*
