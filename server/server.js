@@ -1,5 +1,5 @@
 // server/server.js
-// Deploy Trigger: 2026-08-07T10:36:30Z
+// Deploy Trigger: 2026-08-18T17:00:00Z — API-only, no frontend/dist serving
 const path = require("path");
 require("dotenv").config({ path: path.join(__dirname, ".env") }); // load server/.env reliably
 const express = require("express");
