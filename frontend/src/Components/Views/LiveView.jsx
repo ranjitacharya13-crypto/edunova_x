@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { io } from "socket.io-client";
-import { API, apiUrl } from "../../api/api";
+import { API, apiUrl, API_ORIGIN } from "../../api/api";
 
 const defaultSignalUrl = (() => {
   const configured = import.meta.env.VITE_SIGNAL_URL;
@@ -8,11 +8,15 @@ const defaultSignalUrl = (() => {
 
   if (typeof window === "undefined") return "";
 
-  // Default: same-origin Socket.IO.
-  // - DEV (Vite): rely on Vite proxy for `/socket.io` -> local signaling server.
-  // - PROD: if VITE_SIGNAL_URL was not set at build time, fall back to the
-  //   deployed Render signaling service origin, which hosts Socket.IO signaling.
-  if (import.meta.env.PROD) return "https://edunova-signal.onrender.com";
+  // Default: the Express API service hosts Socket.IO signaling + chat on the
+  // SAME origin as the REST API (see render.yaml), so fall back to the API
+  // origin (VITE_API_URL minus its /api suffix).
+  // - DEV (Vite): same-origin via the Vite proxy for `/socket.io` -> local backend.
+  // - PROD: VITE_SIGNAL_URL is only needed if signaling is deployed as a
+  //   separate service; otherwise the API origin below is used.
+  if (import.meta.env.PROD) {
+    return API_ORIGIN || "https://edunova-api-y3rx.onrender.com";
+  }
   return window.location.origin;
 })();
 

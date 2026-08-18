@@ -150,7 +150,7 @@ any change.
 | Variable | Value |
 |---|---|
 | `VITE_API_URL` | `https://edunova-api-y3rx.onrender.com/api` — **include `/api`** |
-| `VITE_SIGNAL_URL` | `https://edunova-signal.onrender.com` — **no `/api`** |
+| `VITE_SIGNAL_URL` | Optional — leave empty to derive from `VITE_API_URL`. Set it (e.g. `https://edunova-signal.onrender.com`, **no `/api`**) only if signaling is deployed as a separate service |
 | `VITE_TURN_URL` | `turn:<your-turn-host>:3478` (or `turns:…:5349`) — **required for reliable video on mobile/4G** |
 | `VITE_TURN_USERNAME` | TURN username (temporary credential if the provider supports it) |
 | `VITE_TURN_CREDENTIAL` | TURN password / credential — **secret, never commit** |

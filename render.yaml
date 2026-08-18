@@ -91,8 +91,12 @@ services:
         value: "60000"
       - key: AI_RATE_LIMIT_MAX_REQUESTS
         value: "20"
+      # Seeding demo accounts (teacher@edunova.com / student@edunova.com, password
+      # "123456") is a security risk in production — anyone could log in as a
+      # demo teacher. Keep this "false" for a live deployment; set "true" only
+      # for throwaway test environments.
       - key: SEED_DEMO_USERS
-        value: "true"
+        value: "false"
 
   # ---------------------------------------------------------------------------
   # 2) edunova-ai — FastAPI autonomous learning/research agent

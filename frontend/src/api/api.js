@@ -69,6 +69,16 @@ export const apiUrl = (path) => {
 
 export { API };
 
+// The API origin WITHOUT the trailing /api suffix (e.g.
+// "https://edunova-api-y3rx.onrender.com"). The Express server hosts Socket.IO
+// signaling + live-class chat on this same origin, so the Socket.IO clients use
+// it to derive their endpoint. Empty in local development ("/api" is proxied by
+// the Vite dev server and the browser connects same-origin instead).
+export const API_ORIGIN =
+  baseURL === "/api"
+    ? ""
+    : baseURL.replace(/\/api\/?$/, "").replace(/\/+$/, "");
+
 // ==========================
 // AUTH APIs
 // ==========================
