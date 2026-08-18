@@ -263,6 +263,31 @@ function aiAuthHeaders(extra = {}) {
   };
 }
 
+function safeAIErrorDetail(detail) {
+  const text = String(detail || "").trim();
+  // The API only returns user-safe errors, but reject obvious HTML/proxy pages
+  // so a Cloudflare or Render stack page is never rendered inside the chat UI.
+  if (!text || text.length > 500 || /<\/?(?:html|body|pre|script)\b/i.test(text)) return "";
+  return text;
+}
+
+export function aiRequestErrorMessage(status, detail) {
+  const safeDetail = safeAIErrorDetail(detail);
+  if (status === 404) {
+    return "The EduNova AI endpoint is unavailable. Please try again after the service is redeployed.";
+  }
+  if (status === 401 || status === 403) {
+    return "EduNova AI authentication failed. Please sign in again; if it continues, the AI service configuration needs attention.";
+  }
+  if (status === 429) {
+    return safeDetail || "EduNova AI is receiving too many requests. Please wait a moment and try again.";
+  }
+  if (status >= 500) {
+    return safeDetail || "The EduNova AI backend or model provider is temporarily unavailable. Please try again shortly.";
+  }
+  return safeDetail || "EduNova AI could not complete this request. Please try again.";
+}
+
 export const queryAIEngine = async ({ message, conversationId }) => {
   try {
     const res = await API.post(
@@ -272,11 +297,14 @@ export const queryAIEngine = async ({ message, conversationId }) => {
     );
     return res.data;
   } catch (err) {
+    const status = err.response?.status;
+    const detail = err.response?.data?.error || err.response?.data?.detail;
     return {
-      error:
-        err.response?.data?.error ||
-        err.response?.data?.detail ||
-        "EduNova AI query failed",
+      success: false,
+      status,
+      error: err.response
+        ? aiRequestErrorMessage(status, detail)
+        : "The EduNova AI backend is unreachable. Check your connection and try again.",
     };
   }
 };
@@ -284,24 +312,30 @@ export const queryAIEngine = async ({ message, conversationId }) => {
 // Consume the safe high-level SSE event stream from the autonomous agent. Tool
 // observations and private model reasoning never reach this browser API.
 export const streamAIEngine = async ({ message, conversationId, onEvent }) => {
-  const response = await fetch(apiUrl("/ai/chat"), {
-    method: "POST",
-    headers: aiAuthHeaders({
-      "Content-Type": "application/json",
-      Accept: "text/event-stream",
-    }),
-    body: JSON.stringify({ message, conversationId }),
-  });
+  let response;
+  try {
+    response = await fetch(apiUrl("/ai/chat"), {
+      method: "POST",
+      headers: aiAuthHeaders({
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+      }),
+      body: JSON.stringify({ message, conversationId }),
+    });
+  } catch (error) {
+    console.error("[EduNova AI] Backend request failed:", error);
+    throw new Error("The EduNova AI backend is unreachable. Check your connection and try again.");
+  }
 
   if (!response.ok) {
-    let detail = "EduNova AI request failed";
+    let detail = "";
     try {
       const body = await response.json();
-      detail = body.error || body.detail || detail;
+      detail = body.error || body.detail || "";
     } catch {
-      // Keep a user-safe fallback for non-JSON proxy responses.
+      // Use the status-specific, user-safe fallback for non-JSON proxy errors.
     }
-    throw new Error(detail);
+    throw new Error(aiRequestErrorMessage(response.status, detail));
   }
   if (!response.body) throw new Error("This browser cannot receive the AI response stream");
 

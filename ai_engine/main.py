@@ -120,8 +120,12 @@ def _safe_error(exc: Exception) -> tuple[int, str]:
     if isinstance(exc, asyncio.TimeoutError):
         return 504, "EduNova AI reached its runtime safety limit. Please narrow the request and try again."
     if isinstance(exc, LLMConfigurationError):
-        return 503, str(exc)
+        # Log the actionable variable names on the server, but expose only a
+        # stable, user-safe message to students.
+        logger.error("AI provider configuration error: %s", exc)
+        return 503, "AI provider is not configured."
     if isinstance(exc, LLMResponseError):
+        logger.error("AI model provider request failed: %s", exc)
         return 502, "The AI model provider is temporarily unavailable. Please try again."
     logger.exception("Agent request failed")
     return 500, "EduNova AI could not complete this request. Please try again."

@@ -15,7 +15,10 @@
  *   PROD_FRONTEND_URL  (default https://edunova-x.ranjitacharya13.workers.dev)
  *   PROD_API_URL       (default https://edunova-api-y3rx.onrender.com)
  *   PROD_AI_URL        (default https://edunova-ai-o2vy.onrender.com)
+ *   PROD_AUTH_TOKEN     (optional JWT; enables a real end-to-end AI response)
  *
+ * Without PROD_AUTH_TOKEN the script still proves that POST /api/ai/chat is
+ * mounted by requiring an authentication response instead of a 404.
  * Exit code 0 = every check passed. Non-zero = at least one check failed.
  * TURN is a browser-side ICE configuration: this script verifies the app
  * source wires VITE_TURN_URL correctly, but real TURN connectivity still
@@ -35,6 +38,7 @@ const AI_URL = (
   process.argv.find((a, i) => a === "--ai-url" && process.argv[i + 1]) ||
   "https://edunova-ai-o2vy.onrender.com"
 ).replace(/\/+$/, "");
+const AUTH_TOKEN = String(process.env.PROD_AUTH_TOKEN || "").trim();
 
 const results = [];
 const record = (name, ok, detail) => results.push({ name, ok, detail });
@@ -81,18 +85,45 @@ async function getJson(url, label) {
     return `HTTP ${res.status}, HTML served`;
   });
 
+  for (const expectedSize of [192, 512]) {
+    await check(`PWA icon ${expectedSize}x${expectedSize}`, async () => {
+      const res = await Promise.race([
+        fetch(`${FRONTEND_URL}/icon-${expectedSize}.png`),
+        timeout(20000, `icon-${expectedSize}`),
+      ]);
+      const bytes = Buffer.from(await res.arrayBuffer());
+      const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+      const contentType = res.headers.get("content-type") || "";
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!contentType.toLowerCase().startsWith("image/png")) {
+        throw new Error(`content-type=${contentType || "(missing)"}`);
+      }
+      if (bytes.length < 24 || !bytes.subarray(0, 8).equals(pngSignature)) {
+        throw new Error("response is not a PNG image");
+      }
+      const width = bytes.readUInt32BE(16);
+      const height = bytes.readUInt32BE(20);
+      if (width !== expectedSize || height !== expectedSize) {
+        throw new Error(`actual dimensions=${width}x${height}`);
+      }
+      return `HTTP ${res.status}, image/png, ${width}x${height}`;
+    });
+  }
+
   // 2. Backend health
   await check("API /health", async () => {
     const { json } = await getJson(`${API_URL}/health`, "api health");
-    if (json.status !== "live") throw new Error(`status=${json.status}`);
+    if (json?.status !== "live") throw new Error(`status=${json?.status || "(missing)"}`);
     return JSON.stringify({ status: json.status, mongo: json.mongo, aiEngineConfigured: json.aiEngineConfigured });
   });
 
   // 3. Backend smoke endpoints
   await check("GET /api/test", async () => {
-    const { text } = await getJson(`${API_URL}/api/test`, "api test");
-    if (text.trim() !== "OK") throw new Error(`unexpected body: ${text.slice(0, 40)}`);
-    return text.trim();
+    const { json, text } = await getJson(`${API_URL}/api/test`, "api test");
+    if (json?.status !== "OK") {
+      throw new Error(`expected current JSON health contract, got: ${text.slice(0, 80)}`);
+    }
+    return JSON.stringify(json);
   });
   await check("GET /api/syllabus", async () => {
     const { json } = await getJson(`${API_URL}/api/syllabus`, "syllabus");
@@ -130,6 +161,27 @@ async function getJson(url, label) {
     return `HTTP ${res.status}, allow-origin=${allowOrigin}`;
   });
 
+  await check("Socket.IO polling handshake", async () => {
+    const res = await Promise.race([
+      fetch(`${API_URL}/socket.io/?EIO=4&transport=polling&t=${Date.now()}`, {
+        headers: { Origin: FRONTEND_URL },
+      }),
+      timeout(20000, "Socket.IO handshake"),
+    ]);
+    const text = await res.text();
+    const allowOrigin = res.headers.get("access-control-allow-origin") || "";
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${text.slice(0, 100)}`);
+    if (!allowOrigin.includes(FRONTEND_URL)) {
+      throw new Error(`access-control-allow-origin=${allowOrigin || "(missing)"}`);
+    }
+    if (!/^0\{/.test(text)) throw new Error(`invalid Engine.IO handshake: ${text.slice(0, 100)}`);
+    const handshake = JSON.parse(text.slice(1));
+    if (!handshake.sid || !Array.isArray(handshake.upgrades)) {
+      throw new Error("Engine.IO handshake is missing sid/upgrades");
+    }
+    return `connected; upgrades=${handshake.upgrades.join(",") || "none"}`;
+  });
+
   // 5. AI engine health (only when an AI URL was provided)
   if (AI_URL) {
     await check("AI /health", async () => {
@@ -139,27 +191,34 @@ async function getJson(url, label) {
     });
   }
 
-  // 6. Node → AI end-to-end through the API (the real success condition)
-  if (AI_URL) {
-    await check("POST /api/ai/query (Node → AI)", async () => {
-      const res = await Promise.race([
-        fetch(`${API_URL}/api/ai/query`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            message: "What classes do I have today?",
-            email: "student@edunova.com",
-          }),
-        }),
-        timeout(30000, "node->ai query"),
-      ]);
-      const json = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(`HTTP ${res.status}: ${json.error || "no error field"}`);
-      if (!json.reply) throw new Error("response missing 'reply'");
-      const preview = String(json.reply).replace(/\s+/g, " ").slice(0, 80);
-      return `HTTP ${res.status}, reply="${preview}…"`;
-    });
-  }
+  // 6. Exact browser-facing AI route. Authentication is intentionally required.
+  await check("POST /api/ai/chat route", async () => {
+    const headers = { "Content-Type": "application/json", Accept: "application/json" };
+    if (AUTH_TOKEN) headers.Authorization = `Bearer ${AUTH_TOKEN}`;
+    const res = await Promise.race([
+      fetch(`${API_URL}/api/ai/chat`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ message: "What is machine learning?" }),
+      }),
+      timeout(AUTH_TOKEN ? 240000 : 30000, "api AI chat"),
+    ]);
+    const json = await res.json().catch(() => ({}));
+
+    if (!AUTH_TOKEN) {
+      if (res.status === 404) throw new Error("HTTP 404: AI router is not deployed");
+      if (res.status !== 401 && res.status !== 403) {
+        throw new Error(`expected auth protection, got HTTP ${res.status}`);
+      }
+      return `HTTP ${res.status}; route is mounted and authentication is enforced`;
+    }
+
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${json.error || json.detail || "request failed"}`);
+    const reply = String(json.reply || json.message || json.response || "").trim();
+    if (!reply) throw new Error("response missing reply/message/response");
+    const preview = reply.replace(/\s+/g, " ").slice(0, 80);
+    return `HTTP ${res.status}, reply="${preview}${reply.length > 80 ? "…" : ""}"`;
+  });
 
   // 7. Static audit: production config must not point at localhost; TURN wiring present
   await check("No localhost in production config", () => {

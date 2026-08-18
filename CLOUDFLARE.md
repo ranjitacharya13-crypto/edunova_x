@@ -22,7 +22,7 @@ Link: [Cloudflare Workers & Pages Dashboard](https://dash.cloudflare.com/)
    |---|---|---|
    | `NODE_VERSION` | `20` | Ensures modern Node.js runtime in Cloudflare CI |
    | `VITE_API_URL` | `https://edunova-api-y3rx.onrender.com/api` | Your deployed backend REST API (include `/api`) |
-   | `VITE_SIGNAL_URL` | `https://edunova-signal.onrender.com` | Your deployed WebRTC Socket.IO signaling URL |
+   | `VITE_SIGNAL_URL` | *(leave empty)* | Socket.IO is hosted by the Render API and is derived from `VITE_API_URL`. Set this only when intentionally using a separate signaling service. |
 5. Click **Save and Deploy**.
 
 ---
@@ -69,32 +69,22 @@ Cloudflare automatically routes all client-side navigation (e.g. `/live/:roomId`
 
 ```
 ✘ [ERROR] Cannot use assets with a binding in an assets-only Worker.
-  Please remove the asset binding from your configuration file, or provide a Worker
-  script in your configuration file `main`).
 ```
 
-**Cause:** the Wrangler configuration declares an `[assets]` binding (e.g. `binding = "ASSETS"`)
-but no `main` worker script, so Wrangler treats the deployment as an assets-only Worker.
+**Cause:** an assets binding was configured without a Worker `main` script.
 
-**Fix (already applied in this repo):** both `wrangler.toml` and `wrangler.jsonc` define
-`main = "./dist/_worker.js"` **together with** `binding = "ASSETS"`. The build script
-(`scripts/build.js`) also validates this at build time and fails with a clear message if the
-config ever regresses.
+**Fix used by this repo:** `wrangler.toml` and `wrangler.jsonc` intentionally use
+Cloudflare's assets-only mode. They set the `dist` assets directory and SPA fallback,
+but do not declare a binding or `main` script. `scripts/build.js` validates this before
+each deployment.
 
-If you still see the error after merging:
+If you still see the error:
 
-1. **Deploy the latest `main`** — the error only occurs with a configuration that lacks `main`
-   (the pre-fix state). Redeploy from the dashboard, or run locally:
-   `git pull && npm run build && npx wrangler deploy`.
-2. **Root directory must be `/`** — if the Cloudflare build's root directory is anything other
-   than the repo root, the repository's `wrangler.toml`/`wrangler.jsonc` are not found and
-   Cloudflare may auto-generate an assets-only configuration.
-3. **Trigger a fresh build** — if the project previously deployed as assets-only, a new build
-   from current `main` uploads the Worker script and assets together.
-
-> Note: `frontend/public/.assetsignore` (copied to `dist/.assetsignore` by the build) excludes
-> `_worker.js` from the static asset upload, so the same file can serve as the Worker's `main`
-> script without being uploaded as a public asset.
+1. Deploy the latest `main`: `git pull && npm run build && npx wrangler deploy`.
+2. Keep the Cloudflare project root at the repository root so the committed Wrangler
+   configuration is found.
+3. Remove any dashboard-generated assets binding that conflicts with the committed
+   assets-only configuration, then trigger a fresh build.
 
 ---
 
@@ -105,4 +95,4 @@ The static frontend on Cloudflare connects to your backend services:
 - **WebRTC Signaling**: Embedded in `server/` or deployed from `signaling/`.
 - **AI Engine**: Deploy `ai_engine/` (FastAPI) to Render / Railway.
 
-Set `VITE_API_URL` and `VITE_SIGNAL_URL` in Cloudflare Pages / Worker environment variables and trigger a redeploy.
+Set `VITE_API_URL` in Cloudflare's build environment and trigger a redeploy. Leave `VITE_SIGNAL_URL` empty unless `signaling/` is intentionally deployed as a separate service.

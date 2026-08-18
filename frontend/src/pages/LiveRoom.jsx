@@ -280,7 +280,9 @@ export default function LiveRoom() {
     window.addEventListener("keydown", onEsc);
 
     let cancelled = false;
-    const socket = io(defaultSignalUrl, { transports: ["websocket"] });
+    // Polling establishes a reliable connection first; Socket.IO upgrades to
+    // WebSocket automatically when Render and the client network allow it.
+    const socket = io(defaultSignalUrl, { transports: ["polling", "websocket"] });
     socketRef.current = socket;
 
     const init = async () => {

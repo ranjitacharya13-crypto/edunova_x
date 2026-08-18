@@ -61,7 +61,7 @@ settings.
 | **Root Directory** | **`server`** |
 | Build Command | `npm ci --omit=dev` |
 | Start Command | `npm start` |
-| Health Check Path | `/api/test` |
+| Health Check Path | `/health` |
 
 > **If you leave Root Directory blank** (deploying from the repo root), the
 > build must still install the backend's dependencies. The root `package.json`
