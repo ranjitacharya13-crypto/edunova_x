@@ -162,22 +162,12 @@ app.use(express.json());
 // HEALTH CHECK (Render LB)
 // ==========================
 // Render's load balancer polls this path (healthCheckPath: /health in render.yaml).
-// It must NOT depend on MongoDB — the process must answer 200 even while the
-// database connection is still being established, otherwise Render restarts the
-// service in a loop and marks it unhealthy.
-const MONGO_STATES = ["disconnected", "connected", "connecting", "disconnecting"];
-
-app.get("/health", (req, res) =>
-  res.status(200).json({
-    status: "live",
-    service: "edunova-api",
-    uptime: Math.round(process.uptime()),
-    // Reported for observability only — the status code stays 200 so a database
-    // hiccup never causes Render to kill a process that is otherwise serving.
-    mongo: MONGO_STATES[mongoose.connection.readyState] || "unknown",
-    aiEngineConfigured: Boolean(process.env.AI_ENGINE_URL),
-  })
-);
+// It must NOT depend on MongoDB, the AI provider, authentication, or frontend
+// build artifacts. Render can therefore verify the process while dependencies
+// are still connecting.
+app.get("/health", (req, res) => {
+  res.status(200).json({ status: "ok" });
+});
 
 // ==========================
 // EMAIL (CONTACT)
@@ -424,7 +414,7 @@ app.use((req, res) => {
 // Binding to 0.0.0.0 is REQUIRED — binding to localhost makes the port
 // unreachable from outside the container and Render reports
 // "No open ports detected".
-const PORT = process.env.PORT || process.env.BACKEND_PORT || 4000;
+const PORT = process.env.PORT || 4000;
 
 server.on("error", (err) => {
   if (err.code === "EADDRINUSE") {
