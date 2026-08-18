@@ -20,7 +20,10 @@ const defaultSignalUrl = (() => {
   return window.location.origin;
 })();
 
-const socket = io(defaultSignalUrl, { transports: ["websocket"] });
+// Start with HTTP long-polling and let Socket.IO upgrade to WebSocket when the
+// host supports it. A WebSocket-only connection fails outright during Render
+// cold starts and behind restrictive school/mobile networks.
+const socket = io(defaultSignalUrl, { transports: ["polling", "websocket"] });
 
 function normalizeRoom(room) {
   return String(room || "")

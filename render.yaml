@@ -42,15 +42,15 @@ services:
     name: edunova-api
     runtime: node
     plan: free
+    branch: main
     rootDir: server
     # `npm ci` installs EXACTLY what server/package-lock.json pins (including
     # nodemailer) and fails loudly if the lockfile and package.json disagree.
     buildCommand: npm ci --omit=dev
     startCommand: npm start
-    # /api/test is a pure in-process endpoint (no MongoDB, no frontend
-    # artifact). The old /health route still exists in server.js and keeps
-    # working for existing dashboards, but /api/test is the canonical one.
-    healthCheckPath: /api/test
+    # Pure in-process health endpoint: it remains HTTP 200 while reporting
+    # MongoDB and AI configuration state for deployment diagnostics.
+    healthCheckPath: /health
     autoDeploy: true
     envVars:
       - key: NODE_VERSION
@@ -106,6 +106,7 @@ services:
     name: edunova-ai
     runtime: python
     plan: free
+    branch: main
     rootDir: ai_engine
     buildCommand: pip install -r requirements.txt
     # $PORT is injected by Render; binding 0.0.0.0 is required.

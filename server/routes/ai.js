@@ -40,6 +40,7 @@ function aiRateLimit(req, res, next) {
 function getAiBaseUrl() {
   const configured = String(process.env.AI_ENGINE_URL || "").trim();
   if (!configured && process.env.NODE_ENV === "production") return "";
+  // Development-only fallback; production never calls localhost.
   let url = configured || "http://localhost:8001";
   if (!/^https?:\/\//i.test(url)) url = `https://${url}`;
   return url.replace(/\/+$/, "");
@@ -81,9 +82,12 @@ async function handleAgentChat(req, res) {
 
   const aiBaseUrl = getAiBaseUrl();
   if (!aiBaseUrl) {
+    // Keep the deployment detail in Render logs; students only need the stable
+    // public error and must never receive provider credentials or stack traces.
+    console.error("[agent] AI_ENGINE_URL is not configured on the API service.");
     return res.status(503).json({
       success: false,
-      error: "AI service is not configured. Set AI_ENGINE_URL on the API service.",
+      error: "AI provider is not configured.",
       agentStatus: "unavailable",
     });
   }
