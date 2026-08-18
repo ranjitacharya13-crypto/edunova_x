@@ -113,8 +113,8 @@ async function getJson(url, label) {
   // 2. Backend health
   await check("API /health", async () => {
     const { json } = await getJson(`${API_URL}/health`, "api health");
-    if (json?.status !== "live") throw new Error(`status=${json?.status || "(missing)"}`);
-    return JSON.stringify({ status: json.status, mongo: json.mongo, aiEngineConfigured: json.aiEngineConfigured });
+    if (json?.status !== "ok") throw new Error(`status=${json?.status || "(missing)"}`);
+    return JSON.stringify(json);
   });
 
   // 3. Backend smoke endpoints

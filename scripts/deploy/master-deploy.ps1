@@ -252,7 +252,7 @@ while (-not $allLive) {
       $deployLive = ($deps[0].status -eq "live")
       try {
         $body = (Invoke-WebRequest -Uri "https://$url/health" -TimeoutSec 15 -UseBasicParsing).Content
-        $liveHttp = $body -match '"live"'
+        $liveHttp = $body -match '"(live|ok)"'
       } catch { $liveHttp = $false }
       $mark = if ($liveHttp) { "[LIVE]" } else { "[wait]" }
       Write-Host ("   {0,-16} deploy:{1} http:{2} {3}" -f $n, $deployLive, $liveHttp, $mark)

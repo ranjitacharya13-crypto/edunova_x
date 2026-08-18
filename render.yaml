@@ -48,8 +48,8 @@ services:
     # nodemailer) and fails loudly if the lockfile and package.json disagree.
     buildCommand: npm ci --omit=dev
     startCommand: npm start
-    # Pure in-process health endpoint: it remains HTTP 200 while reporting
-    # MongoDB and AI configuration state for deployment diagnostics.
+    # Pure in-process health endpoint; it does not depend on MongoDB, AI,
+    # authentication, or frontend build artifacts.
     healthCheckPath: /health
     autoDeploy: true
     envVars:

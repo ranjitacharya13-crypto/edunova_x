@@ -317,7 +317,7 @@ is_service_live() { # $1=name → sets LIVE_HTTP, LIVE_DEPLOY, LIVE_INSTANCE, SE
     local body code
     body="$(curl -sS -m 15 -w '\n%{http_code}' "https://$SERVICE_URL/health" 2>/dev/null)"
     code="$(echo "$body" | tail -1)"
-    if [ "$code" = "200" ] && echo "$body" | head -n -1 | grep -q '"live"'; then
+    if [ "$code" = "200" ] && echo "$body" | head -n -1 | grep -Eq '"(live|ok)"'; then
       LIVE_HTTP="yes"
     fi
   fi
