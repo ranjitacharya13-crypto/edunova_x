@@ -156,6 +156,12 @@ export default function FloatingAIChat({ feature = "dashboard" }) {
   const isPointerDownRef = useRef(false);
   const hasDraggedRef = useRef(false);
   const activePointerIdRef = useRef(null);
+  // Live text of the answer currently being generated, rendered as real tokens
+  // arrive so the student sees progress instead of a spinner.
+  const [streamingText, setStreamingText] = useState("");
+  // Lets a new question, a close, or an unmount cancel the in-flight request
+  // instead of leaving the server generating for an answer nobody will read.
+  const abortRef = useRef(null);
   const currentPosRef = useRef(position);
   const isOpenRef = useRef(isOpen);
   const rafRef = useRef(null);
@@ -232,14 +238,28 @@ export default function FloatingAIChat({ feature = "dashboard" }) {
       }
       setInput("");
       setLoading(true);
+      setStreamingText("");
       setAgentStatus("Reasoning across sources...");
+
+      // Supersede any request still running from a previous question.
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
 
       try {
         const data = await streamAIEngine({
           message: userMessage,
           conversationId: conversationIdRef.current,
           applicationContext: { route: window.location.pathname, feature },
+          signal: controller.signal,
           onEvent: (event) => {
+            if (event?.type === "token") {
+              // Real model tokens: show the answer as it is written, and drop
+              // the status line since generation has visibly begun.
+              setStreamingText(event.text || "");
+              setAgentStatus("");
+              return;
+            }
             if (event?.type === "status" && event?.message) {
               setAgentStatus(event.message);
             }
@@ -270,6 +290,8 @@ export default function FloatingAIChat({ feature = "dashboard" }) {
           },
         ]);
       } catch (error) {
+        // A superseded/cancelled request is not a failure — say nothing.
+        if (error?.name === "AbortError") return;
         console.error("[EduNova AI] Query failed:", error);
         setMessages((prev) => [
           ...prev,
@@ -282,12 +304,18 @@ export default function FloatingAIChat({ feature = "dashboard" }) {
           },
         ]);
       } finally {
+        if (abortRef.current === controller) abortRef.current = null;
         setLoading(false);
+        setStreamingText("");
         setAgentStatus("");
       }
     },
     [loading, feature]
   );
+
+  // Cancel any in-flight generation when the chat unmounts, so a navigation
+  // away does not leave the model generating an answer with no reader.
+  useEffect(() => () => abortRef.current?.abort(), []);
 
 
   const confirmAction = useCallback(async (messageId, index, token) => {
@@ -582,7 +610,23 @@ export default function FloatingAIChat({ feature = "dashboard" }) {
               {messages.map((message) => (
                 <ChatMessage key={message.id} message={message} onRetry={handleRetry} onConfirmAction={confirmAction} retryDisabled={loading} />
               ))}
-              {loading && <TypingIndicator status={agentStatus} />}
+              {/* Real streamed tokens render as a live assistant bubble; the
+                  typing indicator only shows before the first token arrives. */}
+              {loading && streamingText ? (
+                <ChatMessage
+                  message={{
+                    id: "streaming",
+                    role: "assistant",
+                    content: streamingText,
+                    streaming: true,
+                  }}
+                  onRetry={handleRetry}
+                  onConfirmAction={confirmAction}
+                  retryDisabled
+                />
+              ) : (
+                loading && <TypingIndicator status={agentStatus} />
+              )}
             </div>
           )}
         </section>

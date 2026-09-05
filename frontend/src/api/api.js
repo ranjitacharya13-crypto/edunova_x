@@ -413,7 +413,36 @@ export const queryAIEngine = async ({ message, conversationId, applicationContex
 
 // Consume the safe high-level SSE event stream from the autonomous agent. Tool
 // observations and private model reasoning never reach this browser API.
-export const streamAIEngine = async ({ message, conversationId, applicationContext, onEvent }) => {
+// The client-side limb of the ONE coordinated deadline. The AI service budgets
+// itself to AI_REQUEST_BUDGET_SECONDS (20s) and stops generating cooperatively
+// before that; this is only the outer safety net for a connection that dies
+// silently (laptop sleep, network drop) and would otherwise hang the UI
+// forever. It is deliberately LONGER than the server budget so the server's
+// own honest error always wins the race and the student sees a real reason.
+const AI_CLIENT_DEADLINE_MS = 35_000;
+
+export const streamAIEngine = async ({
+  message,
+  conversationId,
+  applicationContext,
+  onEvent,
+  signal: callerSignal,
+}) => {
+  // Abort on the client deadline, on caller cancellation (component unmount,
+  // navigation, a newer question superseding this one), or on both.
+  const controller = new AbortController();
+  const abortForDeadline = () => controller.abort(new Error("client-deadline"));
+  const deadlineTimer = setTimeout(abortForDeadline, AI_CLIENT_DEADLINE_MS);
+  const forwardAbort = () => controller.abort();
+  if (callerSignal) {
+    if (callerSignal.aborted) controller.abort();
+    else callerSignal.addEventListener("abort", forwardAbort, { once: true });
+  }
+  const cleanup = () => {
+    clearTimeout(deadlineTimer);
+    callerSignal?.removeEventListener("abort", forwardAbort);
+  };
+
   let response;
   try {
     response = await fetch(apiUrl("/ai/chat"), {
@@ -423,13 +452,22 @@ export const streamAIEngine = async ({ message, conversationId, applicationConte
         Accept: "text/event-stream",
       }),
       body: JSON.stringify({ message, conversationId, applicationContext }),
+      signal: controller.signal,
     });
   } catch (error) {
+    cleanup();
+    if (callerSignal?.aborted) throw new DOMException("Aborted", "AbortError");
+    if (controller.signal.aborted) {
+      throw new Error(
+        "EduNova AI did not respond within 35 seconds. Please check your connection and try again."
+      );
+    }
     console.error("[EduNova AI] Backend request failed:", error);
     throw new Error("The EduNova AI backend is unreachable. Check your connection and try again.");
   }
 
   if (!response.ok) {
+    cleanup();
     let detail = "";
     try {
       const body = await response.json();
@@ -440,12 +478,16 @@ export const streamAIEngine = async ({ message, conversationId, applicationConte
     }
     throw new Error(aiRequestErrorMessage(response.status, detail));
   }
-  if (!response.body) throw new Error("This browser cannot receive the AI response stream");
+  if (!response.body) {
+    cleanup();
+    throw new Error("This browser cannot receive the AI response stream");
+  }
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   let finalAnswer = null;
+  let streamedText = "";
 
   const consumeBlock = (block) => {
     const dataText = block
@@ -462,20 +504,55 @@ export const streamAIEngine = async ({ message, conversationId, applicationConte
       // error; treat it like any other recoverable stream failure.
       throw new Error("EduNova AI returned a malformed update. Please try again.");
     }
+    // Real generated tokens, emitted by llama.cpp as it decodes. Accumulate
+    // them so the caller can render the answer progressively, and so a stream
+    // that dies after partial output still has something to show.
+    if (event.type === "token" && typeof event.delta === "string") {
+      streamedText += event.delta;
+      onEvent?.({ type: "token", delta: event.delta, text: streamedText });
+      return;
+    }
     onEvent?.(event);
     if (event.type === "answer") finalAnswer = event;
     if (event.type === "error") throw new Error(event.message || "EduNova AI request failed");
   };
 
-  while (true) {
-    const { value, done } = await reader.read();
-    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
-    const blocks = buffer.split(/\r?\n\r?\n/);
-    buffer = blocks.pop() || "";
-    for (const block of blocks) consumeBlock(block);
-    if (done) break;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+      const blocks = buffer.split(/\r?\n\r?\n/);
+      buffer = blocks.pop() || "";
+      for (const block of blocks) consumeBlock(block);
+      if (done) break;
+    }
+    if (buffer.trim()) consumeBlock(buffer);
+  } catch (error) {
+    if (callerSignal?.aborted) throw new DOMException("Aborted", "AbortError");
+    if (controller.signal.aborted) {
+      throw new Error(
+        "EduNova AI did not respond within 35 seconds. Please check your connection and try again."
+      );
+    }
+    throw error;
+  } finally {
+    cleanup();
+    // Release the connection promptly; a lingering reader keeps the HTTP/2
+    // stream (and the server-side generation) alive after the user moved on.
+    try {
+      await reader.cancel();
+    } catch {
+      /* already closed */
+    }
   }
-  if (buffer.trim()) consumeBlock(buffer);
-  if (!finalAnswer) throw new Error("EduNova AI ended without an answer");
+
+  if (!finalAnswer) {
+    // The stream ended without the terminal "answer" event. If real tokens
+    // arrived, honour them rather than discarding a visibly-generated reply.
+    if (streamedText.trim()) {
+      return { type: "answer", success: true, message: streamedText.trim(), sources: [], truncated: true };
+    }
+    throw new Error("EduNova AI ended without an answer");
+  }
   return finalAnswer;
 };
