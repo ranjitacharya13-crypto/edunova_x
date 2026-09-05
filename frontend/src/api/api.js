@@ -299,7 +299,7 @@ export function aiRequestErrorMessage(status, detail) {
     return safeDetail || "The AI model provider is temporarily unavailable. Please try again.";
   }
   if (status === 504) {
-    return safeDetail || "EduNova AI took too long to respond. Please try again.";
+    return safeDetail || "EduNova AI is temporarily unavailable. Please try again.";
   }
   if (status >= 500) {
     // Generic fallback for other 5xx, but still honor a safe config hint if present
@@ -412,14 +412,9 @@ export const queryAIEngine = async ({ message, conversationId, applicationContex
 };
 
 // Consume the safe high-level SSE event stream from the autonomous agent. Tool
-// observations and private model reasoning never reach this browser API.
-// The client-side limb of the ONE coordinated deadline. The AI service budgets
-// itself to AI_REQUEST_BUDGET_SECONDS (20s) and stops generating cooperatively
-// before that; this is only the outer safety net for a connection that dies
-// silently (laptop sleep, network drop) and would otherwise hang the UI
-// forever. It is deliberately LONGER than the server budget so the server's
-// own honest error always wins the race and the student sees a real reason.
-const AI_CLIENT_DEADLINE_MS = 35_000;
+// observations and private model reasoning never reach this browser API. There
+// is deliberately no wall-clock answer timer: live tokens/keep-alives prove the
+// request is healthy, and the terminal answer event must contain the full text.
 
 export const streamAIEngine = async ({
   message,
@@ -428,18 +423,15 @@ export const streamAIEngine = async ({
   onEvent,
   signal: callerSignal,
 }) => {
-  // Abort on the client deadline, on caller cancellation (component unmount,
-  // navigation, a newer question superseding this one), or on both.
+  // Abort only when the caller explicitly cancels (navigation, unmount, or a
+  // newer question). Normal generation is allowed to finish.
   const controller = new AbortController();
-  const abortForDeadline = () => controller.abort(new Error("client-deadline"));
-  const deadlineTimer = setTimeout(abortForDeadline, AI_CLIENT_DEADLINE_MS);
   const forwardAbort = () => controller.abort();
   if (callerSignal) {
     if (callerSignal.aborted) controller.abort();
     else callerSignal.addEventListener("abort", forwardAbort, { once: true });
   }
   const cleanup = () => {
-    clearTimeout(deadlineTimer);
     callerSignal?.removeEventListener("abort", forwardAbort);
   };
 
@@ -457,11 +449,6 @@ export const streamAIEngine = async ({
   } catch (error) {
     cleanup();
     if (callerSignal?.aborted) throw new DOMException("Aborted", "AbortError");
-    if (controller.signal.aborted) {
-      throw new Error(
-        "EduNova AI did not respond within 35 seconds. Please check your connection and try again."
-      );
-    }
     console.error("[EduNova AI] Backend request failed:", error);
     throw new Error("The EduNova AI backend is unreachable. Check your connection and try again.");
   }
@@ -529,11 +516,6 @@ export const streamAIEngine = async ({
     if (buffer.trim()) consumeBlock(buffer);
   } catch (error) {
     if (callerSignal?.aborted) throw new DOMException("Aborted", "AbortError");
-    if (controller.signal.aborted) {
-      throw new Error(
-        "EduNova AI did not respond within 35 seconds. Please check your connection and try again."
-      );
-    }
     throw error;
   } finally {
     cleanup();
@@ -547,12 +529,9 @@ export const streamAIEngine = async ({
   }
 
   if (!finalAnswer) {
-    // The stream ended without the terminal "answer" event. If real tokens
-    // arrived, honour them rather than discarding a visibly-generated reply.
-    if (streamedText.trim()) {
-      return { type: "answer", success: true, message: streamedText.trim(), sources: [], truncated: true };
-    }
-    throw new Error("EduNova AI ended without an answer");
+    // Partial tokens are never promoted to a successful answer. A healthy
+    // stream always ends with the authoritative, complete answer event.
+    throw new Error("EduNova AI is temporarily unavailable. Please try again.");
   }
   return finalAnswer;
 };

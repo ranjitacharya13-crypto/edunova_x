@@ -116,7 +116,7 @@ function upstreamStatusMessage(status) {
     return "The EduNova AI service is starting up or temporarily unavailable. Please try again in a few seconds.";
   }
   if (status === 504) {
-    return "EduNova AI took too long to respond. Please try again.";
+    return "EduNova AI is temporarily unavailable. Please try again.";
   }
   return "EduNova AI could not complete this request. Please try again.";
 }
@@ -204,18 +204,10 @@ async function handleAgentChat(req, res) {
     headers["X-AI-Internal-Token"] = process.env.AI_INTERNAL_TOKEN;
   }
 
-  // ---- Express's slice of the ONE coordinated deadline --------------------
-  // The AI service budgets itself to AI_REQUEST_BUDGET_SECONDS (20s by default)
-  // and always answers — with content or with an honest error — inside it. The
-  // proxy timeout only needs enough headroom above that to cover network and
-  // serialization, NOT another independent multi-minute window. The old
-  // 210s/240s values sat on top of the AI's own 180s guard, so a single
-  // question could legitimately hang for minutes before anyone gave up.
-  const AI_BUDGET_MS = Math.max(5_000, (Number(process.env.AI_REQUEST_BUDGET_SECONDS) || 20) * 1000);
-  const timeout = Math.max(
-    10_000,
-    Number(process.env.AGENT_REQUEST_TIMEOUT) || AI_BUDGET_MS + 10_000
-  );
+  // Network backstop only. This is intentionally much longer than the normal
+  // 10–20 second performance target and never controls answer length. For SSE,
+  // the upstream sends headers immediately and streams genuine model tokens.
+  const timeout = Math.max(60_000, Number(process.env.AGENT_REQUEST_TIMEOUT) || 600_000);
   const controller = new AbortController();
   res.on("close", () => {
     if (!res.writableEnded) controller.abort();
@@ -309,37 +301,37 @@ function pipeAgentStream(res, upstreamStream) {
   res.setHeader("X-Accel-Buffering", "no");
   res.flushHeaders?.();
 
-  // Overall streaming timeout: if the AI engine doesn't finish within this
-  // window, close the connection.  Without this, a stuck model (deadlock,
-  // OOM, swap-thrash) leaves the Express response open indefinitely.
-  // Sized to: 25s model load + 180s agent runtime + 35s buffer = 240s.
-  // Sized off the same single budget: AI budget + headroom for cold-start
-  // model wait and flush. It is the backstop for a genuinely stuck upstream,
-  // not a routine limit — the AI service stops itself well before this.
-  const AI_BUDGET_MS = Math.max(5_000, (Number(process.env.AI_REQUEST_BUDGET_SECONDS) || 20) * 1000);
-  const STREAM_TIMEOUT_MS =
-    Number(process.env.AGENT_STREAM_TIMEOUT_MS) || AI_BUDGET_MS + 25_000;
-  const streamTimer = setTimeout(() => {
-    console.warn(`[agent] stream timeout after ${STREAM_TIMEOUT_MS}ms — closing client connection`);
-    if (!res.writableEnded) {
-      // Write a final SSE error event so the frontend shows a useful message
-      // instead of "EduNova AI ended without an answer".
-      res.write(
-        `data: ${JSON.stringify({
+  // Idle watchdog, not an overall response deadline. Every keep-alive or real
+  // token resets it, so a healthy long answer can finish naturally. It fires
+  // only when the upstream has stopped sending data altogether.
+  const STREAM_IDLE_TIMEOUT_MS = Math.max(
+    30_000,
+    Number(process.env.AGENT_STREAM_IDLE_TIMEOUT_MS) || 90_000
+  );
+  let streamTimer;
+  const resetIdleTimer = () => {
+    clearTimeout(streamTimer);
+    streamTimer = setTimeout(() => {
+      console.warn(`[agent] upstream stream idle for ${STREAM_IDLE_TIMEOUT_MS}ms`);
+      if (!res.writableEnded) {
+        res.write(`data: ${JSON.stringify({
           type: "error",
           success: false,
-          status: 504,
-          message: "EduNova AI took too long to respond. Please try again.",
+          status: 503,
+          message: "EduNova AI is temporarily unavailable. Please try again.",
           error: {
-            code: "AI_REQUEST_DEADLINE_EXCEEDED",
-            message: "EduNova AI took too long to respond. Please try again.",
+            code: "AI_STREAM_STALLED",
+            message: "EduNova AI is temporarily unavailable. Please try again.",
           },
           agentStatus: "failed",
-        })}\n\n`
-      );
-      res.end();
-    }
-  }, STREAM_TIMEOUT_MS);
+        })}\n\n`);
+        res.end();
+      }
+      upstreamStream.destroy();
+    }, STREAM_IDLE_TIMEOUT_MS);
+  };
+  resetIdleTimer();
+  upstreamStream.on("data", resetIdleTimer);
 
   upstreamStream.on("error", (error) => {
     console.error("[agent] upstream stream error:", error.message);

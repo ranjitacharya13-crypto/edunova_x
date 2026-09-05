@@ -85,21 +85,12 @@ services:
       # Optional but recommended: set the same random value on both services.
       - key: AI_INTERNAL_TOKEN
         sync: false
-      # ---- ONE coordinated request deadline (see ai_engine/agent/deadline.py)
-      # The AI service bounds itself to AI_REQUEST_BUDGET_SECONDS and always
-      # answers inside it (content or an honest error). These proxy timeouts
-      # are backstops with headroom on top of that ONE budget — they are NOT
-      # independent windows. Previously 210s/240s sat on top of the AI's own
-      # 180s guard, so one question could hang for minutes.
-      - key: AI_REQUEST_BUDGET_SECONDS
-        value: "20"
-      # 20s budget + 10s network/serialization headroom.
+      # Network safety backstops only; neither value controls model output.
+      # Streaming answers may run as long as tokens/keep-alives keep arriving.
       - key: AGENT_REQUEST_TIMEOUT
-        value: "30000"
-      # 20s budget + 25s headroom for a cold-start model wait on the first
-      # question after the service has been idle.
-      - key: AGENT_STREAM_TIMEOUT_MS
-        value: "45000"
+        value: "600000"
+      - key: AGENT_STREAM_IDLE_TIMEOUT_MS
+        value: "90000"
       - key: AI_RATE_LIMIT_WINDOW_MS
         value: "60000"
       - key: AI_RATE_LIMIT_MAX_REQUESTS
@@ -212,7 +203,7 @@ services:
       # - key: LOCAL_MODEL_URL
       #   sync: false
       - key: LOCAL_MODEL_CTX
-        value: "4096"
+        value: "6144"
       - key: LOCAL_MODEL_THREADS
         value: "2"
       - key: LOCAL_MODEL_BATCH
@@ -221,26 +212,18 @@ services:
         value: chatml
       - key: LOCAL_PRELOAD_MODEL
         value: "true"
-      # Must stay UNDER AI_REQUEST_BUDGET_SECONDS: waiting for a cold model
-      # must never consume the entire budget and leave no time to generate.
-      # A model that is not ready within this returns an honest 503
-      # LLM_MODEL_LOADING, which edunova-api retries on its backoff schedule.
+      # Readiness timeout applies only before inference starts. It never cuts a
+      # generated answer; the API retries cold-start responses separately.
       - key: LOCAL_CHAT_WAIT_TIMEOUT
-        value: "8"
+        value: "25"
       - key: LOCAL_MODEL_DOWNLOAD_TIMEOUT
         value: "900"
       - key: LOCAL_MODEL_DOWNLOAD_RETRIES
         value: "3"
-      # Upper bound only. The router sizes each answer to the question (a
-      # definition gets ~320, a "compare X and Y" gets more) and the runtime
-      # shrinks that further to what the remaining time can actually decode.
+      # Quality ceiling. The router adaptively selects 128–1800 tokens by task;
+      # no elapsed-time logic reduces this budget during generation.
       - key: LLM_MAX_OUTPUT_TOKENS
-        value: "512"
-      # The single end-to-end budget the AI service enforces on itself. Every
-      # inner stage (model wait, tools, web search, token generation) sizes
-      # itself against what is LEFT of this — nothing owns its own timeout.
-      - key: AI_REQUEST_BUDGET_SECONDS
-        value: "20"
+        value: "2048"
       - key: LLM_TEMPERATURE
         value: "0.2"
       # ---- Emergency rollback only (unused while LLM_PROVIDER=local) --------
@@ -265,10 +248,10 @@ services:
         value: "3"
       - key: MAX_TOOL_CALLS
         value: "8"
-      # Hard backstop for the multi-step autonomous loop ONLY. Normal requests
-      # are governed by AI_REQUEST_BUDGET_SECONDS above and never reach this.
+      # Retained for bounded autonomous-loop compatibility; model generation
+      # itself is never stopped based on this performance target.
       - key: MAX_AGENT_RUNTIME_SECONDS
-        value: "45"
+        value: "300"
       - key: WEB_SEARCH_MAX_RESULTS
         value: "3"
       - key: WEB_REQUEST_TIMEOUT
