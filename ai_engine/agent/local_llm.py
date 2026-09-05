@@ -1159,8 +1159,14 @@ class LocalModelManager:
 
         prompt, stops = self._render_prompt(system_prompt, user_prompt)
         prompt, max_tokens = self._fit_to_context(llama, system_prompt, user_prompt, prompt, max_tokens)
+        inference_started = time.monotonic()
+        first_token_ms: int | None = None
+        pieces: list[str] = []
         try:
-            result = llama.create_completion(
+            # Ask llama.cpp for its genuine token iterator. Even callers that
+            # consume a final response benefit: this records true first-token
+            # latency rather than estimating it from total generation time.
+            chunks = llama.create_completion(
                 prompt=prompt,
                 max_tokens=max_tokens,
                 temperature=temperature,
@@ -1170,7 +1176,19 @@ class LocalModelManager:
                 stop=stops,
                 grammar=grammar,
                 echo=False,
+                stream=True,
             )
+            # Test doubles and older compatible runtimes may ignore stream=True
+            # and return the traditional aggregate dictionary.
+            chunks_iter = [chunks] if isinstance(chunks, dict) else chunks
+            for chunk in chunks_iter:
+                choices = chunk.get("choices", []) if isinstance(chunk, dict) else []
+                piece = str(choices[0].get("text", "") or "") if choices else ""
+                if piece:
+                    if first_token_ms is None:
+                        first_token_ms = int((time.monotonic() - inference_started) * 1000)
+                        logger.info("[EduNova AI] First token latency_ms=%s", first_token_ms)
+                    pieces.append(piece)
         except Exception as exc:
             raise LLMResponseError(
                 "The self-hosted EduNova model failed during generation",
@@ -1179,10 +1197,18 @@ class LocalModelManager:
                 provider_message=str(exc)[:300],
             ) from exc
 
-        choices = result.get("choices", []) if isinstance(result, dict) else []
-        text = ""
-        if choices:
-            text = str(choices[0].get("text", "") or "")
+        text = "".join(pieces)
+        generation_seconds = max(0.001, time.monotonic() - inference_started)
+        try:
+            generated_tokens = len(llama.tokenize(text.encode("utf-8"), add_bos=False, special=True))
+        except Exception:
+            generated_tokens = max(0, len(text) // 3)
+        logger.info(
+            "[EduNova AI] Inference completed tokens=%s duration_ms=%s tokens_per_second=%.2f",
+            generated_tokens,
+            int(generation_seconds * 1000),
+            generated_tokens / generation_seconds,
+        )
         if not text.strip() and not allow_empty:
             raise LLMResponseError(
                 "The self-hosted EduNova model returned an empty response",

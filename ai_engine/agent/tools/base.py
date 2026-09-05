@@ -6,10 +6,13 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 import inspect
+import logging
 from time import monotonic
 from typing import Any
 
 from ..models import Observation, ToolCallRecord
+
+logger = logging.getLogger("edunova.agent.tools")
 
 ToolExecutor = Callable[..., Awaitable[dict[str, Any]]]
 
@@ -152,6 +155,12 @@ class ToolRegistry:
                 success=True,
                 duration_ms=duration,
                 source_type=source_type,
+            )
+            logger.info(
+                "[EduNova AI] Tool execution tool=%s source=%s success=true duration_ms=%s",
+                name,
+                source_type,
+                duration,
             )
             return observation, record
         except asyncio.TimeoutError:

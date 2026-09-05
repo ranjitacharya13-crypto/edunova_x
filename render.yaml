@@ -118,7 +118,7 @@ services:
   #
   #    ---- SIZING (read before changing `plan`) --------------------------------
   #    Model:   Qwen2.5-0.5B-Instruct Q4_K_M  (379 MiB of weights, Apache-2.0)
-  #    Memory:  ~380 MB weights + ~75 MB KV cache (ctx 6144) + ~150 MB compute
+  #    Memory:  ~380 MB weights + ~75 MB KV cache (ctx 4096) + ~150 MB compute
   #             buffers/allocator + ~130 MB Python/FastAPI  =>  ~700 MB RSS.
   #
   #    Render instance types:  Free 512 MB / 0.1 CPU  •  Starter 512 MB / 0.5 CPU
@@ -199,7 +199,7 @@ services:
       # - key: LOCAL_MODEL_URL
       #   sync: false
       - key: LOCAL_MODEL_CTX
-        value: "6144"
+        value: "4096"
       - key: LOCAL_MODEL_THREADS
         value: "2"
       - key: LOCAL_MODEL_BATCH
@@ -215,7 +215,7 @@ services:
       - key: LOCAL_MODEL_DOWNLOAD_RETRIES
         value: "3"
       - key: LLM_MAX_OUTPUT_TOKENS
-        value: "900"
+        value: "384"
       - key: LLM_TEMPERATURE
         value: "0.2"
       # ---- Emergency rollback only (unused while LLM_PROVIDER=local) --------
@@ -237,13 +237,13 @@ services:
         value: "true"
       # ---- Bounded autonomous execution (tuned for shared CPU) --------------
       - key: MAX_AGENT_ITERATIONS
-        value: "5"
+        value: "3"
       - key: MAX_TOOL_CALLS
         value: "8"
       - key: MAX_AGENT_RUNTIME_SECONDS
         value: "180"
       - key: WEB_SEARCH_MAX_RESULTS
-        value: "5"
+        value: "3"
       - key: WEB_REQUEST_TIMEOUT
         value: "10"
       - key: WEB_MAX_CONTENT_LENGTH

@@ -16,6 +16,7 @@ import logging
 import os
 from pathlib import Path
 import secrets
+import time
 from typing import Any
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
@@ -632,7 +633,9 @@ async def _execute(
 
 
 async def _run_non_stream(request: ChatRequest) -> dict[str, Any]:
+    started = time.monotonic()
     await _ready_gate()
+    logger.info("[EduNova AI] Model ready gate_ms=%s", int((time.monotonic() - started) * 1000))
     conversation = conversations.get_or_create(request.conversation_id, _owner(request))
     result = await asyncio.wait_for(
         _execute(request, conversation, None),
@@ -640,6 +643,7 @@ async def _run_non_stream(request: ChatRequest) -> dict[str, Any]:
     )
     conversations.append_turn(conversation, request.message.strip(), result.get("message", ""))
     _set_provider_state("ready" if not settings.is_local_llm else "model_ready", 200, None)
+    logger.info("[EduNova AI] Response sent total_ms=%s", int((time.monotonic() - started) * 1000))
     return result
 
 
@@ -714,7 +718,10 @@ async def chat(
     request: Request,
     x_ai_internal_token: str | None = Header(default=None),
 ):
+    request_started = time.monotonic()
+    logger.info("[EduNova AI] Request received stream=%s message_chars=%s", payload.stream, len(payload.message))
     _authorize_internal_request(x_ai_internal_token)
+    logger.info("[EduNova AI] Authentication complete duration_ms=%s", int((time.monotonic() - request_started) * 1000))
     clean_message = payload.message.strip()
     if not clean_message:
         raise HTTPException(status_code=422, detail="message cannot be blank")
