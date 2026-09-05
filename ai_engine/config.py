@@ -49,6 +49,15 @@ def _boolean(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _cgroup_memory_limit() -> int | None:
+    """Return the container memory limit when cgroup v2 exposes one."""
+    try:
+        raw = open("/sys/fs/cgroup/memory.max", encoding="utf-8").read().strip()
+        return None if raw == "max" else int(raw)
+    except (OSError, ValueError):
+        return None
+
+
 def _clean_env_value(raw: str | None) -> str:
     """Strip whitespace and surrounding quotes without exposing secrets."""
     if raw is None:
@@ -532,6 +541,14 @@ def load_settings() -> Settings:
     local_ctx = _integer("LOCAL_MODEL_CTX", 6144, 1024, 32768)
     if is_local:
         local_ctx = max(6144, local_ctx)
+        # The live Render service currently has a 512 MiB cgroup. Qwen 0.5B at
+        # 6144 context reaches ~534 MB RSS and leaves no OOM safety margin.
+        # Keep the larger context on Standard+, but automatically use 4096 on
+        # a <=768 MiB container. Output remains 2048; oversized retrieved facts
+        # are trimmed before generation rather than cutting the answer.
+        memory_limit = _cgroup_memory_limit()
+        if memory_limit is not None and memory_limit <= 768 * 1024 * 1024:
+            local_ctx = min(local_ctx, 4096)
 
     app_backend_url = _first_env(
         "APP_BACKEND_URL", "EXPRESS_URL", "SERVER_URL", default="http://127.0.0.1:4000"
