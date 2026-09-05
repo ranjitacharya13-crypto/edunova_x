@@ -1,5 +1,5 @@
 import React, { useRef, useState } from "react";
-import { streamAIEngine } from "../api/api";
+import { confirmAIAction, streamAIEngine } from "../api/api";
 import EduNovaAIAvatar from "./EduNovaAIAvatar";
 
 const ASSISTANT_NAME = "EduNova AI";
@@ -12,7 +12,7 @@ const QUICK_PROMPTS = [
   "Make me a study plan for next week's exam",
 ];
 
-export default function AIChatAssistant() {
+export default function AIChatAssistant({ feature = "ai" }) {
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
   const [agentStatus, setAgentStatus] = useState("Ready to help");
@@ -34,6 +34,7 @@ export default function AIChatAssistant() {
       const res = await streamAIEngine({
         message: cleanMessage,
         conversationId: conversationIdRef.current,
+        applicationContext: { route: window.location.pathname, feature },
         onEvent: (eventData) => {
           if (eventData?.type === "status" && eventData?.message) {
             setAgentStatus(eventData.message);
@@ -57,6 +58,21 @@ export default function AIChatAssistant() {
     } finally {
       setLoading(false);
       setAgentStatus("Ready to help");
+    }
+  };
+
+
+  const confirmAction = async (index, token) => {
+    try {
+      const response = await confirmAIAction(token);
+      setResult((current) => ({
+        ...current,
+        actions: current.actions.map((action, actionIndex) => actionIndex === index
+          ? { ...action, message: response?.data?.message || "Saved to EduNova", data: { ...action.data, pending: false, requiresConfirmation: false } }
+          : action),
+      }));
+    } catch {
+      setError("That action could not be saved. It may have expired.");
     }
   };
 
@@ -186,7 +202,11 @@ export default function AIChatAssistant() {
                             key={`act-${i}`}
                             className="rounded-lg bg-emerald-50 px-2.5 py-1.5 text-xs font-medium text-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-200"
                           >
-                            ✓ {act.message || act.tool}
+                            {act.data?.requiresConfirmation ? (
+                              <button type="button" onClick={() => confirmAction(i, act.data.confirmationToken)} className="font-bold underline">
+                                Confirm: {act.message || act.tool}
+                              </button>
+                            ) : `✓ ${act.message || act.tool}`}
                           </div>
                         ))}
                       </div>

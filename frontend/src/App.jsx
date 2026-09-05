@@ -81,7 +81,7 @@ export default function App() {
         </div>
       )}
 
-      {user && <FloatingAIChat user={user} />}
+      {user && <FloatingAIChat user={user} feature={view} />}
     </div>
   );
 }

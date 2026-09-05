@@ -26,28 +26,21 @@ from config import load_settings, Settings, _clean_env_value, _normalize_base_ur
 
 
 class ConfigAliasTests(unittest.TestCase):
-    def test_llm_alias_openai_api_key(self):
-        # Ensure OPENAI_API_KEY is accepted as alias for LLM_API_KEY
-        prev_llm = os.getenv("LLM_API_KEY")
-        prev_openai = os.getenv("OPENAI_API_KEY")
+    def test_only_canonical_llm_api_key_is_accepted(self):
+        previous = {name: os.getenv(name) for name in ("LLM_API_KEY", "OPENAI_API_KEY", "LLM_PROVIDER")}
         try:
-            if "LLM_API_KEY" in os.environ:
-                del os.environ["LLM_API_KEY"]
-            os.environ["OPENAI_API_KEY"] = "sk-alias-test-key"
-            os.environ["LLM_MODEL"] = "test-model"
-            os.environ["LLM_BASE_URL"] = "https://api.openai.com/v1"
+            os.environ.pop("LLM_API_KEY", None)
+            os.environ["OPENAI_API_KEY"] = "must-not-be-used"
+            os.environ["LLM_PROVIDER"] = "openai"
             settings = load_settings()
-            self.assertEqual(settings.llm_api_key, "sk-alias-test-key")
-            self.assertTrue(settings.llm_configured)
+            self.assertEqual(settings.llm_api_key, "")
+            self.assertFalse(settings.llm_configured)
+            os.environ["LLM_API_KEY"] = "canonical-key"
+            self.assertEqual(load_settings().llm_api_key, "canonical-key")
         finally:
-            if prev_llm is not None:
-                os.environ["LLM_API_KEY"] = prev_llm
-            elif "LLM_API_KEY" in os.environ:
-                del os.environ["LLM_API_KEY"]
-            if prev_openai is not None:
-                os.environ["OPENAI_API_KEY"] = prev_openai
-            elif "OPENAI_API_KEY" in os.environ:
-                del os.environ["OPENAI_API_KEY"]
+            for name, value in previous.items():
+                if value is None: os.environ.pop(name, None)
+                else: os.environ[name] = value
 
     def test_quoted_api_key_stripped(self):
         prev = os.getenv("LLM_API_KEY")
@@ -89,6 +82,19 @@ class ConfigAliasTests(unittest.TestCase):
                 os.environ["LLM_BASE_URL"] = prev
             elif "LLM_BASE_URL" in os.environ:
                 del os.environ["LLM_BASE_URL"]
+
+    def test_openai_provider_rejects_mismatched_base_url(self):
+        settings = Settings(llm_provider="openai", llm_api_key="present", llm_model="gpt-4.1-mini", llm_base_url="https://generativelanguage.googleapis.com/v1")
+        self.assertFalse(settings.llm_configured)
+        self.assertEqual(settings.llm_configuration_error, "provider_base_url_mismatch")
+
+    def test_safe_diagnostics_expose_names_not_secrets(self):
+        settings = Settings(llm_provider="openai", llm_api_key="super-secret", llm_model="gpt-4.1-mini", llm_base_url="https://api.openai.com/v1")
+        diagnostics = settings.llm_safe_diagnostics()
+        self.assertEqual(diagnostics["provider"], "openai")
+        self.assertEqual(diagnostics["model"], "gpt-4.1-mini")
+        self.assertTrue(diagnostics["apiKeyPresent"])
+        self.assertNotIn("super-secret", json.dumps(diagnostics))
 
     def test_llm_configuration_invalid_safe_diagnostics(self):
         prev_key = os.getenv("LLM_API_KEY")
@@ -183,6 +189,7 @@ class BaseUrlNormalizationTests(unittest.TestCase):
 class LLMClientErrorClassificationTests(unittest.IsolatedAsyncioTestCase):
     def _settings(self, api_key="test-key", model="test-model", base_url="https://llm.example.invalid/v1"):
         return Settings(
+            llm_provider="openai_compatible",
             llm_api_key=api_key,
             llm_model=model,
             llm_base_url=_normalize_base_url(base_url),
@@ -486,9 +493,9 @@ class ProviderErrorFrontendContractTests(unittest.IsolatedAsyncioTestCase):
         from agent.llm import LLMResponseError
 
         exc = LLMResponseError("auth failed", status_code=401, error_type="authentication_error", provider_message="Incorrect API key")
-        status, msg = _safe_error(exc)
+        status, code, msg = _safe_error(exc)
         self.assertEqual(status, 503)
-        self.assertIn("configuration requires attention", msg.lower())
+        self.assertEqual(code, "LLM_AUTHENTICATION_FAILED")
         self.assertIn("authentication", msg.lower())
 
     def test_safe_error_classification_429(self):
@@ -496,26 +503,26 @@ class ProviderErrorFrontendContractTests(unittest.IsolatedAsyncioTestCase):
         from agent.llm import LLMResponseError
 
         exc = LLMResponseError("rate limit", status_code=429, error_type="rate_limit", provider_message="Too many requests")
-        status, msg = _safe_error(exc)
+        status, code, msg = _safe_error(exc)
         self.assertEqual(status, 429)
-        self.assertIn("busy", msg.lower())
+        self.assertEqual(code, "LLM_RATE_LIMITED")
 
     def test_safe_error_classification_404_model(self):
         from main import _safe_error
         from agent.llm import LLMResponseError
 
         exc = LLMResponseError("not found", status_code=404, error_type="not_found", provider_message="The model `gpt-4.1-mini` does not exist")
-        status, msg = _safe_error(exc)
+        status, code, msg = _safe_error(exc)
         self.assertEqual(status, 503)
         self.assertIn("model", msg.lower())
-        self.assertIn("configuration", msg.lower())
+        self.assertEqual(code, "LLM_MODEL_NOT_FOUND")
 
     def test_safe_error_classification_timeout(self):
         from main import _safe_error
         from agent.llm import LLMResponseError
 
         exc = LLMResponseError("timeout", status_code=504, error_type="timeout", provider_message="timeout")
-        status, msg = _safe_error(exc)
+        status, code, msg = _safe_error(exc)
         self.assertEqual(status, 504)
 
     def test_safe_error_configuration(self):
@@ -523,7 +530,7 @@ class ProviderErrorFrontendContractTests(unittest.IsolatedAsyncioTestCase):
         from agent.llm import LLMConfigurationError
 
         exc = LLMConfigurationError("not configured")
-        status, msg = _safe_error(exc)
+        status, code, msg = _safe_error(exc)
         self.assertEqual(status, 503)
         self.assertIn("not configured", msg.lower())
 

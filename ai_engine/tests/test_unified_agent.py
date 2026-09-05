@@ -70,8 +70,20 @@ class UnifiedAgentInternalDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.registry = ToolRegistry(
             allowed_permissions={"READ_INTERNAL", "WRITE_INTERNAL", "READ_EXTERNAL", "UTILITY"}
         )
-        for defn in build_all_tools(self.settings):
+        for defn in build_utility_tools():
             self.registry.register(defn)
+        async def fixture_tool(args, context=None):
+            return {"fixture": True, "arguments": args}
+        for name in (
+            "get_today_schedule", "get_quiz_results", "get_exams", "get_progress",
+            "get_syllabus", "create_study_plan"
+        ):
+            self.registry.register(ToolDefinition(
+                name=name, description="test fixture", input_schema={"type": "object"},
+                executor=fixture_tool,
+                permission="WRITE_INTERNAL" if name == "create_study_plan" else "READ_INTERNAL",
+                category="INTERNAL",
+            ))
 
     async def test_today_classes_uses_database_not_web_search(self):
         """User asks 'What classes do I have today?' -> Uses get_today_schedule, not web_search."""

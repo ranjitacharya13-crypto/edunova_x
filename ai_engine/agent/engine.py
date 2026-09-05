@@ -36,6 +36,7 @@ class GoalManager:
         user_role: str = "student",
         user_name: str = "Student",
         user_email: str = "",
+        application_context: dict[str, Any] | None = None,
     ) -> AgentState:
         return AgentState(
             goal=goal,
@@ -44,6 +45,7 @@ class GoalManager:
             user_role=user_role,
             user_name=user_name,
             user_email=user_email,
+            application_context=application_context or {},
             current_understanding="Determine the user's actual learning, application, or research goal.",
             pending_objectives=["Satisfy the user's goal accurately and efficiently with verified data"],
         )
@@ -383,6 +385,7 @@ Return ONLY one JSON object with this shape:
             "userContext": {
                 "name": state.user_name,
                 "role": state.user_role,
+                "application": state.application_context,
             },
             "recentConversation": state.conversation[-self.settings.conversation_max_turns * 2 :],
             "currentUnderstanding": state.current_understanding,
@@ -488,6 +491,7 @@ class AgentEngine:
         user_role: str = "student",
         user_name: str = "Student",
         user_email: str = "",
+        application_context: dict[str, Any] | None = None,
         event_callback: EventCallback | None = None,
     ) -> AgentResult:
         state = GoalManager.create(
@@ -497,6 +501,7 @@ class AgentEngine:
             user_role=user_role,
             user_name=user_name,
             user_email=user_email,
+            application_context=application_context,
         )
         sources = SourceManager(state)
         events = EventEmitter(state.session_id, event_callback)

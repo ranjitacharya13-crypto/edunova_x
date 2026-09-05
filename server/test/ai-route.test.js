@@ -236,9 +236,9 @@ describe("Express AI route -> FastAPI integration", () => {
       const { status, json } = await postChat(app, { token: signToken("cold2-user-0000000001") });
       assert.strictEqual(status, 503);
       assert.strictEqual(json.success, false);
-      assert.match(json.error, /starting up or temporarily unavailable/i);
+      assert.match(json.error.message, /starting up or temporarily unavailable/i);
       assert.strictEqual(json.agentStatus, "unavailable");
-      assert.ok(!/could not start this request/.test(json.error), "the old misleading message must be gone");
+      assert.ok(!/could not start this request/.test(json.error.message), "the old misleading message must be gone");
     } finally {
       upstream.restoreEnv();
       upstream.server.close();
@@ -255,7 +255,7 @@ describe("Express AI route -> FastAPI integration", () => {
     try {
       const { status, json } = await postChat(app, { token: signToken("authfail-user-00000001") });
       assert.strictEqual(status, 401);
-      assert.strictEqual(json.error, "AI service authorization failed");
+      assert.strictEqual(json.error.message, "AI service authorization failed");
       assert.strictEqual(json.agentStatus, "auth_failed");
       assert.strictEqual(upstream.state.requests.length, 1, "4xx failures must not be retried");
     } finally {
