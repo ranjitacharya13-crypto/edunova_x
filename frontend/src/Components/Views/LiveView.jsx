@@ -1,29 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { io } from "socket.io-client";
-import { API, apiUrl, API_ORIGIN } from "../../api/api";
-
-const defaultSignalUrl = (() => {
-  const configured = import.meta.env.VITE_SIGNAL_URL;
-  if (configured) return configured;
-
-  if (typeof window === "undefined") return "";
-
-  // Default: the Express API service hosts Socket.IO signaling + chat on the
-  // SAME origin as the REST API (see render.yaml), so fall back to the API
-  // origin (VITE_API_URL minus its /api suffix).
-  // - DEV (Vite): same-origin via the Vite proxy for `/socket.io` -> local backend.
-  // - PROD: VITE_SIGNAL_URL is only needed if signaling is deployed as a
-  //   separate service; otherwise the API origin below is used.
-  if (import.meta.env.PROD) {
-    return API_ORIGIN || "https://edunova-api-y3rx.onrender.com";
-  }
-  return window.location.origin;
-})();
-
-// Start with HTTP long-polling and let Socket.IO upgrade to WebSocket when the
-// host supports it. A WebSocket-only connection fails outright during Render
-// cold starts and behind restrictive school/mobile networks.
-const socket = io(defaultSignalUrl, { transports: ["polling", "websocket"] });
+import { acquireSignalSocket, releaseSignalSocket } from "../../api/socket";
+import { API, apiUrl } from "../../api/api";
 
 function normalizeRoom(room) {
   return String(room || "")
@@ -307,6 +284,10 @@ function VideoTile({ stream, name, muted, micOn, camOn, handRaised }) {
 export default function LiveView({ user }) {
   const pcRef = useRef(null);
   const roomRef = useRef(null);
+  // Shared, lazily-created signaling socket (see src/api/socket.js). Acquired
+  // on mount and released on unmount — no idle connection, no duplicate
+  // sockets, and clean Back-Forward Cache handling.
+  const socketRef = useRef(null);
   const inClassRef = useRef(false);
   const pendingIceRef = useRef([]);
 
@@ -409,7 +390,7 @@ export default function LiveView({ user }) {
     if (typeof window !== "undefined") localStorage.setItem("liveRoom", id);
 
     roomRef.current = id;
-    socket.emit("join", id);
+    socketRef.current?.emit("join", id);
     setJoinedRoom(true);
     return id;
   };
@@ -432,7 +413,7 @@ export default function LiveView({ user }) {
 
     pc.onicecandidate = (e) => {
       if (!e.candidate) return;
-      socket.emit("ice-candidate", { room: roomRef.current, candidate: e.candidate });
+      socketRef.current?.emit("ice-candidate", { room: roomRef.current, candidate: e.candidate });
     };
 
     pc.onconnectionstatechange = () => {
@@ -786,7 +767,7 @@ export default function LiveView({ user }) {
     const id = roomRef.current;
     const cleaned = chatText.trim();
     if (!id || !cleaned) return;
-    socket.emit("chat-send", {
+    socketRef.current?.emit("chat-send", {
       room: id,
       text: cleaned,
       user: { id: user?.id, name: user?.name, role: user?.role },
@@ -927,7 +908,7 @@ export default function LiveView({ user }) {
 
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
-        socket.emit("offer", { room, offer });
+        socketRef.current?.emit("offer", { room, offer });
       } catch (e) {
         console.error("Offer renegotiation error", e);
       }
@@ -955,7 +936,7 @@ export default function LiveView({ user }) {
 
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
-        socket.emit("answer", { room, answer });
+        socketRef.current?.emit("answer", { room, answer });
       } catch (e) {
         console.error("Offer handling error", e);
       }
@@ -989,6 +970,9 @@ export default function LiveView({ user }) {
       }
     };
 
+    const socket = acquireSignalSocket();
+    socketRef.current = socket;
+
     socket.on("offer", onOffer);
     socket.on("answer", onAnswer);
     socket.on("ice-candidate", onIce);
@@ -1015,6 +999,8 @@ export default function LiveView({ user }) {
       socket.off("peer-joined", maybeSendOffer);
       socket.off("chat-history");
       socket.off("chat-message");
+      if (socketRef.current === socket) socketRef.current = null;
+      releaseSignalSocket();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1026,7 +1012,7 @@ export default function LiveView({ user }) {
   useEffect(() => {
     if (!roomId) return;
     roomRef.current = roomId;
-    socket.emit("join", roomId);
+    socketRef.current?.emit("join", roomId);
     setJoinedRoom(true);
     fetchAssignments(roomId);
     // eslint-disable-next-line react-hooks/exhaustive-deps

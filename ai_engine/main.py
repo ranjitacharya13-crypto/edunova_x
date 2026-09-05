@@ -93,10 +93,32 @@ def _log_startup_diagnostics() -> None:
                 logger.warning(
                     "LOCAL_MODEL_NOT_IN_VERIFIED_CATALOGUE repo=%s file=%s "
                     "hint=The file existence/size/sha256 are not pre-verified; a wrong "
-                    "LOCAL_MODEL_FILE will fail the startup preflight with HTTP 404.",
+                    "LOCAL_MODEL_FILE will fail the startup preflight with HTTP 404. "
+                    "If the file truly exists, add it to the operator catalogue; "
+                    "otherwise use a catalogue file (default: %s).",
                     settings.local_model_repo,
                     settings.local_model_file,
+                    settings.local_model_file,
                 )
+            # Stale external-provider variables (e.g. a leftover Groq/OpenAI key
+            # and base URL) are IGNORED while LLM_PROVIDER=local. They never
+            # reach the model path, but leaving them in the dashboard is
+            # confusing and keeps a live API key sitting on the service. Values
+            # are never logged — only which variable names are present.
+            stale_external = [
+                name
+                for name in ("LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL")
+                if os.getenv(name, "").strip()
+            ]
+            if stale_external:
+                logger.warning(
+                    "STALE_EXTERNAL_LLM_ENV detected=%s hint=LLM_PROVIDER=local ignores "
+                    "external provider variables; remove %s from the service environment "
+                    "(they are unused and only keep credentials deployed)",
+                    ",".join(stale_external),
+                    ",".join(stale_external),
+                )
+
         else:
             logger.error(
                 "LOCAL_MODEL_CONFIGURATION_INCOMPLETE reason=%s url=%s "
@@ -295,6 +317,13 @@ async def health() -> dict[str, Any]:
         "webSearchConfigured": settings.search_configured,
         "internalAuthConfigured": bool(settings.ai_internal_token),
         "internalAuthRequired": settings.ai_require_internal_token,
+        # True when the configured LOCAL_MODEL_FILE was rejected by the source
+        # host (HTTP 404/410) and the verified catalogue default was applied.
+        "configOverrideRejected": bool(
+            settings.is_local_llm
+            and model_manager is not None
+            and model_manager.config_override_rejected
+        ),
         "tools": [spec["name"] for spec in registry.specs()],
         "fastPathIntents": sorted(FAST_INTENTS),
         "limits": {
@@ -366,7 +395,16 @@ async def ai_health(
         "configured": settings.llm_configured,
         "provider": settings.llm_provider,
         "selfHosted": settings.is_local_llm,
-        "model": settings.local_model_id if settings.is_local_llm else settings.llm_model,
+        # Effective model id: after a config-override fallback this reflects
+        # the file actually loaded, not the rejected environment value.
+        "model": (
+            model_manager.settings.local_model_id
+            if (settings.is_local_llm and model_manager is not None)
+            else (settings.local_model_id if settings.is_local_llm else settings.llm_model)
+        ),
+        "configOverrideRejected": bool(
+            settings.is_local_llm and model_manager is not None and model_manager.config_override_rejected
+        ),
         "apiKeyPresent": bool(settings.llm_api_key),
         "configurationError": settings.llm_configuration_error,
         "probe": probe_state,
