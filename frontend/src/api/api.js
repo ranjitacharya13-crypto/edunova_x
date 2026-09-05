@@ -273,16 +273,37 @@ function safeAIErrorDetail(detail) {
 
 export function aiRequestErrorMessage(status, detail) {
   const safeDetail = safeAIErrorDetail(detail);
+  // Preserve the backend's precise classification when available.
+  // The FastAPI AI service now returns distinct messages:
+  //  - 503 + "configuration requires attention" => LLM credentials/model/endpoint misconfig
+  //  - 502 / 503 + "temporarily unavailable" => transient provider outage
+  //  - 429 => rate limit, 401/403 => auth
+  // If the backend supplied a safe, specific detail, surface it instead of a generic fallback.
+  const isConfigMessage = /configuration requires attention/i.test(safeDetail);
   if (status === 404) {
-    return "The EduNova AI endpoint is unavailable. Please try again after the service is redeployed.";
+    return safeDetail || "The EduNova AI endpoint is unavailable. Please try again after the service is redeployed.";
   }
   if (status === 401 || status === 403) {
-    return "EduNova AI authentication failed. Please sign in again; if it continues, the AI service configuration needs attention.";
+    return safeDetail || "EduNova AI authentication failed. Please sign in again; if it continues, the AI service configuration needs attention.";
   }
   if (status === 429) {
-    return safeDetail || "EduNova AI is receiving too many requests. Please wait a moment and try again.";
+    return safeDetail || "EduNova AI is busy right now. Please try again shortly.";
+  }
+  if (status === 503) {
+    // 503 from the AI service is either a config problem or a cold-start/wake-up.
+    // Prefer the backend's specific message when present; otherwise distinguish by intent.
+    if (safeDetail) return safeDetail;
+    return "EduNova AI configuration requires attention. The AI provider is not configured or is starting up. Please try again shortly.";
+  }
+  if (status === 502) {
+    return safeDetail || "The AI model provider is temporarily unavailable. Please try again.";
+  }
+  if (status === 504) {
+    return safeDetail || "EduNova AI took too long to respond. Please try again.";
   }
   if (status >= 500) {
+    // Generic fallback for other 5xx, but still honor a safe config hint if present
+    if (isConfigMessage) return safeDetail;
     return safeDetail || "The EduNova AI backend or model provider is temporarily unavailable. Please try again shortly.";
   }
   return safeDetail || "EduNova AI could not complete this request. Please try again.";
