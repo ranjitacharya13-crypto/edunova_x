@@ -42,3 +42,8 @@ Thumbs.db
 * 1.*
 * 2.*
 * 3.*
+
+# Release / installer snapshots (built from source, distributed via GitHub
+# Releases — never commit them into the source tree). A committed copy once
+# embedded real MongoDB credentials in a stale bundled .env, so this stays out.
+edunova-x-installer.zip

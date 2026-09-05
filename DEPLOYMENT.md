@@ -278,9 +278,13 @@ curl -i -X OPTIONS https://edunova-api-y3rx.onrender.com/api/auth/login \
 # -> 204 with access-control-allow-origin matching the Cloudflare URL
 ```
 
-`"mongo":"connected"` in `GET /health` (a richer alias that still exists on the
-API) confirms Atlas connectivity. If it reports `disconnected`, check
-`MONGO_URI` and the Atlas Network Access rule.
+`/health` returns `{"status":"ok"}` and is deliberately decoupled from MongoDB,
+the AI provider, authentication, and frontend build artifacts — so Render's
+load balancer can confirm the process is alive even while upstreams are still
+connecting. To confirm live Atlas connectivity, check the server log line
+`✅ MongoDB connected` (or, on failure, `❌ MongoDB connection failed:` which
+keeps `/health` green but tells you to check `MONGO_URI` and the Atlas Network
+Access rule).
 
 ---
 
