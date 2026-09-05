@@ -219,10 +219,14 @@ async function handleAgentChat(req, res) {
       const result = await postUpstream(`${aiBaseUrl}/api/ai/chat`, payload, headers, timeout, controller.signal);
 
       if (result.ok) {
+        const elapsed = Date.now() - startedAt;
         console.log(
-          `[agent] upstream ok after ${attempt} attempt(s) stream=${wantsStream} elapsed=${Date.now() - startedAt}ms`
+          `[agent] upstream ok after ${attempt} attempt(s) stream=${wantsStream} elapsed=${elapsed}ms`
         );
-        if (wantsStream) return pipeAgentStream(res, result.stream);
+        if (wantsStream) {
+          console.log(`[agent] piping SSE stream to client (started ${elapsed}ms after first attempt)`);
+          return pipeAgentStream(res, result.stream);
+        }
         const raw = await readLimitedStream(result.stream, 2_097_152);
         const parsed = parseJsonBody(raw);
         if (parsed) return res.status(result.status).json(parsed);
@@ -293,10 +297,38 @@ function pipeAgentStream(res, upstreamStream) {
   res.setHeader("Connection", "keep-alive");
   res.setHeader("X-Accel-Buffering", "no");
   res.flushHeaders?.();
+
+  // Overall streaming timeout: if the AI engine doesn't finish within this
+  // window, close the connection.  Without this, a stuck model (deadlock,
+  // OOM, swap-thrash) leaves the Express response open indefinitely.
+  // Sized to: 25s model load + 180s agent runtime + 35s buffer = 240s.
+  const STREAM_TIMEOUT_MS = Number(process.env.AGENT_STREAM_TIMEOUT_MS) || 240_000;
+  const streamTimer = setTimeout(() => {
+    console.warn(`[agent] stream timeout after ${STREAM_TIMEOUT_MS}ms — closing client connection`);
+    if (!res.writableEnded) {
+      // Write a final SSE error event so the frontend shows a useful message
+      // instead of "EduNova AI ended without an answer".
+      res.write(
+        `data: ${JSON.stringify({
+          type: "error",
+          success: false,
+          status: 504,
+          message: "EduNova AI took too long to respond. Please try again.",
+          error: { code: "STREAM_TIMEOUT", message: "EduNova AI took too long to respond. Please try again." },
+          agentStatus: "failed",
+        })}\n\n`
+      );
+      res.end();
+    }
+  }, STREAM_TIMEOUT_MS);
+
   upstreamStream.on("error", (error) => {
     console.error("[agent] upstream stream error:", error.message);
+    clearTimeout(streamTimer);
     if (!res.writableEnded) res.end();
   });
+  upstreamStream.on("end", () => clearTimeout(streamTimer));
+  upstreamStream.on("close", () => clearTimeout(streamTimer));
   upstreamStream.pipe(res);
 }
 
@@ -356,5 +388,20 @@ router.get("/health", auth, async (req, res) => {
 
 router.post("/chat", auth, aiRateLimit, handleAgentChat);
 router.post("/query", auth, aiRateLimit, handleAgentChat);
+
+// Diagnostic endpoint: directly test the local model through the AI service.
+// Bypasses AgentEngine, tools, MongoDB, web search.  Returns timing data.
+router.get("/diagnose", auth, async (req, res) => {
+  const aiBaseUrl = getAiBaseUrl();
+  if (!aiBaseUrl) return res.status(503).json({ success: false, error: "AI_ENGINE_URL not configured" });
+  const headers = process.env.AI_INTERNAL_TOKEN ? { "X-AI-Internal-Token": process.env.AI_INTERNAL_TOKEN } : {};
+  try {
+    const response = await axios.get(`${aiBaseUrl}/api/ai/diagnose`, { headers, timeout: 120_000, validateStatus: () => true });
+    return res.status(response.status).json(response.data);
+  } catch (error) {
+    console.error("[diagnose] AI engine unreachable:", error.code || error.message);
+    return res.status(503).json({ success: false, error: "AI service unreachable", detail: error.code });
+  }
+});
 
 module.exports = router;
