@@ -140,6 +140,88 @@ def _is_private_or_loopback_host(host: str) -> bool:
 
 _LOCAL_MODEL_ID_SAFE = re.compile(r"[^A-Za-z0-9._/:-]+")
 
+# -----------------------------------------------------------------------------
+# Verified self-hosted model catalogue.
+#
+# Every entry below was verified against the HuggingFace repository file tree
+# (``/api/models/<repo>/tree/main``): the file exists on ``resolve/main``, is
+# public/ungated, and the recorded ``sha256``/``bytes`` come from the LFS
+# metadata of that exact revision. This registry is what prevents a repeat of
+# the HTTP 404 outage: the shipped default is a file that provably exists, and
+# an operator override is integrity-checked for free when it is a known file.
+#
+# ``ram_mb`` is a conservative estimate of resident memory for weights + KV
+# cache + llama.cpp compute buffers at the default context size, i.e. what the
+# Render instance must have on top of ~130MB of Python/FastAPI overhead.
+# -----------------------------------------------------------------------------
+KNOWN_MODELS: dict[tuple[str, str], dict[str, object]] = {
+    # Default. Qwen2.5-0.5B-Instruct: Apache-2.0, ChatML, 32k context, trained
+    # for instruction following AND tool calling — the smallest model in this
+    # family that still writes usable educational explanations.
+    ("bartowski/Qwen2.5-0.5B-Instruct-GGUF", "Qwen2.5-0.5B-Instruct-Q4_K_M.gguf"): {
+        "sha256": "6eb923e7d26e9cea28811e1a8e852009b21242fb157b26149d3b188f3a8c8653",
+        "bytes": 397_808_192,
+        "chat_format": "chatml",
+        "ram_mb": 700,
+    },
+    ("bartowski/Qwen2.5-0.5B-Instruct-GGUF", "Qwen2.5-0.5B-Instruct-IQ4_XS.gguf"): {
+        "sha256": "df178ccd68e24ce0c74f957765c00e8f5eec5c51216a1acd4444202e58df6cc1",
+        "bytes": 349_402_688,
+        "chat_format": "chatml",
+        "ram_mb": 650,
+    },
+    ("bartowski/Qwen2.5-0.5B-Instruct-GGUF", "Qwen2.5-0.5B-Instruct-Q8_0.gguf"): {
+        "sha256": "25130a98aa782284a7dabea0c23245b2fd371ed47244e79d78b8ec23245fdf96",
+        "bytes": 531_068_480,
+        "chat_format": "chatml",
+        "ram_mb": 850,
+    },
+    # Lowest-RAM option (SmolLM2-360M-Instruct, Apache-2.0, ChatML). Weaker
+    # reasoning, but it boots inside a 512MB instance.
+    ("bartowski/SmolLM2-360M-Instruct-GGUF", "SmolLM2-360M-Instruct-Q4_K_M.gguf"): {
+        "sha256": "2fa3f013dcdd7b99f9b237717fa0b12d75bbb89984cc1274be1471a465bac9c2",
+        "bytes": 270_590_880,
+        "chat_format": "chatml",
+        "ram_mb": 480,
+    },
+    # Quality upgrade for a 2GB+ instance.
+    ("bartowski/Qwen2.5-1.5B-Instruct-GGUF", "Qwen2.5-1.5B-Instruct-Q4_K_M.gguf"): {
+        "sha256": "1adf0b11065d8ad2e8123ea110d1ec956dab4ab038eab665614adba04b6c3370",
+        "bytes": 986_048_768,
+        "chat_format": "chatml",
+        "ram_mb": 1500,
+    },
+}
+
+DEFAULT_LOCAL_MODEL_REPO = "bartowski/Qwen2.5-0.5B-Instruct-GGUF"
+DEFAULT_LOCAL_MODEL_FILE = "Qwen2.5-0.5B-Instruct-Q4_K_M.gguf"
+
+
+def known_model_entry(repo: str, filename: str) -> dict[str, object] | None:
+    return KNOWN_MODELS.get((str(repo or "").strip(), str(filename or "").strip()))
+
+
+def _sanitize_public_url(raw: str) -> str:
+    """Strip credentials and query strings so a URL is safe to log/expose.
+
+    HuggingFace ``resolve`` links are public, but a custom ``LOCAL_MODEL_URL``
+    may embed basic-auth credentials or a signed query token; neither may ever
+    reach a log line, a health payload, or the browser.
+    """
+    value = str(raw or "").strip()
+    if not value:
+        return ""
+    try:
+        parts = urlsplit(value)
+    except Exception:
+        return "invalid-url"
+    if not parts.hostname:
+        return "invalid-url"
+    port = f":{parts.port}" if parts.port else ""
+    path = parts.path or "/"
+    suffix = "?<redacted>" if parts.query else ""
+    return f"{parts.scheme or 'https'}://{parts.hostname}{port}{path}{suffix}"
+
 
 @dataclass(frozen=True, slots=True)
 class Settings:
@@ -154,15 +236,22 @@ class Settings:
     llm_json_mode: bool = True
 
     # ---- Self-hosted local model (llama.cpp) -------------------------------
-    # Default model is sized for Render free tier (512MB RAM / shared CPU):
-    # Qwen2.5-0.5B-Instruct @ IQ3_XXS (~270MB weights). LOCAL_MODEL_FILE can be
-    # switched to a larger quant/model on plans with more RAM.
-    local_model_repo: str = "bartowski/Qwen2.5-0.5B-Instruct-GGUF"
-    local_model_file: str = "Qwen2.5-0.5B-Instruct-IQ3_XXS.gguf"
+    # The default is a file that is VERIFIED to exist on HuggingFace (see
+    # KNOWN_MODELS above). Qwen2.5-0.5B-Instruct @ Q4_K_M is ~380MiB of
+    # weights: small enough for a 2GB Render Standard instance, strong enough
+    # for instruction following, multi-turn context and JSON/tool decisions.
+    local_model_repo: str = DEFAULT_LOCAL_MODEL_REPO
+    local_model_file: str = DEFAULT_LOCAL_MODEL_FILE
     local_model_url: str = ""  # optional direct download URL override
     local_model_dir: str = "./models_cache"
     local_model_sha256: str = ""  # optional checksum verification
-    local_model_ctx_size: int = 3072
+    local_model_expected_bytes: int = 0  # optional exact-size verification
+    # Floor below which a "model" is assumed to be an error page, not weights.
+    # 10MB is right for every real quantized GGUF; only lower it for tests or
+    # a deliberately micro model.
+    local_model_min_bytes: int = 10 * 1024 * 1024
+    local_model_download_retries: int = 3
+    local_model_ctx_size: int = 6144
     local_model_threads: int = 2
     local_model_batch: int = 256
     local_model_chat_format: str = "chatml"
@@ -212,6 +301,67 @@ class Settings:
         return _LOCAL_MODEL_ID_SAFE.sub("", f"{self.local_model_repo}:{self.local_model_file}")[:160]
 
     @property
+    def local_model_download_url(self) -> str:
+        """The exact URL the runtime will fetch the GGUF weights from.
+
+        Either an explicit ``LOCAL_MODEL_URL`` or the canonical HuggingFace
+        ``resolve/main`` link built from ``LOCAL_MODEL_REPO``/``LOCAL_MODEL_FILE``.
+        """
+        if self.local_model_url:
+            return self.local_model_url
+        if not (self.local_model_repo and self.local_model_file):
+            return ""
+        return (
+            f"https://huggingface.co/{self.local_model_repo}"
+            f"/resolve/main/{self.local_model_file}"
+        )
+
+    @property
+    def local_model_safe_url(self) -> str:
+        """``local_model_download_url`` with credentials/query stripped."""
+        return _sanitize_public_url(self.local_model_download_url)
+
+    @property
+    def local_model_known_entry(self) -> dict[str, object] | None:
+        """Verified catalogue metadata for the configured repo/file, if any."""
+        if self.local_model_url:
+            return None
+        return known_model_entry(self.local_model_repo, self.local_model_file)
+
+    @property
+    def local_model_expected_sha256(self) -> str:
+        """Explicit LOCAL_MODEL_SHA256, else the verified catalogue checksum."""
+        pinned = (self.local_model_sha256 or "").strip().lower()
+        if pinned:
+            return pinned
+        entry = self.local_model_known_entry
+        return str(entry.get("sha256", "")) if entry else ""
+
+    @property
+    def local_model_expected_size(self) -> int:
+        """Explicit LOCAL_MODEL_BYTES, else the verified catalogue size."""
+        if self.local_model_expected_bytes > 0:
+            return self.local_model_expected_bytes
+        entry = self.local_model_known_entry
+        try:
+            return int(entry.get("bytes", 0)) if entry else 0
+        except (TypeError, ValueError):
+            return 0
+
+    @property
+    def local_model_estimated_ram_mb(self) -> int:
+        """Rough resident-memory need of the configured model (0 = unknown)."""
+        entry = self.local_model_known_entry
+        if entry:
+            try:
+                return int(entry.get("ram_mb", 0))
+            except (TypeError, ValueError):
+                return 0
+        expected = self.local_model_expected_size
+        # weights + ~35% for KV cache, compute buffers and allocator slack.
+        return int(expected / (1024 * 1024) * 1.35) if expected else 0
+
+    @property
     def llm_configured(self) -> bool:
         if self.llm_provider == "local":
             return self.llm_configuration_error is None
@@ -228,6 +378,20 @@ class Settings:
         if self.llm_provider == "local":
             if not ((self.local_model_repo and self.local_model_file) or self.local_model_url):
                 return "missing_model_source"
+            if self.local_model_url:
+                try:
+                    parsed = urlsplit(self.local_model_url)
+                except Exception:
+                    return "invalid_model_url"
+                host = (parsed.hostname or "").lower()
+                if not host or parsed.scheme not in {"http", "https"}:
+                    return "invalid_model_url"
+                if parsed.scheme == "http" and not _is_private_or_loopback_host(host):
+                    return "insecure_model_url"
+            elif not str(self.local_model_file).lower().endswith(".gguf"):
+                # llama.cpp only loads GGUF; catching this at config time keeps
+                # the failure out of the request path.
+                return "model_file_not_gguf"
             return None
         if self.llm_provider not in {"openai", "openai_compatible"}:
             return "unsupported_provider"
@@ -291,6 +455,11 @@ class Settings:
             "local_model_ctx_size": self.local_model_ctx_size,
             "local_model_threads": self.local_model_threads,
             "local_preload_model": self.local_preload_model,
+            "local_model_source": "custom_url" if self.local_model_url else "huggingface",
+            "local_model_verified_catalogue_entry": self.local_model_known_entry is not None,
+            "local_model_integrity_pinned": bool(self.local_model_expected_sha256),
+            "local_model_expected_bytes": self.local_model_expected_size or None,
+            "local_model_estimated_ram_mb": self.local_model_estimated_ram_mb or None,
         }
 
 
@@ -327,7 +496,10 @@ def load_settings() -> Settings:
     # the autonomous loop defaults are tightened to keep single requests fast.
     max_iterations = _integer("MAX_AGENT_ITERATIONS", 5 if is_local else 12, 1, 30)
     max_tools = _integer("MAX_TOOL_CALLS", 8 if is_local else 15, 0, 40)
-    max_context = _integer("AGENT_MAX_CONTEXT_CHARS", 24_000 if is_local else 90_000, 4_000, 250_000)
+    # For the local model the agent context must physically fit in the llama.cpp
+    # window (roughly 3 chars/token) alongside the system prompt and the output
+    # budget, otherwise every rich turn hits the truncation guard.
+    max_context = _integer("AGENT_MAX_CONTEXT_CHARS", 12_000 if is_local else 90_000, 4_000, 250_000)
     max_output = _integer("LLM_MAX_OUTPUT_TOKENS", 900 if is_local else 3000, 128, 12_000)
 
     app_backend_url = _first_env(
@@ -343,12 +515,15 @@ def load_settings() -> Settings:
         llm_max_output_tokens=max_output,
         llm_temperature=_floating("LLM_TEMPERATURE", 0.2, 0.0, 1.0),
         llm_json_mode=_boolean("LLM_JSON_MODE", True),
-        local_model_repo=_clean_env_value(os.getenv("LOCAL_MODEL_REPO", "bartowski/Qwen2.5-0.5B-Instruct-GGUF")),
-        local_model_file=_clean_env_value(os.getenv("LOCAL_MODEL_FILE", "Qwen2.5-0.5B-Instruct-IQ3_XXS.gguf")),
+        local_model_repo=_clean_env_value(os.getenv("LOCAL_MODEL_REPO", DEFAULT_LOCAL_MODEL_REPO)) or DEFAULT_LOCAL_MODEL_REPO,
+        local_model_file=_clean_env_value(os.getenv("LOCAL_MODEL_FILE", DEFAULT_LOCAL_MODEL_FILE)) or DEFAULT_LOCAL_MODEL_FILE,
         local_model_url=_clean_env_value(os.getenv("LOCAL_MODEL_URL", "")),
         local_model_dir=_clean_env_value(os.getenv("LOCAL_MODEL_DIR", "./models_cache")) or "./models_cache",
         local_model_sha256=_clean_env_value(os.getenv("LOCAL_MODEL_SHA256", "")).lower(),
-        local_model_ctx_size=_integer("LOCAL_MODEL_CTX", 3072, 1024, 16384),
+        local_model_expected_bytes=_integer("LOCAL_MODEL_BYTES", 0, 0, 200_000_000_000),
+        local_model_min_bytes=_integer("LOCAL_MODEL_MIN_BYTES", 10 * 1024 * 1024, 4096, 20_000_000_000),
+        local_model_download_retries=_integer("LOCAL_MODEL_DOWNLOAD_RETRIES", 3, 0, 8),
+        local_model_ctx_size=_integer("LOCAL_MODEL_CTX", 6144, 1024, 32768),
         local_model_threads=_integer("LOCAL_MODEL_THREADS", 2, 1, 8),
         local_model_batch=_integer("LOCAL_MODEL_BATCH", 256, 32, 2048),
         local_model_chat_format=_clean_env_value(os.getenv("LOCAL_MODEL_CHAT_FORMAT", "chatml")).lower() or "chatml",

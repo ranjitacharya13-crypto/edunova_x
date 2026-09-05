@@ -36,7 +36,7 @@ except ImportError:
 
 from agent.engine import AgentEngine
 from agent.llm import LLMConfigurationError, LLMResponseError
-from agent.local_llm import create_llm
+from agent.local_llm import create_llm, runtime_available, runtime_version
 from agent.memory import ConversationStore
 from agent.router import FAST_INTENTS, IntentRouter, run_fast_path
 from agent.tools import ToolRegistry, build_all_tools
@@ -71,16 +71,38 @@ def _log_startup_diagnostics() -> None:
     if settings.is_local_llm:
         if settings.llm_configured:
             logger.info(
-                "LOCAL_MODEL_STARTUP model=%s ctx=%s threads=%s preload=%s",
+                "LOCAL_MODEL_STARTUP model=%s ctx=%s threads=%s preload=%s dir=%s",
                 settings.local_model_id,
                 settings.local_model_ctx_size,
                 settings.local_model_threads,
                 settings.local_preload_model,
+                settings.local_model_dir,
             )
+            # Requirement: the resolved download URL must be visible in the
+            # production logs. It is sanitized (no credentials, no query) so it
+            # is safe to print, and it is what makes a future 404 diagnosable
+            # in one glance instead of a guessing game.
+            logger.info(
+                "LOCAL_MODEL_SOURCE url=%s expected_bytes=%s sha256_pinned=%s est_ram_mb=%s",
+                settings.local_model_safe_url or "not-configured",
+                settings.local_model_expected_size or "unknown",
+                bool(settings.local_model_expected_sha256),
+                settings.local_model_estimated_ram_mb or "unknown",
+            )
+            if not settings.local_model_known_entry and not settings.local_model_url:
+                logger.warning(
+                    "LOCAL_MODEL_NOT_IN_VERIFIED_CATALOGUE repo=%s file=%s "
+                    "hint=The file existence/size/sha256 are not pre-verified; a wrong "
+                    "LOCAL_MODEL_FILE will fail the startup preflight with HTTP 404.",
+                    settings.local_model_repo,
+                    settings.local_model_file,
+                )
         else:
-            logger.warning(
-                "LOCAL_MODEL_CONFIGURATION_INCOMPLETE reason=%s hint=Set LOCAL_MODEL_REPO/LOCAL_MODEL_FILE or LOCAL_MODEL_URL",
+            logger.error(
+                "LOCAL_MODEL_CONFIGURATION_INCOMPLETE reason=%s url=%s "
+                "hint=Set LOCAL_MODEL_REPO/LOCAL_MODEL_FILE or LOCAL_MODEL_URL",
                 settings.llm_configuration_error,
+                settings.local_model_safe_url or "not-configured",
             )
         return
     if not settings.llm_configured:
@@ -133,6 +155,20 @@ if settings.is_local_llm:
     provider_runtime["state"] = "model_loading" if settings.local_preload_model else "cold"
 
 
+def _provider_log_host(settings) -> str:
+    """Where the completion physically came from, for logs.
+
+    The local provider runs in-process, so echoing `llm_base_url` (a leftover
+    external-API setting) would name a host that was never contacted.
+    """
+    if settings.is_local_llm:
+        return "in-process:llama.cpp"
+    try:
+        return urlsplit(settings.llm_base_url).hostname or "none" if settings.llm_base_url else "none"
+    except Exception:
+        return "invalid"
+
+
 def _set_provider_state(state: str, status: int | None = None, error_type: str | None = None) -> None:
     provider_runtime.update({
         "state": state,
@@ -154,6 +190,14 @@ async def lifespan(app: FastAPI):
     # the background. Chat requests meanwhile receive an honest 503
     # LLM_MODEL_LOADING which the Express API retries with backoff.
     if model_manager is not None and settings.local_preload_model:
+        if not runtime_available():
+            logger.error(
+                "LOCAL_MODEL_RUNTIME_MISSING hint=llama-cpp-python is not importable; "
+                "the AI service cannot run a self-hosted model. Reinstall "
+                "ai_engine/requirements.txt (PIP_EXTRA_INDEX_URL provides prebuilt CPU wheels)."
+            )
+        else:
+            logger.info("LOCAL_MODEL_RUNTIME runtime=llama-cpp-python version=%s", runtime_version())
         model_manager.ensure_loading()
     yield
 
@@ -201,21 +245,49 @@ async def root() -> dict[str, Any]:
     }
 
 
-def _model_health_block() -> dict[str, Any]:
+def _model_health_block(include_source: bool = False) -> dict[str, Any]:
     if model_manager is None:
         return {}
-    return {"model": model_manager.snapshot()}
+    return {"model": model_manager.snapshot(include_source=include_source)}
+
+
+def _readiness() -> dict[str, Any]:
+    """The four facts requirement 11 asks a health check to confirm."""
+    if not settings.is_local_llm or model_manager is None:
+        return {
+            "modelFileExists": None,
+            "runtimeAvailable": None,
+            "modelInitialized": provider_runtime["state"] == "ready",
+            "inferenceAvailable": provider_runtime["state"] == "ready",
+        }
+    snap = model_manager.snapshot()
+    return {
+        "modelFileExists": bool(snap.get("fileExists")),
+        "runtimeAvailable": bool(snap.get("runtimeAvailable")),
+        "modelInitialized": snap.get("state") == "ready",
+        "inferenceAvailable": bool(snap.get("inferenceAvailable")),
+    }
 
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
+    """Liveness for the platform health check.
+
+    Deliberately reports ``status: live`` as soon as the port is bound (Render
+    would otherwise kill the service while the weights download), but the model
+    readiness is reported honestly next to it so nothing downstream can claim
+    "ready" while the model is still starting.
+    """
     diag = settings.llm_safe_diagnostics()
+    readiness = _readiness()
     payload = {
         "status": "live",
         "service": "edunova-agent",
         # For the self-hosted provider the live state is the model manager's
         # state machine (downloading/loading/ready/error), not a cached probe.
         "providerState": (model_manager.state if (settings.is_local_llm and model_manager) else provider_runtime["state"]),
+        "modelReady": bool(readiness["modelInitialized"] and readiness["inferenceAvailable"]),
+        "readiness": readiness,
         "provider": settings.llm_provider,
         "selfHosted": settings.is_local_llm,
         "llmConfigured": settings.llm_configured,
@@ -240,18 +312,24 @@ async def ai_health(
     x_ai_internal_token: str | None = Header(default=None),
     deep: bool = False,
 ) -> dict[str, Any]:
-    """Real health check for the model. Cheap by default (state only).
+    """Real health check for the model.
 
-    ``?deep=true`` additionally verifies a provider round-trip. For the local
-    model a ready state is already a strong signal, so the default check does
-    not burn CPU generating tokens.
+    Confirms, in this order: the runtime is importable, the model file exists,
+    the model initialized, and inference is available. ``?deep=true`` proves
+    the last point by generating a handful of real tokens instead of trusting
+    the state machine.
     """
     _authorize_internal_request(x_ai_internal_token)
     probe_state = "skipped"
     probe_error: str | None = None
+    probe_detail: dict[str, Any] | None = None
     if deep or not settings.is_local_llm:
         try:
-            await llm.probe()
+            if settings.is_local_llm and model_manager is not None:
+                await llm.probe(deep=True)
+                probe_detail = {"inference": "verified"}
+            else:
+                await llm.probe()
             probe_state = "ready"
             if not settings.is_local_llm:
                 _set_provider_state("ready", 200, None)
@@ -266,8 +344,13 @@ async def ai_health(
                 )
             else:
                 _safe_error(exc)
+    readiness = _readiness()
     if settings.is_local_llm:
-        model_ready = model_manager is not None and model_manager.state == "ready"
+        model_ready = (
+            model_manager is not None
+            and model_manager.state == "ready"
+            and (probe_state != "error")
+        )
         model_status = model_manager.state if model_manager is not None else "missing_manager"
     else:
         model_ready = provider_runtime["state"] == "ready"
@@ -275,6 +358,10 @@ async def ai_health(
     payload: dict[str, Any] = {
         "success": model_ready,
         "status": model_status,
+        # Single field the UI keys off: only "ready" may render "Ready to help".
+        "modelState": model_status,
+        "modelReady": model_ready,
+        "readiness": readiness,
         "serviceAvailable": True,
         "configured": settings.llm_configured,
         "provider": settings.llm_provider,
@@ -284,12 +371,44 @@ async def ai_health(
         "configurationError": settings.llm_configuration_error,
         "probe": probe_state,
         "probeError": probe_error,
+        "probeDetail": probe_detail,
         "lastCheckedAt": provider_runtime["lastCheckedAt"],
         "lastProviderHttpStatus": provider_runtime["lastHttpStatus"],
         "lastProviderErrorType": provider_runtime["lastErrorType"],
     }
-    payload.update(_model_health_block())
+    payload.update(_model_health_block(include_source=True))
     return payload
+
+
+@app.get("/api/ai/model/source-check")
+async def model_source_check(
+    x_ai_internal_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Verify the configured model URL is really downloadable (HEAD only).
+
+    This is the operator tool for the failure that caused this incident: it
+    answers "does LOCAL_MODEL_FILE actually exist?" without downloading 380MB
+    and without restarting the service.
+    """
+    _authorize_internal_request(x_ai_internal_token)
+    if not settings.is_local_llm or model_manager is None:
+        return {"success": False, "reason": "not_local_provider", "provider": settings.llm_provider}
+    try:
+        check = await model_manager.preflight()
+        return {
+            "success": True,
+            "model": settings.local_model_id,
+            "url": settings.local_model_safe_url,
+            **check,
+        }
+    except Exception as exc:
+        report = getattr(exc, "report", None)
+        return {
+            "success": False,
+            "model": settings.local_model_id,
+            "url": settings.local_model_safe_url,
+            "error": report() if callable(report) else {"reason": str(exc)[:200]},
+        }
 
 
 @app.get("/api/ai/diagnostics")
@@ -355,12 +474,39 @@ def _safe_error(exc: Exception) -> tuple[int, str, str]:
         )
     if error_type == "model_unavailable":
         _set_provider_state("model_unavailable", 503, error_type)
-        detail = _sanitize_provider_message_for_user(getattr(exc, "provider_message", ""))
+        # Full, structured diagnostics stay in the backend log (they name the
+        # model, the URL and the HTTP status). The browser gets a clean,
+        # non-technical sentence — never a raw provider/download error string.
+        report = model_manager.error_report if (model_manager is not None) else None
+        if report:
+            logger.error(
+                "MODEL_STARTUP_ERROR model=%s url=%s status=%s stage=%s reason=%s",
+                report.get("model"),
+                report.get("url"),
+                report.get("status"),
+                report.get("stage"),
+                report.get("reason"),
+            )
+        else:
+            logger.error(
+                "MODEL_STARTUP_ERROR model=%s url=%s reason=%s",
+                settings.local_model_id,
+                settings.local_model_safe_url,
+                _sanitize_provider_message_for_user(getattr(exc, "provider_message", "")),
+            )
+        permanent = bool(report.get("permanent")) if report else False
+        if permanent:
+            return (
+                503,
+                "LLM_MODEL_UNAVAILABLE",
+                "EduNova AI's self-hosted model is not available on the server. "
+                "An administrator needs to check the AI service model configuration.",
+            )
         return (
             503,
             "LLM_MODEL_UNAVAILABLE",
-            "The self-hosted EduNova AI model failed to start on the server."
-            + (f" ({detail})" if detail else ""),
+            "EduNova AI's self-hosted model could not start. It will retry automatically — "
+            "please try again in a moment.",
         )
     if isinstance(exc, asyncio.TimeoutError):
         _set_provider_state("provider_unavailable", 504, "timeout")
@@ -371,7 +517,7 @@ def _safe_error(exc: Exception) -> tuple[int, str, str]:
             "AI_PROVIDER_CONFIGURATION_ERROR provider=%s model=%s host=%s reason=%s",
             settings.llm_provider,
             settings.local_model_id if settings.is_local_llm else settings.llm_model,
-            urlsplit(settings.llm_base_url).hostname if settings.llm_base_url else "none",
+            _provider_log_host(settings),
             settings.llm_configuration_error,
         )
         return 503, "LLM_MISSING_CONFIG", "EduNova AI is not configured correctly."
@@ -381,7 +527,7 @@ def _safe_error(exc: Exception) -> tuple[int, str, str]:
             "AI_PROVIDER_ERROR provider=%s model=%s host=%s status=%s type=%s",
             settings.llm_provider,
             settings.local_model_id if settings.is_local_llm else settings.llm_model,
-            urlsplit(settings.llm_base_url).hostname if settings.llm_base_url else "none",
+            _provider_log_host(settings),
             status,
             error_type,
         )

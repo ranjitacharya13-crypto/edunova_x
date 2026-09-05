@@ -315,6 +315,80 @@ export const confirmAIAction = async (confirmationToken) => {
   return res.data;
 };
 
+// ---------------------------------------------------------------------------
+// AI readiness.
+// ---------------------------------------------------------------------------
+// The self-hosted model is downloaded and loaded in the background after the
+// AI service boots, so "the service answers" and "the model can answer" are
+// two different facts. The UI must never advertise "Ready to help" while the
+// model is still starting, so it reads the real model state from the backend
+// health endpoint (which itself reads the llama.cpp lifecycle state machine).
+export const AI_STATUS = {
+  UNKNOWN: "unknown",
+  STARTING: "starting",
+  READY: "ready",
+  UNAVAILABLE: "unavailable",
+};
+
+const AI_STATUS_LABELS = {
+  [AI_STATUS.UNKNOWN]: "Checking AI model...",
+  [AI_STATUS.STARTING]: "AI model starting...",
+  [AI_STATUS.READY]: "Ready to help",
+  [AI_STATUS.UNAVAILABLE]: "AI model unavailable",
+};
+
+export const aiStatusLabel = (status) =>
+  AI_STATUS_LABELS[status] || AI_STATUS_LABELS[AI_STATUS.UNKNOWN];
+
+function classifyAIHealth(body, httpStatus) {
+  if (!body || typeof body !== "object") {
+    return httpStatus === 503 ? AI_STATUS.STARTING : AI_STATUS.UNKNOWN;
+  }
+  if (body.modelReady === true || body.success === true) return AI_STATUS.READY;
+  const state = String(body.modelState || body.status || "").toLowerCase();
+  if (["not_started", "downloading", "loading", "model_loading", "cold"].includes(state)) {
+    return AI_STATUS.STARTING;
+  }
+  if (["ready", "model_ready"].includes(state)) return AI_STATUS.READY;
+  if (state) return AI_STATUS.UNAVAILABLE;
+  return AI_STATUS.UNKNOWN;
+}
+
+// Returns { status, label, detail } — never throws, so a health blip cannot
+// break the chat UI.
+export const getAIStatus = async () => {
+  try {
+    const res = await API.get("/ai/health", {
+      headers: aiAuthHeaders(),
+      timeout: 12_000,
+      validateStatus: () => true,
+    });
+    const status = classifyAIHealth(res.data, res.status);
+    return {
+      status,
+      label: aiStatusLabel(status),
+      // Progress detail (e.g. "downloading 42%") for the starting state only.
+      detail: describeModelProgress(res.data?.model),
+    };
+  } catch {
+    return { status: AI_STATUS.UNKNOWN, label: aiStatusLabel(AI_STATUS.UNKNOWN), detail: "" };
+  }
+};
+
+function describeModelProgress(model) {
+  if (!model || typeof model !== "object") return "";
+  if (model.state === "downloading") {
+    const done = Number(model.downloadedBytes) || 0;
+    const total = Number(model.expectedSizeBytes) || 0;
+    if (total > 0 && done > 0) {
+      return `Downloading model ${Math.min(99, Math.floor((done / total) * 100))}%`;
+    }
+    return "Downloading model";
+  }
+  if (model.state === "loading") return "Loading model into memory";
+  return "";
+}
+
 export const queryAIEngine = async ({ message, conversationId, applicationContext }) => {
   try {
     const res = await API.post(

@@ -1,11 +1,24 @@
+# EduNova AI engine — self-hosted runtime dependencies.
+#
+# llama-cpp-python is the local GGUF inference runtime (llama.cpp bindings).
+# PyPI ships it as a SOURCE distribution only, so a plain `pip install` would
+# compile llama.cpp with cmake on every deploy (slow, and it fails on build
+# images without a C++ toolchain). The official prebuilt CPU wheels live on the
+# extra index declared below, which is why it is pinned INSIDE this file rather
+# than only in render.yaml / the Dockerfile: local dev, CI, Docker and Render
+# then all resolve the same wheel without extra environment setup.
+#
+# 0.3.35 publishes `py3-none-manylinux2014_x86_64` wheels: ABI-independent (any
+# Python 3.x) and glibc>=2.17, i.e. installable on Render's Python runtime
+# without a compiler. Do not downgrade to 0.2.x — those wheels are built per
+# CPython version and break whenever PYTHON_VERSION changes.
+--extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+--prefer-binary
+
 fastapi>=0.115.0,<1.0.0
 uvicorn[standard]>=0.30.0,<1.0.0
 pydantic>=2.8.0,<3.0.0
 python-dotenv>=1.0.0,<2.0.0
 httpx>=0.27.0,<1.0.0
 beautifulsoup4>=4.12.0,<5.0.0
-# Self-hosted AI runtime: llama.cpp inference of a quantized GGUF model, CPU-only.
-# On Render/Linux CI the build installs a prebuilt AVX2 CPU wheel from the
-# official llama-cpp-python wheel index (configured via PIP_EXTRA_INDEX_URL in
-# render.yaml / Dockerfile); a source build with cmake is the dev fallback.
-llama-cpp-python==0.2.90
+llama-cpp-python==0.3.35

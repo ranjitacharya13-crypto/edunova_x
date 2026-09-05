@@ -114,24 +114,56 @@ services:
   #    rootDir: ai_engine  ->  `main:app` resolves to ai_engine/main.py
   #
   #    SELF-HOSTED MODEL: the service runs a quantized GGUF model in-process
-  #    via llama.cpp (no OpenAI/Groq/Gemini/Anthropic keys). The default model
-  #    is sized for this free plan (512MB RAM / shared CPU). Weights download
-  #    from HuggingFace on first boot of a fresh container (free plan has no
-  #    persistent disk) while /health already reports status: the service
-  #    binds the port immediately and chat returns 503 LLM_MODEL_LOADING until
-  #    the model is ready — edunova-api retries those on a backoff schedule.
+  #    via llama.cpp (no OpenAI/Groq/Gemini/Anthropic keys).
+  #
+  #    ---- SIZING (read before changing `plan`) --------------------------------
+  #    Model:   Qwen2.5-0.5B-Instruct Q4_K_M  (379 MiB of weights, Apache-2.0)
+  #    Memory:  ~380 MB weights + ~75 MB KV cache (ctx 6144) + ~150 MB compute
+  #             buffers/allocator + ~130 MB Python/FastAPI  =>  ~700 MB RSS.
+  #
+  #    Render instance types:  Free 512 MB / 0.1 CPU  •  Starter 512 MB / 0.5 CPU
+  #                            Standard 2 GB / 1 CPU  •  Pro 4 GB / 2 CPU
+  #
+  #    => The FREE and STARTER plans (512 MB) CANNOT run this model: the process
+  #       is OOM-killed during load, and 0.1 CPU would need minutes per answer.
+  #       STANDARD (2 GB / 1 CPU) is the MINIMUM required resource change and is
+  #       what this blueprint requests. This is a real cost change ($25/mo) and
+  #       is deliberate — the alternative is an AI that cannot start.
+  #
+  #    Staying on a 512 MB plan? Then you MUST also downgrade the model, e.g.
+  #       plan: starter
+  #       LOCAL_MODEL_REPO=bartowski/SmolLM2-360M-Instruct-GGUF
+  #       LOCAL_MODEL_FILE=SmolLM2-360M-Instruct-Q4_K_M.gguf   (258 MiB, ~480 MB RSS)
+  #       LOCAL_MODEL_CTX=2048
+  #    Both files are in the verified catalogue in ai_engine/config.py, so their
+  #    existence, size and sha256 are checked automatically.
+  #
+  #    PERSISTENT DISK: the weights are cached on the disk mounted below, so the
+  #    380 MB download happens ONCE (first boot) instead of on every restart or
+  #    deploy. Without a disk the model is re-downloaded on every cold start.
+  #
+  #    /health binds and answers immediately (status: live) and reports
+  #    `modelReady` separately, so Render never kills the service while the
+  #    weights download; chat returns 503 LLM_MODEL_LOADING until ready and
+  #    edunova-api retries those on a backoff schedule.
   # ---------------------------------------------------------------------------
   - type: web
     name: edunova-ai
     runtime: python
-    plan: free
+    plan: standard
     branch: main
     rootDir: ai_engine
     buildCommand: pip install -r requirements.txt
     # $PORT is injected by Render; binding 0.0.0.0 is required.
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    # Exactly ONE uvicorn worker: llama.cpp holds the model in this process and
+    # generation is single-flight. A second worker would double the RAM.
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
     healthCheckPath: /health
     autoDeploy: true
+    disk:
+      name: edunova-model-cache
+      mountPath: /var/data/models
+      sizeGB: 2
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.9"
@@ -144,17 +176,30 @@ services:
       # ---- Self-hosted local model (the AI brain) ---------------------------
       - key: LLM_PROVIDER
         value: local
+      # VERIFIED to exist at
+      # https://huggingface.co/bartowski/Qwen2.5-0.5B-Instruct-GGUF/tree/main
+      # (public, ungated, 397,808,192 bytes). The previous value
+      # "Qwen2.5-0.5B-Instruct-IQ3_XXS.gguf" was never published in that repo,
+      # which is exactly why model download failed with HTTP 404.
       - key: LOCAL_MODEL_REPO
         value: bartowski/Qwen2.5-0.5B-Instruct-GGUF
       - key: LOCAL_MODEL_FILE
-        value: Qwen2.5-0.5B-Instruct-IQ3_XXS.gguf
-      # Optional direct download URL + integrity pin:
-      # - key: LOCAL_MODEL_URL
-      #   sync: false
+        value: Qwen2.5-0.5B-Instruct-Q4_K_M.gguf
+      # Weights cache on the persistent disk => downloaded once, not per deploy.
+      - key: LOCAL_MODEL_DIR
+        value: /var/data/models
+      # Size + sha256 for this repo/file are pinned in ai_engine/config.py
+      # (KNOWN_MODELS) and enforced automatically. Only set these when you point
+      # LOCAL_MODEL_* at a file that is not in that catalogue:
       # - key: LOCAL_MODEL_SHA256
       #   sync: false
+      # - key: LOCAL_MODEL_BYTES
+      #   sync: false
+      # Optional direct download URL (private mirror / pre-signed link):
+      # - key: LOCAL_MODEL_URL
+      #   sync: false
       - key: LOCAL_MODEL_CTX
-        value: "3072"
+        value: "6144"
       - key: LOCAL_MODEL_THREADS
         value: "2"
       - key: LOCAL_MODEL_BATCH
@@ -167,6 +212,8 @@ services:
         value: "25"
       - key: LOCAL_MODEL_DOWNLOAD_TIMEOUT
         value: "900"
+      - key: LOCAL_MODEL_DOWNLOAD_RETRIES
+        value: "3"
       - key: LLM_MAX_OUTPUT_TOKENS
         value: "900"
       - key: LLM_TEMPERATURE
@@ -203,8 +250,11 @@ services:
         value: "200000"
       - key: WEB_MAX_EXTRACTED_CHARS
         value: "45000"
+      # Must fit inside LOCAL_MODEL_CTX (~3 chars/token) together with the
+      # system prompt and LLM_MAX_OUTPUT_TOKENS, or every data-rich turn gets
+      # trimmed by the runtime context guard.
       - key: AGENT_MAX_CONTEXT_CHARS
-        value: "24000"
+        value: "12000"
 
   # ---------------------------------------------------------------------------
   # 3) edunova-signal — OPTIONAL standalone WebRTC signaling service.

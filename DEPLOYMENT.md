@@ -120,11 +120,14 @@ Required agent environment (self-hosted default):
 |---|---|
 | `LLM_PROVIDER` | `local` (self-hosted in-process model — the default) |
 | `LOCAL_MODEL_REPO` | HF repo id, default `bartowski/Qwen2.5-0.5B-Instruct-GGUF` |
-| `LOCAL_MODEL_FILE` | GGUF filename, default `Qwen2.5-0.5B-Instruct-IQ3_XXS.gguf` (~270MB) |
+| `LOCAL_MODEL_FILE` | GGUF filename, default `Qwen2.5-0.5B-Instruct-Q4_K_M.gguf` (~380MB) |
 | `LOCAL_MODEL_URL` | Optional direct download URL (mirror); overrides repo/file |
 | `LOCAL_MODEL_SHA256` | Optional integrity pin for the downloaded weights (recommended) |
-| `LOCAL_MODEL_DIR` | Weights cache dir (`./models_cache`; ephemeral on free plan) |
-| `LOCAL_MODEL_CTX` | Context tokens, default `3072` |
+| `LOCAL_MODEL_BYTES` | Optional exact expected size; download is rejected if it differs |
+| `LOCAL_MODEL_MIN_BYTES` | Sanity floor for a real GGUF, default `10485760` (10MB) |
+| `LOCAL_MODEL_DOWNLOAD_RETRIES` | Retries for transient download failures, default `3` (0-8) |
+| `LOCAL_MODEL_DIR` | Weights cache dir; **point at a persistent disk** (blueprint: `/var/data/models`) |
+| `LOCAL_MODEL_CTX` | Context tokens, default `6144` |
 | `LOCAL_MODEL_THREADS` | CPU threads, default `2` |
 | `LOCAL_MODEL_CHAT_FORMAT` | `chatml` (Qwen), also `llama-3`/`mistral`/`gemma` |
 | `LOCAL_PRELOAD_MODEL` | `true` = download+load in background at boot |
@@ -142,9 +145,36 @@ Model sizing guide (pick per Render plan):
 
 | Plan | RAM | Recommended model (set `LOCAL_MODEL_REPO` / `LOCAL_MODEL_FILE`) |
 |---|---|---|
-| Free / Starter (512MB) | 512MB | `bartowski/Qwen2.5-0.5B-Instruct-GGUF` + `Qwen2.5-0.5B-Instruct-IQ3_XXS.gguf` (default) |
-| Starter (1GB) | 1GB | same repo + `Qwen2.5-0.5B-Instruct-Q4_K_M.gguf` (~397MB, better quality) |
-| Standard (2GB+) | 2GB+ | `bartowski/Qwen2.5-1.5B-Instruct-GGUF` + `Qwen2.5-1.5B-Instruct-Q4_K_M.gguf` (~1GB) |
+| Free / Starter (512MB) | 512MB | **Too small for the default.** Use `bartowski/SmolLM2-360M-Instruct-GGUF` + `SmolLM2-360M-Instruct-Q4_K_M.gguf` (270,590,880 B) with `LOCAL_MODEL_CTX=2048`. Free has no persistent disk, so the weights re-download after every spin-down. |
+| **Standard (2GB / 1 CPU) — blueprint default** | 2GB | `bartowski/Qwen2.5-0.5B-Instruct-GGUF` + `Qwen2.5-0.5B-Instruct-Q4_K_M.gguf` (397,808,192 B). ~380MB weights + ~75MB KV (ctx 6144) + ~150MB compute ≈ 700MB RSS. |
+| Pro (4GB / 2 CPU) | 4GB | `bartowski/Qwen2.5-1.5B-Instruct-GGUF` + `Qwen2.5-1.5B-Instruct-Q4_K_M.gguf` (986,048,768 B), `LOCAL_MODEL_THREADS=2` |
+
+Every filename above was verified to exist and be publicly downloadable from
+Hugging Face; byte sizes are the authoritative values from the HF file tree.
+`bartowski/Qwen2.5-0.5B-Instruct-GGUF` **has never published an `IQ3_XXS`
+quant** — that non-existent filename was the cause of the HTTP 404 at startup.
+Before changing `LOCAL_MODEL_FILE`, confirm the new name with
+`GET /api/ai/model/source-check` (it does a ranged HEAD/GET and reports the
+status, size, and whether the URL is usable) rather than guessing.
+
+`AGENT_MAX_CONTEXT_CHARS` must fit inside `LOCAL_MODEL_CTX`. Budget roughly
+3 characters per token and leave room for the system prompt plus
+`LLM_MAX_OUTPUT_TOKENS`; the blueprint pairs `LOCAL_MODEL_CTX=6144` with
+`AGENT_MAX_CONTEXT_CHARS=12000`. If a turn still overflows, the runtime trims
+the middle of the tool context and logs `LOCAL_MODEL_PROMPT_TRUNCATED` instead
+of failing the request.
+
+### Model weights cache (persistent disk)
+
+`render.yaml` attaches a 2GB disk to **edunova-ai** at `/var/data/models` and
+sets `LOCAL_MODEL_DIR` to it. Effects:
+
+- weights are downloaded **once**, not per deploy/restart and never per chat
+  request (a warm boot logs `LOCAL_MODEL_CACHE_HIT ... (no download)`);
+- a cached file is re-validated on boot (size + `GGUF` magic). A truncated or
+  corrupt file logs `LOCAL_MODEL_CACHE_REJECTED` and is re-downloaded;
+- disks require a paid instance type. On Free, drop the `disk:` block and
+  accept a re-download on every cold start.
 
 Emergency rollback only (remove after the local model is verified):
 `LLM_PROVIDER=openai_compatible` + `LLM_API_KEY` + `LLM_MODEL` +
@@ -162,7 +192,8 @@ On Render's free plan a web service that receives no traffic spins down after
 about 15 minutes. While it wakes, Render's router answers with an HTML
 "Application loading" page (HTTP 503) instead of proxying to the app. With the
 self-hosted model there is one more step after boot: the GGUF weights are
-downloaded (~270MB) and loaded, during which the AI service answers
+downloaded (~380MB, once, onto the persistent disk) and loaded, during which
+the AI service answers
 `503 LLM_MODEL_LOADING` (never a fake answer) and reports progress at
 `/api/ai/health`.
 

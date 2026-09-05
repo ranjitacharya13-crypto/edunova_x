@@ -9,7 +9,7 @@ EduNova AI operates as a **UNIFIED DATA-AWARE AGENT** capable of intelligently c
 > **Self-hosted since v3.0.** The AI brain is a quantized open-source GGUF model
 > running **in-process via llama.cpp** (`llama-cpp-python`) inside the
 > `ai_engine` FastAPI service. No OpenAI/Groq/Gemini/Anthropic/OpenRouter calls
-> are made. Default model: **Qwen2.5-0.5B-Instruct @ IQ3_XXS** (~270MB weights),
+> are made. Default model: **Qwen2.5-0.5B-Instruct @ Q4_K_M** (397,808,192 B of weights),
 > sized for Render's free plan (512MB RAM / shared CPU) and adjustable through
 > `LOCAL_MODEL_*` environment variables. Web search remains an external *data
 > source*; all reasoning and answer generation is done by the local model.
@@ -214,13 +214,26 @@ and failure honesty (loading/unavailable states never fake an answer).
 ## 7. Local model operations
 
 - **Model choice & size** — `LOCAL_MODEL_REPO` + `LOCAL_MODEL_FILE` (or a
-  direct `LOCAL_MODEL_URL`). Defaults fit Render free; see DEPLOYMENT.md for
-  the sizing table (0.5B IQ3_XXS → 512MB plans; 1.5B Q4 → 2GB+ plans).
+  direct `LOCAL_MODEL_URL`). The default 0.5B Q4_K_M needs a **2GB Standard**
+  instance (~700MB RSS); see the DEPLOYMENT.md sizing table for the 512MB
+  (SmolLM2-360M) and 4GB (1.5B) alternatives. Filenames must be verified with
+  `GET /api/ai/model/source-check` before being deployed — an unpublished
+  quant name is what produced the original startup HTTP 404.
+- **Download integrity** — size (`LOCAL_MODEL_BYTES`), floor
+  (`LOCAL_MODEL_MIN_BYTES`), `GGUF` magic, and optional `LOCAL_MODEL_SHA256`
+  are all checked; transient failures retry `LOCAL_MODEL_DOWNLOAD_RETRIES`
+  times with backoff, permanent HTTP statuses (400/401/403/404/405/410/451)
+  fail fast with a `MODEL_STARTUP_ERROR` block naming the URL and the fix.
+- **Context budget** — `AGENT_MAX_CONTEXT_CHARS` (12000) must fit inside
+  `LOCAL_MODEL_CTX` (6144). Overflowing turns are trimmed in the middle and
+  logged as `LOCAL_MODEL_PROMPT_TRUNCATED` rather than erroring.
 - **Health** — `GET /health` (liveness, includes `model.state`),
   `GET /api/ai/health` (readiness: `ready` only when weights are loaded),
   `GET /api/ai/health?deep=true` (active probe).
-- **Cold starts** — free-plan containers re-download weights (~270MB, ~30-90s)
-  because there is no persistent disk; `edunova-api` absorbs this with its
+- **Cold starts** — the blueprint mounts a 2GB persistent disk at
+  `/var/data/models`, so weights download once and warm boots log
+  `LOCAL_MODEL_CACHE_HIT ... (no download)`. Without a disk (Free plan) every
+  cold start re-downloads ~380MB (~30-90s); `edunova-api` absorbs that with its
   upstream retry window (`AI_UPSTREAM_RETRY_WINDOW_MS=240000`).
 - **Legacy rollback** — setting `LLM_PROVIDER=openai_compatible` with
   `LLM_API_KEY/LLM_MODEL/LLM_BASE_URL` temporarily restores an external
