@@ -473,8 +473,10 @@ class LocalModelManagerTests(unittest.IsolatedAsyncioTestCase):
         return local_settings(**kw)
 
     def _make_model_bytes(self, tmp: str, name: str = "fake-model.gguf") -> Path:
+        # Real GGUF magic: the cache validator rejects anything that does not
+        # start with it, so the fixture has to look like a genuine GGUF file.
         path = Path(tmp) / name
-        path.write_bytes(b"gguf" + b"\x00" * (11 * 1024 * 1024))
+        path.write_bytes(b"GGUF" + b"\x00" * (11 * 1024 * 1024))
         return path
 
     async def test_ready_after_cache_hit_and_load(self):

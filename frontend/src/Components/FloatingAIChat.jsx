@@ -1,10 +1,12 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { confirmAIAction, streamAIEngine } from "../api/api";
 import EduNovaAIAvatar from "./EduNovaAIAvatar";
+import useAIStatus from "../hooks/useAIStatus";
 
 const ASSISTANT_NAME = "EduNova AI";
 const ASSISTANT_SUBTITLE = "Your personal learning assistant";
-const STATUS_LABEL = "Ready to help";
+// Status text now comes from the live model health check (useAIStatus):
+// "Ready to help" is only shown once the self-hosted model can actually infer.
 
 // ---- Constants & Configuration ----
 export const BUTTON_SIZE = 72;
@@ -133,8 +135,11 @@ export default function FloatingAIChat({ feature = "dashboard" }) {
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [agentStatus, setAgentStatus] = useState(STATUS_LABEL);
+  const [agentStatus, setAgentStatus] = useState("");
   const [showInfo, setShowInfo] = useState(false);
+  // Poll the self-hosted model's real readiness only while the panel is open,
+  // so a closed widget never adds background traffic.
+  const modelStatus = useAIStatus({ enabled: isOpen });
 
   const [position, setPosition] = useState(() => {
     const saved = loadSavedPosition();
@@ -278,7 +283,7 @@ export default function FloatingAIChat({ feature = "dashboard" }) {
         ]);
       } finally {
         setLoading(false);
-        setAgentStatus(STATUS_LABEL);
+        setAgentStatus("");
       }
     },
     [loading, feature]
@@ -531,7 +536,7 @@ export default function FloatingAIChat({ feature = "dashboard" }) {
                 </p>
                 <div className="mt-1 flex items-center gap-1.5 text-[11px] font-medium text-teal-700 dark:text-teal-200">
                   <span className="edunova-ai-status-dot" aria-hidden="true" />
-                  <span>{loading ? agentStatus : STATUS_LABEL}</span>
+                  <span>{loading && agentStatus ? agentStatus : (modelStatus.detail || modelStatus.label)}</span>
                 </div>
               </div>
             </div>

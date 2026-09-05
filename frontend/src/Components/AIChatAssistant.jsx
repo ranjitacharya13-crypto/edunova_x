@@ -1,6 +1,7 @@
 import React, { useRef, useState } from "react";
 import { confirmAIAction, streamAIEngine } from "../api/api";
 import EduNovaAIAvatar from "./EduNovaAIAvatar";
+import useAIStatus from "../hooks/useAIStatus";
 
 const ASSISTANT_NAME = "EduNova AI";
 const ASSISTANT_SUBTITLE = "Unified Data-Aware Learning & Academic Assistant";
@@ -15,10 +16,12 @@ const QUICK_PROMPTS = [
 export default function AIChatAssistant({ feature = "ai" }) {
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
-  const [agentStatus, setAgentStatus] = useState("Ready to help");
+  const [agentStatus, setAgentStatus] = useState("");
   const [error, setError] = useState("");
   const [result, setResult] = useState(null);
   const conversationIdRef = useRef(null);
+  // Real state of the self-hosted model — never assume it is ready.
+  const modelStatus = useAIStatus();
 
   const handleSubmit = async (event, promptOverride = "") => {
     event?.preventDefault?.();
@@ -57,7 +60,9 @@ export default function AIChatAssistant({ feature = "ai" }) {
       setError(requestError?.message || "Sorry, I couldn't reach EduNova AI right now.");
     } finally {
       setLoading(false);
-      setAgentStatus("Ready to help");
+      setAgentStatus("");
+      // A failed/succeeded request is a fresh signal about the model.
+      modelStatus.refresh();
     }
   };
 
@@ -84,9 +89,20 @@ export default function AIChatAssistant({ feature = "ai" }) {
           <div className="min-w-0">
             <h2 className="text-xl font-bold tracking-tight text-slate-950 dark:text-white">{ASSISTANT_NAME}</h2>
             <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">{ASSISTANT_SUBTITLE}</p>
-            <div className="mt-2 inline-flex items-center gap-2 rounded-full border border-teal-200 bg-teal-50 px-3 py-1 text-xs font-semibold text-teal-700 dark:border-teal-400/20 dark:bg-teal-400/10 dark:text-teal-200">
+            <div
+              className={`mt-2 inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold ${
+                modelStatus.isUnavailable
+                  ? "border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-400/20 dark:bg-rose-400/10 dark:text-rose-200"
+                  : modelStatus.isReady
+                    ? "border-teal-200 bg-teal-50 text-teal-700 dark:border-teal-400/20 dark:bg-teal-400/10 dark:text-teal-200"
+                    : "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-200"
+              }`}
+              aria-live="polite"
+            >
               <span className="edunova-ai-status-dot" aria-hidden="true" />
-              {loading ? agentStatus : "Ready to help"}
+              {loading && agentStatus
+                ? agentStatus
+                : modelStatus.detail || modelStatus.label}
             </div>
           </div>
         </div>
@@ -111,10 +127,14 @@ export default function AIChatAssistant({ feature = "ai" }) {
 
           <button
             type="submit"
-            disabled={loading || !message.trim()}
+            disabled={loading || !message.trim() || modelStatus.isUnavailable}
             className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-br from-teal-500 to-cyan-500 px-4 py-3 text-sm font-bold text-white shadow-[0_12px_24px_rgba(13,148,136,0.24)] transition hover:-translate-y-0.5 hover:shadow-[0_16px_30px_rgba(13,148,136,0.3)] focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-300 disabled:translate-y-0 disabled:cursor-not-allowed disabled:from-slate-300 disabled:to-slate-300 disabled:text-slate-500 disabled:shadow-none dark:disabled:from-slate-700 dark:disabled:to-slate-700 dark:disabled:text-slate-400"
           >
-            {loading ? "Reasoning across sources..." : "Ask EduNova AI"}
+            {loading
+              ? "Reasoning across sources..."
+              : modelStatus.isStarting
+                ? "Ask EduNova AI (model still starting)"
+                : "Ask EduNova AI"}
           </button>
 
           <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
