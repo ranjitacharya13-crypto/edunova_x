@@ -438,6 +438,16 @@ async def _run_tools(
             argument_map[name] = {"subject": subject}
     # web_search requires the user's actual question as its query.
     argument_map["web_search"] = {"query": goal[:480]}
+    # Preserve an explicitly requested weekday. Without this, "my Monday
+    # timetable" fetched the whole week, wasting context and making the small
+    # local model infer which day to display.
+    weekday = re.search(
+        r"\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
+        goal,
+        re.IGNORECASE,
+    )
+    if weekday:
+        argument_map["get_timetable"] = {"day": weekday.group(1).title()}
     for tool_name in tools[:6]:  # fast paths stay cheap by construction
         args = argument_map.get(tool_name, {})
         await events.emit("agent.tool_selected", iteration=1, tool=tool_name)

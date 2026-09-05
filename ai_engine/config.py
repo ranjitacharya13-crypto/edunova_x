@@ -547,7 +547,7 @@ def load_settings() -> Settings:
         local_model_expected_bytes=_integer("LOCAL_MODEL_BYTES", 0, 0, 200_000_000_000),
         local_model_min_bytes=_integer("LOCAL_MODEL_MIN_BYTES", 10 * 1024 * 1024, 4096, 20_000_000_000),
         local_model_download_retries=_integer("LOCAL_MODEL_DOWNLOAD_RETRIES", 3, 0, 8),
-        local_model_ctx_size=_integer("LOCAL_MODEL_CTX", 6144, 1024, 32768),
+        local_model_ctx_size=_integer("LOCAL_MODEL_CTX", 4096, 1024, 32768),
         local_model_threads=_integer("LOCAL_MODEL_THREADS", 2, 1, 8),
         local_model_batch=_integer("LOCAL_MODEL_BATCH", 256, 32, 2048),
         local_model_chat_format=_clean_env_value(os.getenv("LOCAL_MODEL_CHAT_FORMAT", "chatml")).lower() or "chatml",
