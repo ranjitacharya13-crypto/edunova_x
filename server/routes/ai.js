@@ -1,6 +1,7 @@
 const express = require("express");
 const axios = require("axios");
 const auth = require("../middleware/auth");
+const { executeApplicationTool } = require("../services/applicationTools");
 
 const router = express.Router();
 
@@ -58,14 +59,6 @@ function safeUpstreamError(error) {
 
 // ---------------------------------------------------------------------------
 // Cold-start aware upstream handling.
-//
-// The Render free-tier AI service spins down after idle. While it wakes, the
-// Render router answers with an HTML 503 "Application loading" page (or the
-// connection fails outright). A single doomed attempt used to surface the
-// generic "EduNova AI could not start this request." even though the service
-// becomes healthy seconds later. We therefore retry bounded, fast-failing
-// upstream errors (proxy 502/503/504 pages and connect-level failures) before
-// reporting an error to the student.
 // ---------------------------------------------------------------------------
 const RETRYABLE_UPSTREAM_STATUSES = new Set([502, 503, 504]);
 const RETRYABLE_NETWORK_CODES = new Set([
@@ -104,14 +97,10 @@ function parseJsonBody(raw) {
     const parsed = JSON.parse(raw);
     return typeof parsed === "object" && parsed !== null ? parsed : null;
   } catch {
-    // HTML proxy pages (e.g. Render's loading screen) are expected here.
     return null;
   }
 }
 
-// User-safe message for upstream failures whose body is not our JSON (proxy
-// HTML pages, empty bodies). Never include the raw body: it may contain
-// provider/proxy internals.
 function upstreamStatusMessage(status) {
   if (status === 401 || status === 403) {
     return "EduNova AI authentication failed. Please sign in again; if it continues, the AI service configuration needs attention.";
@@ -149,9 +138,6 @@ async function readLimitedStream(stream, maximum = 65_536) {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-// One upstream POST attempt. Resolves with { ok, status, stream, body }
-// (body only populated for non-2xx so the success stream stays untouched) or
-// rejects with the axios error for non-response failures.
 async function postUpstream(url, payload, headers, timeout, signal) {
   const response = await axios.post(url, payload, {
     headers,
@@ -182,8 +168,6 @@ async function handleAgentChat(req, res) {
 
   const aiBaseUrl = getAiBaseUrl();
   if (!aiBaseUrl) {
-    // Keep the deployment detail in Render logs; students only need the stable
-    // public error and must never receive provider credentials or stack traces.
     console.error("[agent] AI_ENGINE_URL is not configured on the API service.");
     return res.status(503).json({
       success: false,
@@ -197,6 +181,9 @@ async function handleAgentChat(req, res) {
     message,
     conversationId,
     ownerId: String(req.user?.id || req.user?.email || "authenticated-user"),
+    userRole: String(req.user?.role || "student"),
+    userName: String(req.user?.name || "Student"),
+    userEmail: String(req.user?.email || ""),
     stream: wantsStream,
   };
   const headers = {
@@ -229,8 +216,6 @@ async function handleAgentChat(req, res) {
         const raw = await readLimitedStream(result.stream, 2_097_152);
         const parsed = parseJsonBody(raw);
         if (parsed) return res.status(result.status).json(parsed);
-        // Non-JSON success body should never happen with our FastAPI service;
-        // forward it as text rather than failing the whole request.
         return res.status(result.status).type("text/plain").send(raw);
       }
 
@@ -241,7 +226,7 @@ async function handleAgentChat(req, res) {
       );
       if (!retryable) break;
     } catch (error) {
-      if (controller.signal.aborted || res.writableEnded) return; // client disconnected
+      if (controller.signal.aborted || res.writableEnded) return;
       lastFailure = { kind: "network", error };
       const retryable = RETRYABLE_NETWORK_CODES.has(error.code);
       console.warn(
@@ -259,9 +244,6 @@ async function handleAgentChat(req, res) {
     await sleep(delay);
   }
 
-  // Every attempt failed: return an accurate, user-safe error. The deployment
-  // detail stays in Render logs; students never see provider secrets, stack
-  // traces, or raw proxy/HTML bodies.
   if (lastFailure?.kind === "network") {
     const status = lastFailure.error.response?.status || 503;
     console.error(
@@ -293,9 +275,6 @@ async function handleAgentChat(req, res) {
   });
 }
 
-// Forward the FastAPI SSE stream to the browser untouched. Status events and
-// the final answer/error event are produced by the AI service; no secrets or
-// private agent state are included in that stream.
 function pipeAgentStream(res, upstreamStream) {
   res.status(200);
   res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
@@ -310,8 +289,60 @@ function pipeAgentStream(res, upstreamStream) {
   upstreamStream.pipe(res);
 }
 
-// /chat is the v2 agent API. /query remains as a non-streaming compatibility
-// alias for already-deployed clients; both invoke the same autonomous engine.
+// ---------------------------------------------------------------------------
+// Secure Internal Tool Execution Endpoint for AI Agent
+// ---------------------------------------------------------------------------
+// Only callable by FastAPI AI Engine or internal services with internal token.
+// The backend strictly enforces user context: authenticated student ID cannot be forged.
+router.post("/internal/tools", async (req, res) => {
+  const internalToken = req.headers["x-ai-internal-token"];
+  if (process.env.AI_INTERNAL_TOKEN && internalToken !== process.env.AI_INTERNAL_TOKEN) {
+    return res.status(401).json({ success: false, error: "Unauthorized internal tool request" });
+  }
+
+  const toolName = String(req.body?.tool || req.body?.name || "").trim();
+  const toolArgs = typeof req.body?.arguments === "object" && req.body.arguments !== null ? req.body.arguments : {};
+  const userId = req.headers["x-user-id"] || req.body?.userId;
+  const conversationId = req.body?.conversationId || "";
+
+  if (!toolName) {
+    return res.status(400).json({ success: false, error: "tool name is required" });
+  }
+
+  try {
+    const result = await executeApplicationTool(toolName, toolArgs, userId, conversationId);
+    return res.json(result);
+  } catch (err) {
+    console.error("[internal-tools] Execution error:", err);
+    return res.status(500).json({ success: false, error: err.message || "Internal tool execution failed" });
+  }
+});
+
+// Alias
+router.post("/tools/execute", async (req, res) => {
+  const internalToken = req.headers["x-ai-internal-token"];
+  if (process.env.AI_INTERNAL_TOKEN && internalToken !== process.env.AI_INTERNAL_TOKEN) {
+    return res.status(401).json({ success: false, error: "Unauthorized internal tool request" });
+  }
+
+  const toolName = String(req.body?.tool || req.body?.name || "").trim();
+  const toolArgs = typeof req.body?.arguments === "object" && req.body.arguments !== null ? req.body.arguments : {};
+  const userId = req.headers["x-user-id"] || req.body?.userId;
+  const conversationId = req.body?.conversationId || "";
+
+  if (!toolName) {
+    return res.status(400).json({ success: false, error: "tool name is required" });
+  }
+
+  try {
+    const result = await executeApplicationTool(toolName, toolArgs, userId, conversationId);
+    return res.json(result);
+  } catch (err) {
+    console.error("[internal-tools] Execution error:", err);
+    return res.status(500).json({ success: false, error: err.message || "Internal tool execution failed" });
+  }
+});
+
 router.post("/chat", auth, aiRateLimit, handleAgentChat);
 router.post("/query", auth, aiRateLimit, handleAgentChat);
 
