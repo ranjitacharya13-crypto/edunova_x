@@ -82,6 +82,8 @@ Set these in **Render → your API service → Environment**:
 | `AI_INTERNAL_TOKEN` | recommended | Random shared secret; use the exact same value on the AI service |
 | `AGENT_REQUEST_TIMEOUT` | optional | Agent proxy timeout in ms (default `210000`) |
 | `AI_RATE_LIMIT_MAX_REQUESTS` | optional | Authenticated requests per user/window (default `20`) |
+| `AI_UPSTREAM_RETRY_DELAYS_MS` | optional | Cold-start retry backoff before failing a request (default `3000,8000,15000,30000`) |
+| `AI_UPSTREAM_RETRY_WINDOW_MS` | optional | Total retry budget for waking the AI service in ms (default `90000`) |
 | `EMAIL_USER` / `EMAIL_PASS` | for contact form | Gmail address + 16-char App Password |
 | `CONTACT_RECEIVER_EMAIL` | optional | Where contact messages are sent |
 | `ADMIN_TEMP_PASSWORD` | optional | Otherwise a random one is printed to logs once |
@@ -124,6 +126,31 @@ The AI agent does not need MongoDB. Express remains the authenticated database
 and application API. After the agent deploys, copy its public URL into the API
 service's `AI_ENGINE_URL`. If that is unset, `/api/ai/chat` returns a clean `503`
 instead of hanging. See `AGENT_ARCHITECTURE.md` for all limits and providers.
+
+### Free-plan cold starts and the AI chat
+
+On Render's free plan a web service that receives no traffic spins down after
+about 15 minutes. While it wakes, Render's router answers with an HTML
+"Application loading" page (HTTP 503) instead of proxying to the app. This is
+invisible to the API service itself, but a student's first AI question after an
+idle period used to fail with a generic error because the Express proxy gave up
+on the first attempt.
+
+The Express AI route now retries bounded fast failures (proxy 502/503/504
+pages and connect-level errors) for up to `AI_UPSTREAM_RETRY_WINDOW_MS`
+(default 90 s, schedule `AI_UPSTREAM_RETRY_DELAYS_MS`) before returning an
+error, which covers a typical free-plan wake-up. The user only sees
+"Understanding your question..." while the service boots. Two ways to remove
+the cold-start wait entirely:
+
+- Upgrade **edunova-ai** to a paid instance type (always on), or
+- keep the free plan and accept the first question taking up to ~90 s to wake
+  the service; retries then succeed and later questions are immediate.
+
+If the service is genuinely down, the API now returns an accurate, user-safe
+message ("The EduNova AI service is starting up or temporarily unavailable…")
+with `agentStatus: "unavailable"` instead of the old misleading
+"could not start this request".
 
 ---
 

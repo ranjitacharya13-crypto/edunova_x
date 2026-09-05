@@ -9,8 +9,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from agent.engine import AgentEngine
 from agent.llm import parse_json_object
+from agent.tools import build_web_tools
 from agent.tools.base import ToolDefinition, ToolRegistry
-from agent.tools.web import FetchedPage, ToolSecurityError, WebTools, validate_public_url
+from agent.tools.web import FetchedPage, ToolInputError, ToolSecurityError, WebTools, validate_public_url
 from config import load_settings
 
 
@@ -330,6 +331,61 @@ class SecurityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(parse_json_object('```json\n{"action":"final"}\n```')["action"], "final")
         with self.assertRaises(Exception):
             parse_json_object("Here is my private reasoning without a decision")
+
+
+class OptionalSearchTests(unittest.IsolatedAsyncioTestCase):
+    """Stable questions must never depend on web-search credentials."""
+
+    async def test_unconfigured_search_is_a_clean_tool_failure_not_a_crash(self):
+        settings = self._settings_without_search()
+        tools = WebTools(settings)
+
+        with self.assertRaises(ToolInputError) as ctx:
+            await tools.web_search({"query": "what is ml"})
+        self.assertIn("not configured", str(ctx.exception))
+
+        # Through the registry the same failure becomes an observation, so the
+        # agent loop continues and can answer from its own knowledge instead of
+        # failing the whole request.
+        registry = ToolRegistry()
+        for definition in build_web_tools(settings):
+            registry.register(definition)
+        observation, record = await registry.execute("web_search", {"query": "what is ml"})
+        self.assertFalse(observation.success)
+        self.assertEqual(record.error_code, "INVALID_TOOL_INPUT")
+        self.assertIn("not configured", observation.observation["error"])
+
+    @staticmethod
+    def _settings_without_search():
+        import os
+
+        from config import Settings
+
+        return Settings(
+            llm_api_key=os.getenv("LLM_API_KEY", "test-key"),
+            llm_model="test-model",
+            llm_base_url="https://llm.example.invalid/v1",
+            llm_timeout_seconds=5,
+            llm_max_output_tokens=256,
+            llm_temperature=0.2,
+            llm_json_mode=True,
+            web_search_api_key="",
+            web_search_provider="",
+            web_search_max_results=5,
+            web_request_timeout_seconds=5,
+            web_max_content_length=100_000,
+            web_max_extracted_chars=20_000,
+            web_max_redirects=3,
+            max_agent_iterations=4,
+            max_tool_calls=4,
+            max_agent_runtime_seconds=30,
+            agent_max_context_chars=20_000,
+            conversation_max_turns=4,
+            conversation_ttl_seconds=3_600,
+            ai_internal_token="",
+            ai_require_internal_token=False,
+            cors_origins=("http://localhost:5173",),
+        )
 
 
 if __name__ == "__main__":

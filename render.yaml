@@ -91,6 +91,15 @@ services:
         value: "60000"
       - key: AI_RATE_LIMIT_MAX_REQUESTS
         value: "20"
+      # Cold-start resilience: on the free plan edunova-ai spins down when
+      # idle, and Render answers with an HTML 503 while it wakes. The API
+      # retries those fast failures on this schedule (~90 s budget) before
+      # surfacing an error, so the first question after an idle period
+      # succeeds once the AI service finishes booting.
+      - key: AI_UPSTREAM_RETRY_DELAYS_MS
+        value: "3000,8000,15000,30000"
+      - key: AI_UPSTREAM_RETRY_WINDOW_MS
+        value: "90000"
       # Seeding demo accounts (teacher@edunova.com / student@edunova.com, password
       # "123456") is a security risk in production — anyone could log in as a
       # demo teacher. Keep this "false" for a live deployment; set "true" only
