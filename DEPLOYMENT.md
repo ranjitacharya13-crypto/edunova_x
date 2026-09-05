@@ -403,3 +403,63 @@ bundle. Open the browser console: the app logs an explicit error when
 **CORS errors in the browser**
 Set `CORS_ORIGIN` on the API service to the exact frontend origin (no trailing
 slash). The Cloudflare Workers production URL is always allowed as a fallback.
+
+---
+
+## Incident runbook — "self-hosted model is not available" (Sept 2026)
+
+**What happened.** The deployed `edunova-ai` service kept the environment
+variable `LOCAL_MODEL_FILE=Qwen2.5-0.5B-Instruct-IQ3_XXS.gguf` from an older
+deploy. That filename was **never published** in
+`bartowski/Qwen2.5-0.5B-Instruct-GGUF` (verified against the repo's file
+tree), so the startup preflight returned a permanent `HTTP 404`, the model
+never loaded, and every chat request answered
+*"EduNova AI's self-hosted model is not available on the server."*
+Meanwhile the frontend still showed **"Ready to help"** because the deployed
+frontend bundle predated the real-health-status fix.
+
+**Two-part fix.**
+
+1. *Code (already in the repo — deploy by merging to `main`).* The AI runtime
+   now self-heals exactly this failure class: if an operator-provided
+   `LOCAL_MODEL_FILE` provably does not exist (HTTP 404/410) inside a repo from
+   the verified catalogue, the service logs `MODEL_CONFIG_OVERRIDE_INVALID`,
+   applies that repo's catalogue-verified default file (integrity-pinned by
+   size + sha256), and continues booting. `/health` reports
+   `configOverrideRejected: true` so the misconfiguration stays visible, and a
+   `STALE_EXTERNAL_LLM_ENV` warning names leftover `LLM_*` variables (the old
+   Groq/OpenAI leftovers are ignored while `LLM_PROVIDER=local` but should be
+   removed). A stale frontend can no longer claim "Ready to help": the label
+   is driven by the real model state (`modelReady`).
+
+2. *Render dashboard (recommended, one minute).* On the **edunova-ai** service
+   → Environment, set/clean:
+
+   | Key | Value | Why |
+   |---|---|---|
+   | `LOCAL_MODEL_FILE` | `Qwen2.5-0.5B-Instruct-Q4_K_M.gguf` | the verified default (the self-heal also applies it, but fix the source) |
+   | `LOCAL_MODEL_REPO` | `bartowski/Qwen2.5-0.5B-Instruct-GGUF` | the verified repo |
+   | `LOCAL_MODEL_CTX` | `6144` | replaces the stale `3072` |
+   | `LOCAL_MODEL_DIR` | `/var/data/models` | persistent-disk cache (disk `edunova-model-cache`, 2 GB) |
+   | `LLM_PROVIDER` | `local` | self-hosted only |
+   | `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` (Groq/OpenAI leftovers) | **delete** | unused since `LLM_PROVIDER=local`; removes stale credentials from the service |
+
+   Then **Manual Deploy → Deploy latest commit** (or push to `main` with
+   auto-deploy on). Watch the log for:
+   `[EduNova AI] LOCAL_MODEL_SOURCE …`, `LOCAL_MODEL_DOWNLOAD_START`,
+   `LOCAL_MODEL_READY` (~1–3 min on first boot; instant afterwards thanks to
+   the persistent disk).
+
+3. *Frontend.* Redeploy the Cloudflare Worker from the merged `main` so the
+   bundle contains the real status polling (`AI model starting…` /
+   `Ready to help` / `AI model unavailable`) and the fixed Socket.IO lifecycle
+   (lazy shared connection, Back-Forward Cache safe — the
+   `WebSocket … failed: Page entered Back-Forward Cache` console spam).
+
+**Verify:**
+
+```bash
+curl -s https://edunova-ai-o2vy.onrender.com/health | python3 -m json.tool | grep -E '"state"|"modelReady"|"configOverrideRejected"'
+# expect: "state": "ready", "modelReady": true
+```
+

@@ -39,6 +39,7 @@ The weights file never enters Git; it is fetched at runtime from
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 import hashlib
 import inspect
 import json
@@ -52,7 +53,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from config import Settings
+from config import Settings, catalogue_default_file_for_repo, known_model_entry
 from .llm import LLMConfigurationError, LLMResponseError, parse_json_object
 
 logger = logging.getLogger("edunova.llm.local")
@@ -247,6 +248,11 @@ class LocalModelManager:
         self.download_attempts: int = 0
         self.last_inference_at: float | None = None
         self.source_check: dict[str, Any] | None = None
+        # Self-healing state for a stale/broken LOCAL_MODEL_FILE override (the
+        # production incident: the env pinned a filename that was never
+        # published in the repo -> permanent HTTP 404 -> "model unavailable").
+        self.config_override_rejected: dict[str, Any] | None = None
+        self._override_fallback_attempted: bool = False
         self._llama: Any = None
         self._load_task: asyncio.Task[None] | None = None
         self._gen_lock = asyncio.Lock()
@@ -324,11 +330,13 @@ class LocalModelManager:
             "lastError": self.last_error or None,
             "errorDetail": self.error_detail[:200] or None,
             "loadedAt": _iso(self.ready_at),
+            "overrideRejected": bool(self.config_override_rejected),
         }
         if include_source:
             payload["sourceUrl"] = self.safe_url
             payload["sourceCheck"] = self.source_check
             payload["errorReport"] = self.error_report
+            payload["configOverrideRejected"] = self.config_override_rejected
         return payload
 
     @staticmethod
@@ -417,67 +425,155 @@ class LocalModelManager:
     async def _load_pipeline(self) -> None:
         self.started_at = time.time()
         self.error_report = None
-        try:
-            await self._download_if_needed()
-            await self._load_model()
-            self.ready_at = time.time()
-            elapsed = self.ready_at - (self.started_at or self.ready_at)
-            self.state = "ready"
-            self.last_error = ""
-            self.error_detail = ""
-            self.error_report = None
-            logger.info(
-                "LOCAL_MODEL_READY model=%s file=%s bytes=%s ctx=%s threads=%s elapsed_s=%.1f",
-                self.settings.local_model_id,
-                self.model_path.name,
-                self.file_size_bytes,
-                self.settings.local_model_ctx_size,
-                self.settings.local_model_threads,
-                elapsed,
-            )
-        except ModelSourceError as exc:
-            # Structured, already-safe diagnostics: log the full block so the
-            # Render log answers "which URL returned what" without guesswork.
-            self.state = "error"
-            self.last_error = f"{exc.reason} (status={exc.status})" if exc.status else exc.reason
-            self.error_detail = "download_failed" if exc.stage == "download" else exc.stage
-            self.error_report = exc.report()
-            logger.error("LOCAL_MODEL_ERROR\n%s", exc.render())
-        except Exception as exc:  # noqa: BLE001 — surfaced through state, never faked
-            self.state = "error"
-            self.last_error = str(exc)[:300] or exc.__class__.__name__
-            if "llama-cpp-python" in self.last_error or "llama_cpp" in self.last_error:
-                self.error_detail = "runtime_missing"
-                self.last_error = "llama-cpp-python is not installed in this environment"
-            elif "checksum" in self.last_error.lower() or "sha256" in self.last_error.lower():
-                self.error_detail = "checksum_mismatch"
-            elif self._looks_like_download_error(self.last_error):
-                self.error_detail = "download_failed"
-            else:
-                self.error_detail = "load_failed"
-            self.error_report = {
-                "code": "MODEL_STARTUP_ERROR",
-                "model": self.settings.local_model_id,
-                "url": self.safe_url,
-                "status": None,
-                "stage": self.error_detail,
-                "reason": self.last_error,
-                "hint": None,
-                "permanent": self.error_detail in {"runtime_missing"},
-            }
-            logger.error(
-                "LOCAL_MODEL_ERROR\nMODEL_STARTUP_ERROR\nModel: %s\nURL: %s\nStage: %s\nReason: %s",
-                self.settings.local_model_id,
-                self.safe_url,
-                self.error_detail,
-                self.last_error,
-            )
+        while True:
+            try:
+                await self._download_if_needed()
+                await self._load_model()
+                self.ready_at = time.time()
+                elapsed = self.ready_at - (self.started_at or self.ready_at)
+                self.state = "ready"
+                self.last_error = ""
+                self.error_detail = ""
+                self.error_report = None
+                logger.info(
+                    "LOCAL_MODEL_READY model=%s file=%s bytes=%s ctx=%s threads=%s elapsed_s=%.1f",
+                    self.settings.local_model_id,
+                    self.model_path.name,
+                    self.file_size_bytes,
+                    self.settings.local_model_ctx_size,
+                    self.settings.local_model_threads,
+                    elapsed,
+                )
+                return
+            except ModelSourceError as exc:
+                if self._try_recover_invalid_override(exc):
+                    # One transparent retry with the verified catalogue file.
+                    self.started_at = time.time()
+                    continue
+                # Structured, already-safe diagnostics: log the full block so the
+                # Render log answers "which URL returned what" without guesswork.
+                self.state = "error"
+                self.last_error = f"{exc.reason} (status={exc.status})" if exc.status else exc.reason
+                self.error_detail = "download_failed" if exc.stage == "download" else exc.stage
+                self.error_report = exc.report()
+                logger.error("LOCAL_MODEL_ERROR\n%s", exc.render())
+                return
+            except Exception as exc:  # noqa: BLE001 — surfaced through state, never faked
+                self.state = "error"
+                self.last_error = str(exc)[:300] or exc.__class__.__name__
+                if "llama-cpp-python" in self.last_error or "llama_cpp" in self.last_error:
+                    self.error_detail = "runtime_missing"
+                    self.last_error = "llama-cpp-python is not installed in this environment"
+                elif "checksum" in self.last_error.lower() or "sha256" in self.last_error.lower():
+                    self.error_detail = "checksum_mismatch"
+                elif self._looks_like_download_error(self.last_error):
+                    self.error_detail = "download_failed"
+                else:
+                    self.error_detail = "load_failed"
+                self.error_report = {
+                    "code": "MODEL_STARTUP_ERROR",
+                    "model": self.settings.local_model_id,
+                    "url": self.safe_url,
+                    "status": None,
+                    "stage": self.error_detail,
+                    "reason": self.last_error,
+                    "hint": None,
+                    "permanent": self.error_detail in {"runtime_missing"},
+                }
+                logger.error(
+                    "LOCAL_MODEL_ERROR\nMODEL_STARTUP_ERROR\nModel: %s\nURL: %s\nStage: %s\nReason: %s",
+                    self.settings.local_model_id,
+                    self.safe_url,
+                    self.error_detail,
+                    self.last_error,
+                )
+                return
 
     # ------------------------------------------------------------ source --
     def _source_error(self, **kwargs: Any) -> ModelSourceError:
         kwargs.setdefault("model", self.settings.local_model_id)
         kwargs.setdefault("url", self.safe_url)
         return ModelSourceError(**kwargs)
+
+    def _try_recover_invalid_override(self, exc: ModelSourceError) -> bool:
+        """Self-heal a stale/broken ``LOCAL_MODEL_FILE`` override.
+
+        The production incident: the environment pinned a filename that was
+        never published in the configured repository, the preflight returned a
+        permanent HTTP 404, and the service stayed down ("model unavailable")
+        until an administrator edited the dashboard. This method closes that
+        outage class: when the configured file **provably does not exist**
+        (404/410) inside a repository present in the verified catalogue, the
+        runtime transparently continues with the catalogue's verified default
+        file for that same repo.
+
+        Rules (all must hold — checked explicitly):
+        - provider is ``local`` and no custom ``LOCAL_MODEL_URL`` is set
+          (a custom URL is a deliberate operator choice and is never overridden);
+        - the failure is permanent with status 404/410 (file absent/removed);
+        - the configured (repo, file) pair is NOT itself a verified catalogue
+          entry — if a pinned catalogue file 404s, that is an upstream outage
+          and must stay a loud error, never silently re-pointed;
+        - the repo IS a catalogue repo, so a verified fallback exists;
+        - the fallback runs at most once per process and is always surfaced
+          through logs and ``/health`` (``configOverrideRejected``).
+
+        This is NOT an external fallback and NOT a canned answer: the applied
+        model is still the self-hosted GGUF from the same repository, with
+        size + sha256 integrity enforced from the catalogue.
+        """
+        if self._override_fallback_attempted:
+            return False
+        if self.settings.llm_provider != "local" or self.settings.local_model_url:
+            return False
+        if not (getattr(exc, "permanent", False) and getattr(exc, "status", None) in (404, 410)):
+            return False
+        repo = self.settings.local_model_repo
+        configured_file = self.settings.local_model_file
+        if known_model_entry(repo, configured_file) is not None:
+            return False
+        fallback = catalogue_default_file_for_repo(repo)
+        if not fallback or fallback == configured_file:
+            return False
+
+        self._override_fallback_attempted = True
+        self.config_override_rejected = {
+            "configuredRepo": repo,
+            "configuredFile": configured_file,
+            "status": exc.status,
+            "stage": exc.stage,
+            "reason": exc.reason,
+            "fallbackFile": fallback,
+        }
+        logger.warning(
+            "MODEL_CONFIG_OVERRIDE_INVALID repo=%s file=%s status=%s stage=%s reason=%s hint=%s",
+            repo,
+            configured_file,
+            exc.status,
+            exc.stage,
+            exc.reason,
+            exc.hint or "n/a",
+        )
+        logger.warning(
+            "MODEL_CONFIG_FALLBACK applying verified catalogue file=%s for repo=%s "
+            "(integrity-pinned; set LOCAL_MODEL_FILE to a file listed at "
+            "https://huggingface.co/%s/tree/main to silence this)",
+            fallback,
+            repo,
+            repo,
+        )
+        self.settings = replace(
+            self.settings,
+            local_model_file=fallback,
+            local_model_sha256="",
+            local_model_expected_bytes=0,
+        )
+        # Reset lifecycle state so the retry starts from a clean slate.
+        self.state = "not_started"
+        self.download_attempts = 0
+        self.downloaded_bytes = 0
+        self.source_check = None
+        return True
 
     def _hint_for_status(self, status: int) -> str:
         if status in (401, 403):

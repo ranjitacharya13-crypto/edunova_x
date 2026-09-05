@@ -1,20 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { io } from "socket.io-client";
-import { API_ORIGIN } from "../api/api";
-
-const defaultSignalUrl = (() => {
-  const configured = import.meta.env.VITE_SIGNAL_URL;
-  if (configured) return configured;
-  if (typeof window === "undefined") return "";
-  // DEV: same-origin via the Vite proxy (/socket.io -> local backend).
-  // PROD: the Express API hosts Socket.IO signaling on its own origin, so fall
-  // back to the API origin (VITE_API_URL minus the /api suffix). VITE_SIGNAL_URL
-  // is only needed when signaling runs as a separate service.
-  if (import.meta.env.PROD) {
-    return API_ORIGIN || "https://edunova-api-y3rx.onrender.com";
-  }
-  return window.location.origin;
-})();
+import { acquireSignalSocket, releaseSignalSocket } from "../api/socket";
 
 function normalizeRoom(room) {
   return String(room || "")
@@ -280,9 +265,10 @@ export default function LiveRoom() {
     window.addEventListener("keydown", onEsc);
 
     let cancelled = false;
-    // Polling establishes a reliable connection first; Socket.IO upgrades to
-    // WebSocket automatically when Render and the client network allow it.
-    const socket = io(defaultSignalUrl, { transports: ["polling", "websocket"] });
+    // Shared signaling socket (see src/api/socket.js): polling first, upgrade
+    // to WebSocket automatically; reference-counted so this window never
+    // leaves a stale connection behind, including across Back-Forward Cache.
+    const socket = acquireSignalSocket();
     socketRef.current = socket;
 
     const init = async () => {
@@ -362,6 +348,8 @@ export default function LiveRoom() {
       socket.off("answer", onAnswer);
       socket.off("ice-candidate", onIce);
       socket.off("peer-joined", onPeerJoined);
+      if (socketRef.current === socket) socketRef.current = null;
+      releaseSignalSocket();
       document.removeEventListener("fullscreenchange", onFsChange);
       window.removeEventListener("keydown", onEsc);
       cleanup({ closeWindow: false }).catch(() => {});

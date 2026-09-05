@@ -201,6 +201,30 @@ def known_model_entry(repo: str, filename: str) -> dict[str, object] | None:
     return KNOWN_MODELS.get((str(repo or "").strip(), str(filename or "").strip()))
 
 
+def catalogue_files_for_repo(repo: str) -> list[str]:
+    """All verified filenames registered for ``repo`` (may be empty)."""
+    repo = str(repo or "").strip()
+    return [filename for (entry_repo, filename) in KNOWN_MODELS if entry_repo == repo]
+
+
+def catalogue_default_file_for_repo(repo: str) -> str | None:
+    """The verified default GGUF filename for a known repository, else None.
+
+    Used by the runtime's self-healing path: when an operator-provided
+    ``LOCAL_MODEL_FILE`` provably does not exist in a repository we know
+    (HTTP 404 preflight), the verified default for that same repo is applied
+    instead of leaving the service permanently down. Returns ``None`` for
+    repositories we have never verified, where no safe default exists.
+    """
+    repo = str(repo or "").strip()
+    if not repo:
+        return None
+    if repo == DEFAULT_LOCAL_MODEL_REPO:
+        return DEFAULT_LOCAL_MODEL_FILE
+    files = catalogue_files_for_repo(repo)
+    return files[0] if files else None
+
+
 def _sanitize_public_url(raw: str) -> str:
     """Strip credentials and query strings so a URL is safe to log/expose.
 
