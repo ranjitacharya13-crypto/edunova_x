@@ -274,6 +274,39 @@ def _model_health_block(include_source: bool = False) -> dict[str, Any]:
     return {"model": model_manager.snapshot(include_source=include_source)}
 
 
+def _runtime_resources() -> dict[str, Any]:
+    """Safe cgroup/process sizing data for production capacity diagnostics."""
+    memory_limit = None
+    cpu_quota = None
+    try:
+        raw = Path("/sys/fs/cgroup/memory.max").read_text().strip()
+        if raw != "max":
+            memory_limit = int(raw)
+    except (OSError, ValueError):
+        pass
+    try:
+        quota_raw, period_raw = Path("/sys/fs/cgroup/cpu.max").read_text().split()[:2]
+        if quota_raw != "max":
+            cpu_quota = round(int(quota_raw) / int(period_raw), 2)
+    except (OSError, ValueError, ZeroDivisionError):
+        pass
+    rss_bytes = None
+    try:
+        import resource
+
+        # Linux ru_maxrss is KiB.
+        rss_bytes = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) * 1024
+    except (ImportError, OSError, ValueError):
+        pass
+    return {
+        "memoryLimitBytes": memory_limit,
+        "processMaxRssBytes": rss_bytes,
+        "cpuQuotaCores": cpu_quota,
+        "visibleCpuCount": os.cpu_count(),
+        "configuredThreads": settings.local_model_threads,
+    }
+
+
 def _readiness() -> dict[str, Any]:
     """The four facts requirement 11 asks a health check to confirm."""
     if not settings.is_local_llm or model_manager is None:
@@ -316,6 +349,7 @@ async def health() -> dict[str, Any]:
         "llmConfigured": settings.llm_configured,
         "llmDiagnostics": diag,
         "webSearchConfigured": settings.search_configured,
+        "runtimeResources": _runtime_resources(),
         "internalAuthConfigured": bool(settings.ai_internal_token),
         "internalAuthRequired": settings.ai_require_internal_token,
         # True when the configured LOCAL_MODEL_FILE was rejected by the source
