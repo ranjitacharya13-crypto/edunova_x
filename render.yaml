@@ -92,14 +92,16 @@ services:
       - key: AI_RATE_LIMIT_MAX_REQUESTS
         value: "20"
       # Cold-start resilience: on the free plan edunova-ai spins down when
-      # idle, and Render answers with an HTML 503 while it wakes. The API
-      # retries those fast failures on this schedule (~90 s budget) before
-      # surfacing an error, so the first question after an idle period
-      # succeeds once the AI service finishes booting.
+      # idle, and Render answers with an HTML 503 while it wakes. The AI also
+      # returns 503 LLM_MODEL_LOADING while the self-hosted GGUF weights are
+      # being downloaded/loaded after a cold boot. The API retries those fast
+      # failures on this schedule before surfacing an error, so the first
+      # question after an idle period succeeds once the model finishes booting.
+      # The window is sized for model download + load (~2-4 min worst case).
       - key: AI_UPSTREAM_RETRY_DELAYS_MS
         value: "3000,8000,15000,30000"
       - key: AI_UPSTREAM_RETRY_WINDOW_MS
-        value: "90000"
+        value: "240000"
       # Seeding demo accounts (teacher@edunova.com / student@edunova.com, password
       # "123456") is a security risk in production — anyone could log in as a
       # demo teacher. Keep this "false" for a live deployment; set "true" only
@@ -110,6 +112,14 @@ services:
   # ---------------------------------------------------------------------------
   # 2) edunova-ai — FastAPI autonomous learning/research agent
   #    rootDir: ai_engine  ->  `main:app` resolves to ai_engine/main.py
+  #
+  #    SELF-HOSTED MODEL: the service runs a quantized GGUF model in-process
+  #    via llama.cpp (no OpenAI/Groq/Gemini/Anthropic keys). The default model
+  #    is sized for this free plan (512MB RAM / shared CPU). Weights download
+  #    from HuggingFace on first boot of a fresh container (free plan has no
+  #    persistent disk) while /health already reports status: the service
+  #    binds the port immediately and chat returns 503 LLM_MODEL_LOADING until
+  #    the model is ready — edunova-api retries those on a backoff schedule.
   # ---------------------------------------------------------------------------
   - type: web
     name: edunova-ai
@@ -127,15 +137,45 @@ services:
         value: "3.11.9"
       - key: CORS_ORIGIN
         value: https://edunova-x.ranjitacharya13.workers.dev
-      # ---- Agent credentials: AI service only, never frontend ---------------
+      # PyPI hosts llama-cpp-python sources only; the official prebuilt CPU
+      # wheels are served from this extra index (avoids a slow C++ build).
+      - key: PIP_EXTRA_INDEX_URL
+        value: https://abetlen.github.io/llama-cpp-python/whl/cpu
+      # ---- Self-hosted local model (the AI brain) ---------------------------
       - key: LLM_PROVIDER
-        value: openai
-      - key: LLM_API_KEY
-        sync: false
-      - key: LLM_MODEL
-        value: gpt-4.1-mini
-      - key: LLM_BASE_URL
-        value: https://api.openai.com/v1
+        value: local
+      - key: LOCAL_MODEL_REPO
+        value: bartowski/Qwen2.5-0.5B-Instruct-GGUF
+      - key: LOCAL_MODEL_FILE
+        value: Qwen2.5-0.5B-Instruct-IQ3_XXS.gguf
+      # Optional direct download URL + integrity pin:
+      # - key: LOCAL_MODEL_URL
+      #   sync: false
+      # - key: LOCAL_MODEL_SHA256
+      #   sync: false
+      - key: LOCAL_MODEL_CTX
+        value: "3072"
+      - key: LOCAL_MODEL_THREADS
+        value: "2"
+      - key: LOCAL_MODEL_BATCH
+        value: "256"
+      - key: LOCAL_MODEL_CHAT_FORMAT
+        value: chatml
+      - key: LOCAL_PRELOAD_MODEL
+        value: "true"
+      - key: LOCAL_CHAT_WAIT_TIMEOUT
+        value: "25"
+      - key: LOCAL_MODEL_DOWNLOAD_TIMEOUT
+        value: "900"
+      - key: LLM_MAX_OUTPUT_TOKENS
+        value: "900"
+      - key: LLM_TEMPERATURE
+        value: "0.2"
+      # ---- Emergency rollback only (unused while LLM_PROVIDER=local) --------
+      # Set LLM_PROVIDER=openai_compatible + LLM_API_KEY/LLM_MODEL/LLM_BASE_URL
+      # in the dashboard to temporarily restore a hosted provider, then remove
+      # once the local model is verified. Never commit a key here.
+      # -----------------------------------------------------------------------
       - key: WEB_SEARCH_API_KEY
         sync: false
       - key: WEB_SEARCH_PROVIDER
@@ -148,11 +188,11 @@ services:
         sync: false
       - key: AI_REQUIRE_INTERNAL_TOKEN
         value: "true"
-      # ---- Bounded autonomous execution -------------------------------------
+      # ---- Bounded autonomous execution (tuned for shared CPU) --------------
       - key: MAX_AGENT_ITERATIONS
-        value: "12"
+        value: "5"
       - key: MAX_TOOL_CALLS
-        value: "15"
+        value: "8"
       - key: MAX_AGENT_RUNTIME_SECONDS
         value: "180"
       - key: WEB_SEARCH_MAX_RESULTS
@@ -164,7 +204,7 @@ services:
       - key: WEB_MAX_EXTRACTED_CHARS
         value: "45000"
       - key: AGENT_MAX_CONTEXT_CHARS
-        value: "90000"
+        value: "24000"
 
   # ---------------------------------------------------------------------------
   # 3) edunova-signal — OPTIONAL standalone WebRTC signaling service.
