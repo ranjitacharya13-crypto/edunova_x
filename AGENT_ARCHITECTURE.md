@@ -4,7 +4,15 @@ EduNova AI operates as a **UNIFIED DATA-AWARE AGENT** capable of intelligently c
 1. **EDUNOVA INTERNAL DATA** (Authenticated student database & application services)
 2. **EXTERNAL DATA** (Verified web search, primary pages, approved utility tools)
 3. **CONVERSATION CONTEXT** (Multi-turn topic resolution & memory)
-4. **LLM KNOWLEDGE** (General educational & scientific concepts)
+4. **MODEL KNOWLEDGE** (General educational & scientific concepts)
+
+> **Self-hosted since v3.0.** The AI brain is a quantized open-source GGUF model
+> running **in-process via llama.cpp** (`llama-cpp-python`) inside the
+> `ai_engine` FastAPI service. No OpenAI/Groq/Gemini/Anthropic/OpenRouter calls
+> are made. Default model: **Qwen2.5-0.5B-Instruct @ IQ3_XXS** (~270MB weights),
+> sized for Render's free plan (512MB RAM / shared CPU) and adjustable through
+> `LOCAL_MODEL_*` environment variables. Web search remains an external *data
+> source*; all reasoning and answer generation is done by the local model.
 
 ```text
                                 USER
@@ -46,6 +54,48 @@ EduNova AI operates as a **UNIFIED DATA-AWARE AGENT** capable of intelligently c
 ```
 
 ---
+
+## 0. Local Model Runtime (llama.cpp)
+
+```text
+FastAPI ai_engine process
+ ├─ LocalModelManager          lifecycle: download (HF/direct URL) -> verify -> load (mmap)
+ │    • background load at boot: port binds immediately, /health stays live
+ │    • states: not_started | downloading | loading | ready | error
+ │    • optional SHA-256 pinning, atomic .part -> rename, 10MB min-size guard
+ ├─ LocalLlamaLLM              planner-compatible interface (probe/complete_json/complete_text)
+ │    • ChatML prompt rendering (LOCAL_MODEL_CHAT_FORMAT for other models)
+ │    • JSON-schema -> llama.cpp grammar: decisions are ALWAYS valid JSON
+ │    • single-flight generation lock: one inference at a time (fits shared CPU)
+ └─ AgentEngine / IntentRouter unchanged contracts on top
+```
+
+Failure honesty: while the model is downloading/loading, chat returns
+`503 LLM_MODEL_LOADING`; if load fails, `503 LLM_MODEL_UNAVAILABLE` with a
+sanitized reason. **Nothing is silently replaced with a canned answer.**
+The Express API (`server/routes/ai.js`) already retries those 503s on a
+backoff schedule sized for cold starts (`AI_UPSTREAM_RETRY_*`).
+
+## 0.1 Deterministic Fast Paths (IntentRouter)
+
+The autonomous AgentEngine loop (repeated JSON planning) is preserved for
+complex/compound requests, but most student questions go through
+`agent/router.py`: a zero-cost rule-based router that classifies the request,
+runs the exact EduNova tools needed through the **same ToolRegistry** (same
+permissions, same authenticated `X-User-Id` forwarding, same audit logging),
+and uses the local model for a **single** synthesis/generation turn. This is
+what makes a 0.5B model on shared CPU feel responsive.
+
+| Intent | Data used | Generation |
+| --- | --- | --- |
+| `knowledge` / follow-ups | conversation context | 1 text call |
+| `schedule_today`, `*_database*` | the matching `get_*` tools only | 1 text call |
+| `study_recommendation` | timetable + progress + quiz history + assignments + history + exams | 1 text call |
+| `performance_analysis` | quiz history + progress + subjects (+results) | 1 text call |
+| `web_research` | `web_search` results | 1 text call with `[S#]` citations |
+| `action_create_quiz` | today schedule + syllabus + materials | 1 grammar-JSON call -> validate -> `save_quiz` (needs user confirmation) |
+| `action_study_plan` | exams + progress + syllabus | 1 grammar-JSON call -> validate -> `create_study_plan` (needs user confirmation) |
+| `complex` | — | full AgentEngine autonomous loop |
 
 ## 1. Source Types & Selection
 
@@ -144,7 +194,7 @@ All tool executions record safe audit records:
 Run all unit & integration test suites:
 
 ```bash
-# Python tests (ai_engine)
+# Python tests (ai_engine) — includes the local-model + fast-path suites
 .venv/bin/python -m unittest discover -s ai_engine/tests -v
 
 # Node tests (Express server)
@@ -153,3 +203,27 @@ npm test --prefix server
 # Frontend build
 npm run build --prefix frontend
 ```
+
+`ai_engine/tests/test_local_model.py` covers: local-provider configuration
+(and that no API key is required), intent routing for all canonical questions,
+fast-path execution with tool fixtures (DB scoping, web citations, pending
+write confirmations), quiz/plan payload validation, `LocalLlamaLLM` behavior
+against a fake `llama_cpp` (ChatML prompt shape, grammar usage, JSON parsing),
+and failure honesty (loading/unavailable states never fake an answer).
+
+## 7. Local model operations
+
+- **Model choice & size** — `LOCAL_MODEL_REPO` + `LOCAL_MODEL_FILE` (or a
+  direct `LOCAL_MODEL_URL`). Defaults fit Render free; see DEPLOYMENT.md for
+  the sizing table (0.5B IQ3_XXS → 512MB plans; 1.5B Q4 → 2GB+ plans).
+- **Health** — `GET /health` (liveness, includes `model.state`),
+  `GET /api/ai/health` (readiness: `ready` only when weights are loaded),
+  `GET /api/ai/health?deep=true` (active probe).
+- **Cold starts** — free-plan containers re-download weights (~270MB, ~30-90s)
+  because there is no persistent disk; `edunova-api` absorbs this with its
+  upstream retry window (`AI_UPSTREAM_RETRY_WINDOW_MS=240000`).
+- **Legacy rollback** — setting `LLM_PROVIDER=openai_compatible` with
+  `LLM_API_KEY/LLM_MODEL/LLM_BASE_URL` temporarily restores an external
+  OpenAI-compatible endpoint until the local model is verified; remove those
+  variables afterwards (requirement: the external dependency is only retired
+  once the local model works).

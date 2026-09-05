@@ -1,0 +1,615 @@
+"""Tests for the self-hosted local model runtime and deterministic fast paths.
+
+Covers:
+1. Local provider configuration (no external API key required)
+2. Intent routing for the six canonical acceptance questions
+3. Fast-path execution (DB tools, web tools, conversation context, actions)
+4. LocalLlamaLLM against a fake llama_cpp module (prompt, grammar, parsing)
+5. Failure honesty: a missing/loading model raises real errors, never fakes
+
+Run: python -m unittest ai_engine/tests/test_local_model.py -v
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import sys
+import tempfile
+import types
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from agent.llm import LLMResponseError  # noqa: E402
+from agent.local_llm import LocalLlamaLLM, LocalModelManager, create_llm  # noqa: E402
+from agent.router import (  # noqa: E402
+    IntentRouter,
+    RouteDecision,
+    run_fast_path,
+    validate_plan_payload,
+    validate_quiz_payload,
+)
+from agent.tools.base import ToolDefinition, ToolRegistry  # noqa: E402
+from config import Settings, load_settings  # noqa: E402
+
+
+def local_settings(**overrides) -> Settings:
+    base = dict(
+        llm_provider="local",
+        llm_max_output_tokens=900,
+        llm_temperature=0.2,
+        max_agent_iterations=5,
+        max_tool_calls=8,
+        max_agent_runtime_seconds=60,
+        agent_max_context_chars=24_000,
+        conversation_max_turns=4,
+        conversation_ttl_seconds=3600,
+        local_preload_model=True,
+        local_chat_wait_seconds=2,
+    )
+    base.update(overrides)
+    return Settings(**base)
+
+
+class LocalProviderConfigTests(unittest.TestCase):
+    def test_local_provider_needs_no_api_key(self):
+        prev = os.getenv("LLM_PROVIDER")
+        try:
+            os.environ.pop("LLM_API_KEY", None)
+            os.environ["LLM_PROVIDER"] = "local"
+            settings = load_settings()
+            self.assertEqual(settings.llm_provider, "local")
+            self.assertTrue(settings.llm_configured)
+            self.assertIsNone(settings.llm_configuration_error)
+            diag = settings.llm_safe_diagnostics()
+            self.assertTrue(diag["selfHosted"])
+            self.assertFalse(diag["apiKeyRequired"])
+            self.assertIn("Qwen2.5-0.5B-Instruct", diag["local_model_id"])
+        finally:
+            if prev is None:
+                os.environ.pop("LLM_PROVIDER", None)
+            else:
+                os.environ["LLM_PROVIDER"] = prev
+
+    def test_provider_aliases_normalize_to_local(self):
+        prev = os.getenv("LLM_PROVIDER")
+        try:
+            for alias in ("selfhosted", "gguf", "llamacpp"):
+                os.environ["LLM_PROVIDER"] = alias
+                self.assertEqual(load_settings().llm_provider, "local")
+        finally:
+            if prev is None:
+                os.environ.pop("LLM_PROVIDER", None)
+            else:
+                os.environ["LLM_PROVIDER"] = prev
+
+    def test_missing_model_source_is_configuration_error(self):
+        settings = local_settings(local_model_repo="", local_model_file="", local_model_url="")
+        self.assertFalse(settings.llm_configured)
+        self.assertEqual(settings.llm_configuration_error, "missing_model_source")
+
+    def test_http_allowed_only_for_private_hosts(self):
+        # Self-hosted gateway on the same host is a legitimate openai_compatible use.
+        ok = Settings(llm_provider="openai_compatible", llm_api_key="k", llm_model="m", llm_base_url="http://127.0.0.1:11434/v1")
+        self.assertIsNone(ok.llm_configuration_error)
+        insecure = Settings(llm_provider="openai_compatible", llm_api_key="k", llm_model="m", llm_base_url="http://llm.example.com/v1")
+        self.assertEqual(insecure.llm_configuration_error, "insecure_base_url")
+
+    def test_diagnostics_never_expose_secrets(self):
+        settings = local_settings(local_model_url="https://user:pass@example.com/model.gguf")
+        diag = json.dumps(settings.llm_safe_diagnostics())
+        self.assertNotIn("pass", settings.local_model_id)
+        self.assertNotIn("user:pass", diag)
+        self.assertNotIn("example.com/model.gguf", diag)  # only host + filename
+
+    def test_create_llm_factory_returns_local_stack(self):
+        settings = local_settings()
+        llm, manager = create_llm(settings)
+        self.assertIsInstance(llm, LocalLlamaLLM)
+        self.assertIsInstance(manager, LocalModelManager)
+        self.assertTrue(llm.is_local)
+
+
+class IntentRouterTests(unittest.TestCase):
+    def setUp(self):
+        self.router = IntentRouter(local_settings())
+
+    def test_what_is_machine_learning_is_knowledge(self):
+        decision = self.router.classify("What is machine learning?", [])
+        self.assertEqual(decision.intent, "knowledge")
+        self.assertEqual(decision.tools, ())
+
+    def test_follow_up_uses_conversation_context(self):
+        conversation = [
+            {"role": "user", "content": "What is machine learning?"},
+            {"role": "assistant", "content": "Machine learning is ..."},
+        ]
+        decision = self.router.classify("Explain it simply.", conversation)
+        self.assertEqual(decision.intent, "knowledge")
+        self.assertEqual(decision.reason, "follow-up uses conversation context")
+
+    def test_classes_today_uses_database_not_web(self):
+        decision = self.router.classify("What classes do I have today?", [])
+        self.assertEqual(decision.intent, "schedule_today")
+        self.assertIn("get_today_schedule", decision.tools)
+        self.assertNotIn("web_search", decision.tools)
+
+    def test_weakest_subject_uses_performance_data(self):
+        decision = self.router.classify("What is my weakest subject?", [])
+        self.assertEqual(decision.intent, "performance_analysis")
+        self.assertIn("get_quiz_history", decision.tools)
+        self.assertIn("get_progress", decision.tools)
+
+    def test_study_today_is_multi_source(self):
+        decision = self.router.classify("What should I study today?", [])
+        self.assertEqual(decision.intent, "study_recommendation")
+        self.assertIn("get_today_schedule", decision.tools)
+        self.assertIn("get_quiz_history", decision.tools)
+        self.assertIn("get_assignments", decision.tools)
+
+    def test_create_quiz_from_today_class_is_action(self):
+        decision = self.router.classify("Create a quiz from today's class.", [])
+        self.assertEqual(decision.intent, "action_create_quiz")
+        self.assertIn("get_today_schedule", decision.tools)
+
+    def test_latest_ai_news_is_web_research(self):
+        decision = self.router.classify("What are the latest developments in AI?", [])
+        self.assertEqual(decision.intent, "web_research")
+        self.assertIn("web_search", decision.tools)
+
+    def test_student_news_stays_internal(self):
+        # "today" + student context must NOT be sent to the web.
+        decision = self.router.classify("any new assignments today?", [])
+        self.assertNotEqual(decision.intent, "web_research")
+
+    def test_complex_task_falls_back_to_full_loop(self):
+        decision = self.router.classify(
+            "Compare my physics quiz trend with the syllabus chapters uploaded and draft a full revision strategy with links to my recordings, then schedule reminders.",
+            [],
+        )
+        self.assertEqual(decision.intent, "complex")
+
+
+class _ScriptedLLM:
+    """Records prompts; returns scripted text/JSON. Never used for decisions."""
+
+    is_local = True
+
+    def __init__(self, *, text: str = "Scripted answer.", payload: dict | None = None, fail: Exception | None = None):
+        self.text = text
+        self.payload = payload or {}
+        self.fail = fail
+        self.calls: list[dict] = []
+
+    async def complete_text(self, *, system_prompt, user_prompt, max_output_tokens=None, temperature=None):
+        self.calls.append({"kind": "text", "system_prompt": system_prompt, "user_prompt": user_prompt})
+        if self.fail:
+            raise self.fail
+        return self.text
+
+    async def complete_json(self, *, system_prompt, user_prompt, retries=2, max_output_tokens=None, json_schema=None):
+        self.calls.append({"kind": "json", "system_prompt": system_prompt, "user_prompt": user_prompt, "json_schema": json_schema})
+        if self.fail:
+            raise self.fail
+        return self.payload
+
+
+def _registry_with_fixtures(*names: str) -> tuple[ToolRegistry, list[dict]]:
+    registry = ToolRegistry(
+        allowed_permissions={"READ_INTERNAL", "WRITE_INTERNAL", "READ_EXTERNAL", "UTILITY"}
+    )
+    calls: list[dict] = []
+
+    def make(name):
+        async def fixture(args, context=None):
+            calls.append({"name": name, "args": args, "context": context})
+            if name == "web_search":
+                return {
+                    "query": args.get("query", ""),
+                    "results": [
+                        {"title": "AI Index Report 2025", "url": "https://hai.stanford.edu/ai-index", "snippet": "Annual report tracking AI progress.", "publishedDate": "2025-04-01"},
+                        {"title": "Frontier model releases", "url": "https://example.org/frontier", "snippet": "New open-weight model releases."},
+                    ],
+                }
+            if name == "save_quiz":
+                return {
+                    "pending": True,
+                    "requiresConfirmation": True,
+                    "confirmationToken": "token-123",
+                    "toolName": "save_quiz",
+                    "message": "Confirm to apply save quiz to EduNova.",
+                    "arguments": args,
+                }
+            if name == "create_study_plan":
+                return {
+                    "pending": True,
+                    "requiresConfirmation": True,
+                    "confirmationToken": "token-456",
+                    "toolName": "create_study_plan",
+                    "message": "Confirm to apply create study plan to EduNova.",
+                }
+            return {"fixture": name, "arguments": args}
+
+        category = "EXTERNAL" if name in {"web_search", "open_url", "extract_webpage"} else "INTERNAL"
+        permission = "READ_EXTERNAL" if category == "EXTERNAL" else (
+            "WRITE_INTERNAL" if name.startswith(("create_", "save_", "mark_", "update_", "set_")) else "READ_INTERNAL"
+        )
+        return ToolDefinition(
+            name=name,
+            description=f"fixture {name}",
+            input_schema={"type": "object", "properties": {}, "additionalProperties": True},
+            executor=fixture,
+            permission=permission,
+            category=category,
+        )
+
+    for name in names:
+        registry.register(make(name))
+    return registry, calls
+
+
+class FastPathTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.settings = local_settings()
+
+    async def _run(self, message, conversation=(), tools=(), llm=None, decision=None, decision_tools=None):
+        tool_names = tools or ("get_today_schedule", "get_quiz_history", "get_progress", "get_subjects",
+                               "web_search", "save_quiz", "create_study_plan", "get_syllabus",
+                               "get_learning_materials", "get_assignments", "get_study_history", "get_exams")
+        registry, calls = _registry_with_fixtures(*tool_names)
+        router = IntentRouter(self.settings)
+        dec = decision or router.classify(message, list(conversation))
+        if decision_tools is not None:
+            dec = RouteDecision(intent=dec.intent, tools=decision_tools, subject=dec.subject, reason=dec.reason)
+        llm = llm or _ScriptedLLM(text="Synthesized answer from local model.")
+        payload = await run_fast_path(
+            settings=self.settings,
+            llm=llm,
+            registry=registry,
+            decision=dec,
+            goal=message,
+            conversation=list(conversation),
+            conversation_id="conv-local-0001",
+            user_id="student-42",
+            user_name="Test Student",
+        )
+        return payload, calls, llm, dec
+
+    async def test_knowledge_answer_uses_conversation_context(self):
+        conversation = [
+            {"role": "user", "content": "What is machine learning?"},
+            {"role": "assistant", "content": "Machine learning is a branch of AI..."},
+        ]
+        payload, _, llm, decision = await self._run("Explain it simply.", conversation=conversation)
+        self.assertEqual(decision.intent, "knowledge")
+        self.assertTrue(payload["success"])
+        self.assertFalse(payload["usedWeb"])
+        self.assertFalse(payload["usedInternalDb"])
+        self.assertIn("machine learning", llm.calls[0]["user_prompt"].lower())
+
+    async def test_classes_today_executes_authenticated_tool(self):
+        payload, calls, _, decision = await self._run("What classes do I have today?")
+        self.assertEqual(decision.intent, "schedule_today")
+        self.assertTrue(payload["usedInternalDb"])
+        self.assertEqual([c["name"] for c in calls], ["get_today_schedule"])
+        # Authenticated user id flows to the tool; the model never picks one.
+        self.assertEqual(calls[0]["context"]["user_id"], "student-42")
+
+    async def test_weakest_subject_gathers_performance_sources(self):
+        payload, calls, _, decision = await self._run("What is my weakest subject?")
+        self.assertEqual(decision.intent, "performance_analysis")
+        names = {c["name"] for c in calls}
+        self.assertTrue({"get_quiz_history", "get_progress"} <= names)
+        self.assertTrue(payload["usedInternalDb"])
+        self.assertTrue(payload["internalSources"])
+
+    async def test_web_research_cites_real_sources_and_strips_fake(self):
+        llm = _ScriptedLLM(text="Per the AI Index, capability rose [S1]. Bogus cite [S9].")
+        payload, calls, _, decision = await self._run(
+            "What are the latest developments in AI?", llm=llm
+        )
+        self.assertEqual(decision.intent, "web_research")
+        self.assertEqual([c["name"] for c in calls], ["web_search"])
+        self.assertTrue(payload["usedWeb"])
+        self.assertTrue(payload["sources"])
+        self.assertIn("[S1]", payload["message"])
+        self.assertNotIn("[S9]", payload["message"], "invalid citations must be stripped")
+
+    async def test_web_unavailable_says_so_instead_of_faking(self):
+        registry = ToolRegistry(allowed_permissions={"READ_EXTERNAL"})
+        async def failing(args):
+            raise RuntimeError("Web search is not configured")
+        registry.register(ToolDefinition(
+            name="web_search", description="search", input_schema={"type": "object"},
+            executor=failing, permission="READ_EXTERNAL", category="EXTERNAL",
+        ))
+        llm = _ScriptedLLM(text="should-not-be-called")
+        payload = await run_fast_path(
+            settings=self.settings,
+            llm=llm,
+            registry=registry,
+            decision=RouteDecision(intent="web_research", tools=("web_search",)),
+            goal="latest space news",
+            conversation=[],
+            conversation_id="conv-local-0002",
+            user_id="student-42",
+            user_name="Test Student",
+        )
+        self.assertIn("unavailable", payload["message"].lower())
+        self.assertEqual(llm.calls, [], "LLM must not fabricate a web answer without search data")
+
+    async def test_quiz_creation_validates_and_returns_pending_action(self):
+        quiz_payload = {
+            "title": "Today's Physics Quiz",
+            "subject": "Physics",
+            "questions": [
+                {"question": "What is force?", "options": ["push or pull", "energy", "mass", "speed"], "answerIndex": 0},
+                {"question": "Unit of force?", "options": ["Joule", "Newton", "Watt"], "answerIndex": 1},
+                {"question": "bad question", "options": ["only one"], "answerIndex": 5},  # invalid: dropped
+            ],
+        }
+        llm = _ScriptedLLM(payload=quiz_payload)
+        payload, calls, _, decision = await self._run("Create a quiz from today's class.", llm=llm)
+        self.assertEqual(decision.intent, "action_create_quiz")
+        names = [c["name"] for c in calls]
+        self.assertIn("get_today_schedule", names)
+        self.assertIn("save_quiz", names)
+        save_call = next(c for c in calls if c["name"] == "save_quiz")
+        # Invalid question was removed by validation before saving.
+        self.assertEqual(len(save_call["args"]["questions"]), 2)
+        # Write requires explicit user confirmation (existing EduNova flow).
+        self.assertTrue(payload["actions"], "expected a pending confirmation action")
+        action = payload["actions"][0]
+        self.assertTrue(action["data"]["requiresConfirmation"])
+        self.assertEqual(action["data"]["confirmationToken"], "token-123")
+        self.assertIn("Confirm", payload["message"])
+        # The JSON-mode LLM was given the quiz schema (grammar-constrained locally).
+        self.assertIsNotNone(llm.calls[0]["json_schema"])
+
+    async def test_study_plan_creation_returns_pending_action(self):
+        plan_payload = {
+            "title": "Physics Exam Plan",
+            "subject": "Physics",
+            "schedule": [
+                {"day": "Day 1", "time": "17:00", "subject": "Physics", "topic": "Thermo", "task": "Review notes"},
+                {"day": "Day 2", "time": "17:00", "subject": "Physics", "topic": "Optics", "task": "Practice problems"},
+            ],
+        }
+        llm = _ScriptedLLM(payload=plan_payload)
+        payload, calls, _, decision = await self._run("Create a study plan for my physics exam", llm=llm)
+        self.assertEqual(decision.intent, "action_study_plan")
+        self.assertTrue(any(c["name"] == "create_study_plan" for c in calls))
+        self.assertTrue(payload["actions"][0]["data"]["requiresConfirmation"])
+
+    async def test_model_loading_error_propagates_without_faking(self):
+        failing = LLMResponseError(
+            "The self-hosted EduNova model is still starting",
+            status_code=503,
+            error_type="model_loading",
+        )
+        llm = _ScriptedLLM(fail=failing)
+        with self.assertRaises(LLMResponseError) as ctx:
+            await self._run("What is machine learning?", llm=llm)
+        self.assertEqual(ctx.exception.error_type, "model_loading")
+
+
+class QuizPlanValidationTests(unittest.TestCase):
+    def test_quiz_requires_questions(self):
+        with self.assertRaises(ValueError):
+            validate_quiz_payload({"title": "x", "questions": []})
+        with self.assertRaises(ValueError):
+            validate_quiz_payload({"questions": "not-a-list"})
+
+    def test_quiz_sanitizes_fields(self):
+        quiz = validate_quiz_payload(
+            {"title": "  " + "T" * 300, "questions": [
+                {"question": "Q?", "options": ["a", "b"], "answerIndex": 1},
+                {"question": "Bad", "options": [], "answerIndex": 0},
+                {"question": "BadIdx", "options": ["a", "b"], "answerIndex": 7},
+            ]},
+            fallback_subject="Physics",
+        )
+        self.assertEqual(len(quiz["title"]), 200)
+        self.assertEqual(quiz["subject"], "Physics")
+        self.assertEqual(len(quiz["questions"]), 1)
+        self.assertEqual(quiz["questions"][0]["answerIndex"], 1)
+
+    def test_plan_requires_schedule(self):
+        with self.assertRaises(ValueError):
+            validate_plan_payload({"title": "Plan", "schedule": []})
+
+    def test_plan_normalizes_items(self):
+        plan = validate_plan_payload({"title": "P", "schedule": [{"topic": "Optics"}]})
+        self.assertEqual(plan["schedule"][0]["day"], "Day 1")
+        self.assertEqual(plan["schedule"][0]["topic"], "Optics")
+
+
+# ---------------------------------------------------------------------------
+# Fake llama_cpp module for LocalModelManager / LocalLlamaLLM unit tests.
+# ---------------------------------------------------------------------------
+
+class _FakeGrammar:
+    captured: list[str] = []
+
+    @staticmethod
+    def from_json_schema(schema_str: str):
+        _FakeGrammar.captured.append(schema_str)
+        return {"grammar_for": schema_str[:60]}
+
+
+class _FakeLlama:
+    instances: list["_FakeLlama"] = []
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        self.calls: list[dict] = []
+        _FakeLlama.instances.append(self)
+
+    def create_completion(self, prompt=None, max_tokens=None, grammar=None, stop=None, **kwargs):
+        self.calls.append({"prompt": prompt, "max_tokens": max_tokens, "grammar": grammar, "stop": stop})
+        return {
+            "choices": [
+                {"text": '{"action": "final", "answer": "Local answer.", "status": "done", "stateUpdate": {"confidence": "HIGH"}}'}
+            ]
+        }
+
+
+def _install_fake_llama_cpp():
+    module = types.ModuleType("llama_cpp")
+    module.Llama = _FakeLlama
+    module.LlamaGrammar = _FakeGrammar
+    return patch.dict(sys.modules, {"llama_cpp": module, "llama_cpp.llama": module})
+
+
+class LocalModelManagerTests(unittest.IsolatedAsyncioTestCase):
+    def _settings_with_dir(self, tmp: str, **kw) -> Settings:
+        kw.setdefault("local_model_dir", tmp)
+        kw.setdefault("local_model_file", "fake-model.gguf")
+        kw.setdefault("local_chat_wait_seconds", 2)
+        return local_settings(**kw)
+
+    def _make_model_bytes(self, tmp: str, name: str = "fake-model.gguf") -> Path:
+        path = Path(tmp) / name
+        path.write_bytes(b"gguf" + b"\x00" * (11 * 1024 * 1024))
+        return path
+
+    async def test_ready_after_cache_hit_and_load(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = self._settings_with_dir(tmp)
+            self._make_model_bytes(tmp)
+            manager = LocalModelManager(settings)
+            with _install_fake_llama_cpp():
+                manager.ensure_loading()
+                await manager.wait_ready(timeout=30)
+            self.assertEqual(manager.state, "ready")
+            self.assertTrue(manager.snapshot()["ready"])
+            self.assertEqual(manager.snapshot()["chatFormat"], "chatml")
+            llama = _FakeLlama.instances[-1]
+            self.assertEqual(llama.kwargs["n_ctx"], settings.local_model_ctx_size)
+            self.assertEqual(llama.kwargs["n_gpu_layers"], 0)
+
+    async def test_complete_json_constrains_to_schema_and_uses_chatml(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = self._settings_with_dir(tmp)
+            self._make_model_bytes(tmp)
+            manager = LocalModelManager(settings)
+            llm = LocalLlamaLLM(settings, manager)
+            _FakeGrammar.captured.clear()
+            with _install_fake_llama_cpp():
+                await llm.probe()
+                result = await llm.complete_json(system_prompt="sys", user_prompt="What is ML?")
+            self.assertEqual(result["action"], "final")
+            llama = _FakeLlama.instances[-1]
+            call = llama.calls[-1]
+            self.assertIn("<|im_start|>", call["prompt"])
+            self.assertIn("What is ML?", call["prompt"])
+            self.assertIsNotNone(call["grammar"], "decision schema must force valid JSON")
+            self.assertTrue(_FakeGrammar.captured)
+
+    async def test_wait_ready_timeout_maps_to_model_loading(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = self._settings_with_dir(tmp)
+            # No file → manager would try to download; simulate a slow pipeline.
+            manager = LocalModelManager(settings)
+
+            async def slow_pipeline():
+                manager.state = "downloading"
+                await asyncio.sleep(30)
+
+            with patch.object(manager, "_load_pipeline", slow_pipeline):
+                manager.ensure_loading()
+                with self.assertRaises(LLMResponseError) as ctx:
+                    await manager.wait_ready(timeout=0.2)
+            self.assertEqual(ctx.exception.status_code, 503)
+            self.assertEqual(ctx.exception.error_type, "model_loading")
+
+    async def test_failed_load_maps_to_model_unavailable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = self._settings_with_dir(tmp)
+            manager = LocalModelManager(settings)
+
+            async def failing_download():
+                raise RuntimeError("model download failed: connection refused")
+
+            # Patch a pipeline stage (not the pipeline) so the real error
+            # handling that sets state/error_detail actually runs.
+            with patch.object(manager, "_download_if_needed", failing_download):
+                manager.ensure_loading()
+                with self.assertRaises(LLMResponseError) as ctx:
+                    await manager.wait_ready(timeout=5)
+            self.assertEqual(ctx.exception.error_type, "model_unavailable")
+            self.assertEqual(manager.state, "error")
+            self.assertEqual(manager.error_detail, "download_failed")
+            # And the honest state persists for /health reporting.
+            with self.assertRaises(LLMResponseError):
+                await manager.wait_ready(timeout=0.1)
+
+    async def test_min_size_guard_rejects_tiny_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = self._settings_with_dir(tmp)
+            tiny = Path(tmp) / "fake-model.gguf"
+            tiny.write_bytes(b"not a real model")  # < 10MB: cache must be rejected
+            manager = LocalModelManager(settings)
+
+            # Download itself is skipped entirely; the pipeline must treat the
+            # undersized cache as missing rather than loading garbage.
+            self.assertFalse(tiny.stat().st_size >= 11 * 1024 * 1024)
+            self.assertEqual(str(manager.model_path), str(tiny))
+
+    async def test_filename_sanitization(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = self._settings_with_dir(tmp, local_model_file='../../etc/evil";rm -rf.gguf')
+            manager = LocalModelManager(settings)
+            self.assertTrue(manager.model_path.name.endswith(".gguf"))
+            self.assertNotIn("/", manager.model_path.name)
+            self.assertNotIn("..", manager.model_path.name)
+
+    async def test_generate_never_fakes_when_not_ready(self):
+        settings = local_settings(local_chat_wait_seconds=1)
+        manager = LocalModelManager(settings)
+        manager.ensure_loading = lambda: None  # type: ignore[assignment]
+        llm = LocalLlamaLLM(settings, manager)
+        with self.assertRaises(LLMResponseError) as ctx:
+            await llm.complete_text(system_prompt="s", user_prompt="hello")
+        self.assertIn(ctx.exception.error_type, {"model_loading", "model_unavailable"})
+
+
+class CompactPlannerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_compact_mode_shrinks_system_prompt(self):
+        from agent.engine import AgentEngine
+
+        registry = ToolRegistry(allowed_permissions={"UTILITY"})
+        from agent.tools import build_utility_tools
+
+        for defn in build_utility_tools():
+            registry.register(defn)
+
+        class CaptureLLM:
+            is_local = True
+
+            def __init__(self):
+                self.system_prompts: list[str] = []
+
+            async def complete_json(self, *, system_prompt, user_prompt, **kwargs):
+                self.system_prompts.append(system_prompt)
+                return {"action": "final", "answer": "42", "stateUpdate": {"confidence": "HIGH"}}
+
+        llm = CaptureLLM()
+        engine = AgentEngine(local_settings(), llm, registry)
+        result = await engine.run(
+            goal="what is 21*2", conversation=[], conversation_id="conv-compact-1"
+        )
+        self.assertTrue(result.success)
+        prompt = llm.system_prompts[0]
+        self.assertIn("Tools:", prompt)
+        self.assertIn("calculator", prompt)
+        self.assertNotIn("UNIFIED DATA-AWARE autonomous", prompt, "local model gets the compact prompt")
+        self.assertLess(len(prompt), 4000)
+
+
+if __name__ == "__main__":
+    unittest.main()

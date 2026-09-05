@@ -100,11 +100,14 @@ class ConfigAliasTests(unittest.TestCase):
         prev_key = os.getenv("LLM_API_KEY")
         prev_model = os.getenv("LLM_MODEL")
         prev_base = os.getenv("LLM_BASE_URL")
+        prev_provider = os.getenv("LLM_PROVIDER")
         try:
             if "LLM_API_KEY" in os.environ:
                 del os.environ["LLM_API_KEY"]
             if "OPENAI_API_KEY" in os.environ:
                 del os.environ["OPENAI_API_KEY"]
+            # Legacy external provider selected explicitly: without a key it is incomplete.
+            os.environ["LLM_PROVIDER"] = "openai"
             os.environ["LLM_MODEL"] = "gpt-4.1-mini"
             os.environ["LLM_BASE_URL"] = "https://api.openai.com/v1"
             settings = load_settings()
@@ -117,7 +120,7 @@ class ConfigAliasTests(unittest.TestCase):
             diag_str = json.dumps(diag)
             self.assertNotIn("sk-", diag_str)
         finally:
-            for k, v in [("LLM_API_KEY", prev_key), ("LLM_MODEL", prev_model), ("LLM_BASE_URL", prev_base)]:
+            for k, v in [("LLM_API_KEY", prev_key), ("LLM_MODEL", prev_model), ("LLM_BASE_URL", prev_base), ("LLM_PROVIDER", prev_provider)]:
                 if v is not None:
                     os.environ[k] = v
                 elif k in os.environ:
