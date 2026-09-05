@@ -232,3 +232,44 @@ the model — run it before changing `LOCAL_MODEL_FILE`.
   ready → chat → follow-up with memory → restart hits the cache without
   re-downloading); tool path (schedule, performance, quiz, web-research intents
   all routed, backend receives `X-User-Id` from the trusted header only).
+
+---
+
+# Addendum — AI outage fix (2026-09-05, PR #41, merged to main)
+
+**Symptom:** chat answered *"EduNova AI's self-hosted model is not available on
+the server"*, frontend showed "Ready to help", console spammed
+`WebSocket … failed: Page entered Back-Forward Cache`.
+
+**Root cause (confirmed live):** `edunova-ai` still ran the stale env override
+`LOCAL_MODEL_FILE=Qwen2.5-0.5B-Instruct-IQ3_XXS.gguf` (never published in the
+HF repo) → permanent preflight 404. Stale frontend bundle predated the
+real-status polling; module-level Socket.IO connection caused the bfcache
+errors. Stale Groq `LLM_*` vars remained in the dashboard (ignored, but unclean).
+
+**Fix shipped (commit `595a580`, PR #41):**
+- `ai_engine`: self-healing verified-catalogue fallback for provably-invalid
+  `LOCAL_MODEL_FILE` overrides (404/410), surfaced via
+  `configOverrideRejected`; `STALE_EXTERNAL_LLM_ENV` warning; health reports
+  the effective model id. 8 new regression tests (98/98 with real llama.cpp).
+- `frontend`: shared lazy reference-counted Socket.IO lifecycle
+  (`src/api/socket.js`) with bfcache `pagehide`/`pageshow` handling; module +
+  duplicate `io()` connections removed; AI remains HTTP/SSE-only.
+
+**Production verification (post-merge, Render autodeploy):**
+`GET /health` on `edunova-ai-o2vy.onrender.com` →
+`providerState: ready, modelReady: true, modelId: …Q4_K_M.gguf,
+fileSizeBytes: 397808192, integrityPinned: true, inferenceAvailable: true,
+runtimeVersion: 0.3.35, configOverrideRejected: true`.
+
+**Local E2E (real llama.cpp 0.3.35):** service boot → download → verify →
+load → `LOCAL_MODEL_READY`; `POST /api/ai/chat {"what is ml"}` → HTTP 200
+model-generated reply; follow-up "Explain it like I'm 10" in same conversation
+→ HTTP 200 (`follow-up uses conversation context`); restart →
+`LOCAL_MODEL_CACHE_HIT (no download)`; token gates → 401/200 as designed;
+broken-model query → honest `503 LLM_MODEL_UNAVAILABLE`.
+
+**Still on the operator:** delete the stale `LOCAL_MODEL_FILE` /
+`LOCAL_MODEL_CTX=3072` / Groq `LLM_*` vars from the Render dashboard (exact
+table in DEPLOYMENT.md runbook) and redeploy the Cloudflare frontend so the
+bundle ships the status polling + socket fix.
