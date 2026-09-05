@@ -80,7 +80,8 @@ Set these in **Render → your API service → Environment**:
 | `CORS_ORIGIN` | ✅ | `https://edunova-x.ranjitacharya13.workers.dev` |
 | `AI_ENGINE_URL` | for AI chat | Public HTTPS URL of the AI service, no trailing slash (`https://edunova-ai-o2vy.onrender.com`) |
 | `AI_INTERNAL_TOKEN` | recommended | Random shared secret; use the exact same value on the AI service |
-| `AGENT_REQUEST_TIMEOUT` | optional | Agent proxy timeout in ms (default `210000`) |
+| `AGENT_REQUEST_TIMEOUT` | optional | Network backstop in ms (default `600000`; never controls answer length) |
+| `AGENT_STREAM_IDLE_TIMEOUT_MS` | optional | Stream-stall watchdog reset by every token/keep-alive (default `90000`; not an overall timer) |
 | `AI_RATE_LIMIT_MAX_REQUESTS` | optional | Authenticated requests per user/window (default `20`) |
 | `AI_UPSTREAM_RETRY_DELAYS_MS` | optional | Cold-start retry backoff before failing a request (default `3000,8000,15000,30000`) |
 | `AI_UPSTREAM_RETRY_WINDOW_MS` | optional | Total retry budget for waking the AI service in ms (default `90000`) |
@@ -132,7 +133,7 @@ Required agent environment (self-hosted default):
 | `LOCAL_MODEL_CHAT_FORMAT` | `chatml` (Qwen), also `llama-3`/`mistral`/`gemma` |
 | `LOCAL_PRELOAD_MODEL` | `true` = download+load in background at boot |
 | `LOCAL_CHAT_WAIT_TIMEOUT` | Seconds chat waits for warmup before `503 LLM_MODEL_LOADING`, default `25` |
-| `LLM_MAX_OUTPUT_TOKENS` / `LLM_TEMPERATURE` | Default `900` / `0.2` |
+| `LLM_MAX_OUTPUT_TOKENS` / `LLM_TEMPERATURE` | Default `2048` / `0.2`; routing adaptively uses 128–1800 tokens and never shrinks output based on elapsed time |
 | `APP_BACKEND_URL` | Public HTTPS URL of `edunova-api` (AI service only) |
 | `WEB_SEARCH_API_KEY` | Brave, Tavily, or Serper credential (web data source) |
 | `WEB_SEARCH_PROVIDER` | `brave`, `tavily`, or `serper` |

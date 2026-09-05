@@ -35,7 +35,6 @@ try:
 except ImportError:
     pass
 
-from agent import deadline as request_deadline
 from agent.engine import AgentEngine
 from agent.llm import LLMConfigurationError, LLMResponseError
 from agent.local_llm import create_llm, runtime_available, runtime_version
@@ -663,15 +662,14 @@ def _safe_error(exc: Exception) -> tuple[int, str, str]:
         return (
             504,
             "AI_REQUEST_DEADLINE_EXCEEDED",
-            "EduNova AI could not finish this within its response time budget. "
-            "Please try a shorter or more specific question.",
+            "EduNova AI is temporarily unavailable. Please try again.",
         )
     if isinstance(exc, asyncio.TimeoutError):
         _set_provider_state("provider_unavailable", 504, "timeout")
         return (
             504,
             "AI_REQUEST_DEADLINE_EXCEEDED",
-            "EduNova AI took too long to respond. Please try again.",
+            "EduNova AI is temporarily unavailable. Please try again.",
         )
     if isinstance(exc, LLMConfigurationError):
         _set_provider_state("missing_config", None, settings.llm_configuration_error or "missing_config")
@@ -728,7 +726,7 @@ def _safe_error(exc: Exception) -> tuple[int, str, str]:
             return 429, "LLM_RATE_LIMITED", "EduNova AI is rate limited. Please try again shortly."
         if status in (408, 504) or error_type == "timeout":
             _set_provider_state("provider_unavailable", status or 504, error_type)
-            return 504, "LLM_TIMEOUT", "EduNova AI took too long to respond. Please try again."
+            return 504, "LLM_TIMEOUT", "EduNova AI is temporarily unavailable. Please try again."
         if status == 400:
             _set_provider_state("provider_unavailable", status, error_type)
             return 502, "LLM_INVALID_REQUEST", "The AI provider rejected the request."
@@ -839,15 +837,7 @@ async def _run_non_stream(request: ChatRequest) -> dict[str, Any]:
     logger.info("[EduNova AI] MODEL_READY elapsed_ms=%s", _ms(started))
     conversation = conversations.get_or_create(request.conversation_id, _owner(request))
 
-    # Bound the work by whatever is LEFT of the coordinated request budget
-    # rather than by an independent 180s timer. asyncio.wait_for is only the
-    # backstop here; the inner stages stop cooperatively before it fires.
-    left = request_deadline.remaining()
-    hard_timeout = left if left is not None else settings.max_agent_runtime_seconds
-    result = await asyncio.wait_for(
-        _execute(request, conversation, None),
-        timeout=max(1.0, hard_timeout),
-    )
+    result = await _execute(request, conversation, None)
     conversations.append_turn(conversation, request.message.strip(), result.get("message", ""))
     _set_provider_state("ready" if not settings.is_local_llm else "model_ready", 200, None)
     logger.info("[EduNova AI] RESPONSE_SENT total_ms=%s", _ms(started))
@@ -855,14 +845,6 @@ async def _run_non_stream(request: ChatRequest) -> dict[str, Any]:
 
 
 async def _stream(request: ChatRequest):
-    # Re-assert the budget inside the generator. An async generator body is
-    # driven by whichever task iterates it (Starlette's response task), not by
-    # the endpoint coroutine that created it, so the ContextVar set in the
-    # endpoint is not guaranteed to be visible here. Setting it again makes the
-    # deadline unconditionally correct for the runner task created below, which
-    # copies THIS context.
-    if request_deadline.remaining() is None:
-        request_deadline.set_deadline(settings.request_budget_seconds)
     try:
         # Use keep-alive polling instead of the silent blocking gate.
         # This prevents Render/CDN proxies from closing the idle connection
@@ -892,12 +874,7 @@ async def _stream(request: ChatRequest):
 
     async def runner() -> None:
         try:
-            left = request_deadline.remaining()
-            hard_timeout = left if left is not None else settings.max_agent_runtime_seconds
-            result = await asyncio.wait_for(
-                _execute(request, conversation, event_callback),
-                timeout=max(1.0, hard_timeout),
-            )
+            result = await _execute(request, conversation, event_callback)
             conversations.append_turn(conversation, request.message.strip(), result.get("message", ""))
             _set_provider_state("ready" if not settings.is_local_llm else "model_ready", 200, None)
             await queue.put({"type": "answer", **result})
@@ -960,14 +937,9 @@ async def chat(
         raise HTTPException(status_code=422, detail="message cannot be blank")
     payload.message = clean_message
 
-    # ---- ONE coordinated deadline for everything downstream (PART 13) ------
-    # Set once, here, at the single entry point. It propagates via ContextVar
-    # into the router, the tools, the web search and — because ContextVars are
-    # copied into asyncio.to_thread workers — into the llama.cpp decode loop
-    # itself. No layer below this creates an independent timeout, so the
-    # budgets can no longer stack into minutes.
-    request_deadline.set_deadline(settings.request_budget_seconds)
-    logger.info("[EduNova AI] REQUEST_BUDGET seconds=%s", settings.request_budget_seconds)
+    # Response time is a performance metric, not a generation limit. The
+    # self-hosted model runs to EOS (or its adaptive token cap) while SSE
+    # keep-alives and real token events keep the connection active.
 
     wants_stream = payload.stream or "text/event-stream" in request.headers.get("accept", "")
     if wants_stream:
@@ -995,7 +967,6 @@ async def legacy_query(
 ):
     _authorize_internal_request(x_ai_internal_token)
     payload.stream = False
-    request_deadline.set_deadline(settings.request_budget_seconds)
     try:
         return await _run_non_stream(payload)
     except Exception as exc:

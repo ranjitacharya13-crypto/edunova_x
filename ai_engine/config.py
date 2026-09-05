@@ -255,7 +255,7 @@ class Settings:
     llm_model: str = "gpt-4.1-mini"  # legacy/external providers only
     llm_base_url: str = "https://api.openai.com/v1"
     llm_timeout_seconds: int = 60
-    llm_max_output_tokens: int = 900
+    llm_max_output_tokens: int = 2048
     llm_temperature: float = 0.2
     llm_json_mode: bool = True
 
@@ -294,12 +294,6 @@ class Settings:
     max_agent_iterations: int = 5
     max_tool_calls: int = 8
     max_agent_runtime_seconds: int = 180
-    # ONE coordinated end-to-end budget for a normal chat request (PART 13).
-    # Every downstream stage — model warmup wait, tool execution, web search
-    # and token generation — sizes itself against what is LEFT of this budget
-    # instead of owning an independent timeout. max_agent_runtime_seconds
-    # remains the hard backstop for the multi-step autonomous loop only.
-    request_budget_seconds: int = 20
     agent_max_context_chars: int = 24_000
     conversation_max_turns: int = 12
     conversation_ttl_seconds: int = 86_400
@@ -477,7 +471,6 @@ class Settings:
             "llm_base_url_has_double_v1": base_url_has_double_v1,
             "llm_base_url_is_localhost": base_url_is_localhost,
             "llm_timeout_seconds": self.llm_timeout_seconds,
-            "request_budget_seconds": self.request_budget_seconds,
             "llm_max_output_tokens": self.llm_max_output_tokens,
             "llm_temperature": self.llm_temperature,
             "llm_json_mode": self.llm_json_mode,
@@ -531,7 +524,7 @@ def load_settings() -> Settings:
     # window (roughly 3 chars/token) alongside the system prompt and the output
     # budget, otherwise every rich turn hits the truncation guard.
     max_context = _integer("AGENT_MAX_CONTEXT_CHARS", 12_000 if is_local else 90_000, 4_000, 250_000)
-    max_output = _integer("LLM_MAX_OUTPUT_TOKENS", 900 if is_local else 3000, 128, 12_000)
+    max_output = _integer("LLM_MAX_OUTPUT_TOKENS", 2048 if is_local else 3000, 128, 12_000)
 
     app_backend_url = _first_env(
         "APP_BACKEND_URL", "EXPRESS_URL", "SERVER_URL", default="http://127.0.0.1:4000"
@@ -571,7 +564,6 @@ def load_settings() -> Settings:
         max_agent_iterations=max_iterations,
         max_tool_calls=max_tools,
         max_agent_runtime_seconds=_integer("MAX_AGENT_RUNTIME_SECONDS", 180, 30, 900),
-        request_budget_seconds=_integer("AI_REQUEST_BUDGET_SECONDS", 20, 5, 120),
         agent_max_context_chars=max_context,
         conversation_max_turns=_integer("CONVERSATION_MAX_TURNS", 12, 2, 30),
         conversation_ttl_seconds=_integer("CONVERSATION_TTL_SECONDS", 86_400, 300, 604_800),

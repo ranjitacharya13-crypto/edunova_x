@@ -17,6 +17,7 @@ export default function AIChatAssistant({ feature = "ai" }) {
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
   const [agentStatus, setAgentStatus] = useState("");
+  const [streamingText, setStreamingText] = useState("");
   const [error, setError] = useState("");
   const [result, setResult] = useState(null);
   const conversationIdRef = useRef(null);
@@ -29,7 +30,8 @@ export default function AIChatAssistant({ feature = "ai" }) {
     if (!cleanMessage || loading) return;
 
     setLoading(true);
-    setAgentStatus("Analyzing request & querying relevant sources...");
+    setAgentStatus("Thinking...");
+    setStreamingText("");
     setError("");
     setResult(null);
 
@@ -39,7 +41,10 @@ export default function AIChatAssistant({ feature = "ai" }) {
         conversationId: conversationIdRef.current,
         applicationContext: { route: window.location.pathname, feature },
         onEvent: (eventData) => {
-          if (eventData?.type === "status" && eventData?.message) {
+          if (eventData?.type === "token") {
+            setStreamingText(eventData.text || "");
+            setAgentStatus("Generating...");
+          } else if (eventData?.type === "status" && eventData?.message) {
             setAgentStatus(eventData.message);
           }
         },
@@ -61,6 +66,7 @@ export default function AIChatAssistant({ feature = "ai" }) {
     } finally {
       setLoading(false);
       setAgentStatus("");
+      setStreamingText("");
       // A failed/succeeded request is a fresh signal about the model.
       modelStatus.refresh();
     }
@@ -166,13 +172,17 @@ export default function AIChatAssistant({ feature = "ai" }) {
           {loading && (
             <div className="flex items-start gap-3">
               <EduNovaAIAvatar size={36} decorative />
-              <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 dark:border-white/10 dark:bg-white/[0.07]">
-                <div className="flex items-center gap-1.5">
-                  <span className="edunova-ai-typing-dot" />
-                  <span className="edunova-ai-typing-dot [animation-delay:120ms]" />
-                  <span className="edunova-ai-typing-dot [animation-delay:240ms]" />
-                </div>
-                <p className="mt-2 text-xs font-medium text-slate-500 dark:text-slate-300">{agentStatus}</p>
+              <div className="max-w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 dark:border-white/10 dark:bg-white/[0.07]">
+                {streamingText ? (
+                  <p className="whitespace-pre-wrap text-sm leading-6 text-slate-700 dark:text-slate-100">{streamingText}</p>
+                ) : (
+                  <div className="flex items-center gap-1.5">
+                    <span className="edunova-ai-typing-dot" />
+                    <span className="edunova-ai-typing-dot [animation-delay:120ms]" />
+                    <span className="edunova-ai-typing-dot [animation-delay:240ms]" />
+                  </div>
+                )}
+                <p className="mt-2 text-xs font-medium text-slate-500 dark:text-slate-300">{agentStatus || "Generating..."}</p>
               </div>
             </div>
           )}

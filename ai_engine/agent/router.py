@@ -29,11 +29,9 @@ import inspect
 import json
 import logging
 import re
-import time
 from typing import Any
 
 from config import Settings
-from . import deadline as request_deadline
 from .engine import ObservationManager, SourceManager
 from .events import EventCallback, EventEmitter
 from .models import AgentResult, AgentState, Observation
@@ -400,12 +398,16 @@ def _format_web_sources(state: AgentState, budget: int = 2200) -> str:
     return joined
 
 
-_KNOWLEDGE_SYSTEM = """You are EduNova AI, a patient tutor inside the EduNova study app.
+_KNOWLEDGE_SYSTEM = """You are EduNova AI, a capable general-purpose assistant and patient tutor inside the EduNova study app.
 Rules:
-- Answer the student's question directly and accurately at a school/college level.
+- Answer the student's actual question directly, accurately, and completely at the requested level.
 - Use the recent conversation to resolve references like "it", "that", or "simpler".
+- For educational concepts, normally include a definition, a clear explanation, and a concrete example; add key points when useful.
+- For coding requests, provide complete runnable code plus a brief explanation. Never omit required closing syntax or replace code with placeholders.
+- Adapt length to the task: concise for greetings and simple facts, thorough for explanations, reasoning, writing, and code.
+- Do not mention token limits, timers, truncation, or ask the user to continue because of system limits.
 - Do NOT invent the student's personal data (scores, timetable, deadlines). You have no access to it on this path.
-- Keep it clear: a short definition, a simple explanation, and one concrete example. No filler."""
+- If uncertain, state the uncertainty rather than making up facts."""
 
 _DB_SYSTEM = """You are EduNova AI, the student's personal learning assistant.
 You are given EDUNOVA DATABASE FACTS retrieved from the authenticated student's own account.
@@ -452,39 +454,14 @@ async def _run_tools(
     )
     if weekday:
         argument_map["get_timetable"] = {"day": weekday.group(1).title()}
-    # Tools collectively get a SLICE of the remaining budget — never all of it.
-    # Generation still has to happen after this, so a slow MongoDB query or a
-    # stalled web search must degrade into "that data was unavailable" rather
-    # than consuming the time the model needs to actually answer.
-    tools_deadline = None
-    left = request_deadline.remaining()
-    if left is not None:
-        tools_deadline = time.monotonic() + request_deadline.budget_for(0.45, floor=2.0, ceiling=12.0)
+    # External/database calls have per-tool timeouts. These protect against a
+    # genuinely unavailable dependency but do not limit model generation.
 
     for tool_name in tools[:6]:  # fast paths stay cheap by construction
-        if tools_deadline is not None and time.monotonic() >= tools_deadline:
-            # Out of tool time. Record it honestly as a skipped tool so the
-            # synthesis prompt can say the data was unavailable instead of the
-            # model inventing it.
-            logger.warning("FAST_PATH_TOOL_BUDGET_EXHAUSTED skipped=%s", tool_name)
-            observations.append(
-                Observation(
-                    iteration=1,
-                    tool=tool_name,
-                    source_type="database",
-                    observation={"error": "TOOL_TIMEOUT: skipped, request time budget exhausted"},
-                    success=False,
-                    error_code="TOOL_TIMEOUT",
-                )
-            )
-            continue
-
         args = argument_map.get(tool_name, {})
         await events.emit("agent.tool_selected", iteration=1, tool=tool_name)
         await events.emit("agent.tool_started", iteration=1, tool=tool_name)
         per_tool = 10.0
-        if tools_deadline is not None:
-            per_tool = max(1.0, tools_deadline - time.monotonic())
         try:
             observation, record = await asyncio.wait_for(
                 registry.execute(tool_name, args, context=tool_context),
@@ -522,78 +499,31 @@ async def _run_tools(
     return observations
 
 
-# Per-intent time targets (PART 12). These TIGHTEN the request-wide budget —
-# they can never extend it. Each is the response-time target for that class of
-# request, so a greeting is not allowed to spend the same 20 seconds that a
-# multi-source research question legitimately needs.
-_INTENT_TIME_TARGETS: dict[str, float] = {
-    # Simple questions: target 2-8s.
-    "knowledge": 9.0,
-    # EduNova data questions: a tool round-trip plus synthesis, target 8-20s.
-    "schedule_today": 15.0,
-    "schedule_general": 15.0,
-    "subjects": 13.0,
-    "profile": 13.0,
-    "assignments": 15.0,
-    "exams": 15.0,
-    "attendance": 13.0,
-    "progress": 15.0,
-    "performance_analysis": 17.0,
-    "study_history": 15.0,
-    "materials": 15.0,
-    "syllabus": 15.0,
-    "notes_goals": 13.0,
-    "events": 13.0,
-    # Multi-source: the most expensive fast paths, use the full budget.
-    "study_recommendation": 19.0,
-    "web_research": 19.0,
-    "action_create_quiz": 19.0,
-    "action_study_plan": 19.0,
-}
-
-
-def apply_intent_deadline(intent: str) -> None:
-    """Tighten the request deadline to this intent's response-time target."""
-    target = _INTENT_TIME_TARGETS.get(intent)
-    if target is None:
-        return
-    before = request_deadline.remaining()
-    request_deadline.tighten(target)
-    after = request_deadline.remaining()
-    if before is not None and after is not None and after < before - 0.05:
-        logger.info(
-            "[EduNova AI] INTENT_DEADLINE intent=%s target_s=%.1f remaining_s=%.1f",
-            intent, target, after,
-        )
-
-
 def _answer_token_budget(settings: Settings, goal: str, *, base: int) -> int:
-    """Adapt the output length to the question instead of always asking for max.
+    """Choose a quality-oriented output cap from the actual task.
 
-    Generating 640 tokens for "what is ml" wastes seconds the request budget
-    does not have. Short, definitional questions get a short budget; requests
-    that explicitly ask for depth ("explain in detail", "compare", "write code")
-    keep the larger one. The model stops at its own EOS either way — this only
-    caps the worst case.
+    This is a token ceiling, not a timer: llama.cpp normally stops at EOS. The
+    budget is never reduced based on elapsed wall-clock time or measured decode
+    speed. Detailed and coding tasks get enough room to finish valid output.
     """
     text = goal.lower().strip()
     words = len(text.split())
-    wants_depth = bool(
-        re.search(
-            r"\b(in detail|detailed|step[- ]by[- ]step|compare|comparison|write|code|program|"
-            r"implement|essay|elaborate|thoroughly|full|complete|examples?|walk me through|teach me)\b",
-            text,
-        )
-    )
-    if wants_depth:
-        return min(settings.llm_max_output_tokens, base)
     if re.match(r"^(hi|hello|hey|thanks|thank you|ok|okay|yo|good (morning|evening|afternoon))\b", text):
-        return min(settings.llm_max_output_tokens, 96)
-    if words <= 8:
-        # "what is ml", "define recursion" — a definition, an explanation and
-        # one example fits comfortably here.
-        return min(settings.llm_max_output_tokens, 320)
-    return min(settings.llm_max_output_tokens, 448)
+        desired = 128
+    elif re.search(r"\b(code|program|implement|function|class|html|css|javascript|python|java|sql|debug|algorithm)\b", text):
+        desired = 1800
+    elif re.search(
+        r"\b(in detail|detailed|step[- ]by[- ]step|compare|comparison|essay|elaborate|"
+        r"thoroughly|full|complete|multiple examples?|walk me through|teach me|summarize)\b",
+        text,
+    ):
+        desired = 1600
+    elif words <= 10:
+        # Enough for a complete definition, explanation, example and key points.
+        desired = 640
+    else:
+        desired = 1000
+    return min(settings.llm_max_output_tokens, max(base, desired))
 
 
 async def _generate_streaming(
@@ -688,11 +618,6 @@ async def run_fast_path(
         "user_email": user_email,
     }
 
-    # Tighten the request budget to this intent's response-time target before
-    # any work starts, so token budgeting and tool slices are all sized off the
-    # right number rather than the global ceiling.
-    apply_intent_deadline(decision.intent)
-
     await events.emit("agent.started", iteration=0)
     await events.emit("agent.goal_identified", iteration=0)
     await events.emit("agent.planning", iteration=1)
@@ -733,13 +658,9 @@ async def run_fast_path(
         search_observation = state.observations[-1] if state.observations else None
         web_ok = bool(search_observation and search_observation.success and state.sources)
         if not web_ok:
-            detail = ""
-            if search_observation is not None:
-                detail = str(search_observation.observation.get("error", ""))[:160]
             answer = (
-                "I tried to look that up on the web, but web search is unavailable right now"
-                + (f" ({detail})." if detail else ".")
-                + " I can still summarize what I know from my own knowledge if you'd like — just ask, or try again in a moment."
+                "I couldn't verify current information because web search is temporarily unavailable. "
+                "Please try again in a moment."
             )
         else:
             user_prompt = (
@@ -786,11 +707,9 @@ async def run_fast_path(
                 max_output_tokens=min(max(settings.llm_max_output_tokens, 768), 1100),
             )
             quiz = validate_quiz_payload(raw_quiz, fallback_subject=decision.subject or "General")
-        except Exception as exc:
-            answer = (
-                "I gathered your class context but couldn't produce a valid quiz from it this time. "
-                f"Reason: {str(exc)[:120]}. Please try again."
-            )
+        except Exception:
+            logger.exception("QUIZ_GENERATION_FAILED")
+            answer = "EduNova AI is temporarily unavailable. Please try again."
         else:
             await events.emit("agent.tool_started", iteration=2, tool="save_quiz")
             observation, record = await registry.execute(
@@ -846,11 +765,9 @@ async def run_fast_path(
                 max_output_tokens=min(max(settings.llm_max_output_tokens, 700), 1000),
             )
             plan = validate_plan_payload(raw_plan, fallback_subject=decision.subject or "General")
-        except Exception as exc:
-            answer = (
-                "I checked your exams and progress but couldn't generate a valid study plan this time. "
-                f"Reason: {str(exc)[:120]}. Please try again."
-            )
+        except Exception:
+            logger.exception("STUDY_PLAN_GENERATION_FAILED")
+            answer = "EduNova AI is temporarily unavailable. Please try again."
         else:
             await events.emit("agent.tool_started", iteration=2, tool="create_study_plan")
             observation, record = await registry.execute(
