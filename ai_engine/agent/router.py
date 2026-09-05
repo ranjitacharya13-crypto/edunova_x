@@ -115,7 +115,10 @@ _RE_WEAK_STRONG = re.compile(
     re.IGNORECASE,
 )
 _RE_PROGRESS = re.compile(r"\bprogress\b|\bstreak\b|\btrack record\b", re.IGNORECASE)
-_RE_STUDY_HISTORY = re.compile(r"\bstudy (history|sessions?)\b|\b(what|when) did i study\b", re.IGNORECASE)
+_RE_STUDY_HISTORY = re.compile(
+    r"\bstudy (history|sessions?)\b|\b(what|when) did i study\b|\bhow much (did i|have i) stud(y|ied)\b",
+    re.IGNORECASE,
+)
 _RE_STUDY_REC = re.compile(
     r"\bwhat should i study\b|\bwhat (to|shall i) study\b|\bstudy what\b|\bwhat do i study\b"
     r"|\bsuggest\b[\s\S]{0,25}?\bstudy\b|\bplan my (day|studies today)\b|\bhow should i study today\b",

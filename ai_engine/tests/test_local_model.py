@@ -138,6 +138,11 @@ class IntentRouterTests(unittest.TestCase):
         self.assertIn("get_today_schedule", decision.tools)
         self.assertNotIn("web_search", decision.tools)
 
+    def test_study_duration_uses_authenticated_history(self):
+        decision = self.router.classify("How much did I study this week?", [])
+        self.assertEqual(decision.intent, "study_history")
+        self.assertEqual(decision.tools, ("get_study_history",))
+
     def test_weakest_subject_uses_performance_data(self):
         decision = self.router.classify("What is my weakest subject?", [])
         self.assertEqual(decision.intent, "performance_analysis")
