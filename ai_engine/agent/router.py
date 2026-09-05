@@ -23,13 +23,17 @@ user id from the request context, exactly like the full agent loop.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
+import inspect
 import json
 import logging
 import re
+import time
 from typing import Any
 
 from config import Settings
+from . import deadline as request_deadline
 from .engine import ObservationManager, SourceManager
 from .events import EventCallback, EventEmitter
 from .models import AgentResult, AgentState, Observation
@@ -448,11 +452,59 @@ async def _run_tools(
     )
     if weekday:
         argument_map["get_timetable"] = {"day": weekday.group(1).title()}
+    # Tools collectively get a SLICE of the remaining budget — never all of it.
+    # Generation still has to happen after this, so a slow MongoDB query or a
+    # stalled web search must degrade into "that data was unavailable" rather
+    # than consuming the time the model needs to actually answer.
+    tools_deadline = None
+    left = request_deadline.remaining()
+    if left is not None:
+        tools_deadline = time.monotonic() + request_deadline.budget_for(0.45, floor=2.0, ceiling=12.0)
+
     for tool_name in tools[:6]:  # fast paths stay cheap by construction
+        if tools_deadline is not None and time.monotonic() >= tools_deadline:
+            # Out of tool time. Record it honestly as a skipped tool so the
+            # synthesis prompt can say the data was unavailable instead of the
+            # model inventing it.
+            logger.warning("FAST_PATH_TOOL_BUDGET_EXHAUSTED skipped=%s", tool_name)
+            observations.append(
+                Observation(
+                    iteration=1,
+                    tool=tool_name,
+                    source_type="database",
+                    observation={"error": "TOOL_TIMEOUT: skipped, request time budget exhausted"},
+                    success=False,
+                    error_code="TOOL_TIMEOUT",
+                )
+            )
+            continue
+
         args = argument_map.get(tool_name, {})
         await events.emit("agent.tool_selected", iteration=1, tool=tool_name)
         await events.emit("agent.tool_started", iteration=1, tool=tool_name)
-        observation, record = await registry.execute(tool_name, args, context=tool_context)
+        per_tool = 10.0
+        if tools_deadline is not None:
+            per_tool = max(1.0, tools_deadline - time.monotonic())
+        try:
+            observation, record = await asyncio.wait_for(
+                registry.execute(tool_name, args, context=tool_context),
+                timeout=per_tool,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("FAST_PATH_TOOL_TIMEOUT tool=%s after_s=%.1f", tool_name, per_tool)
+            observation = Observation(
+                iteration=1,
+                tool=tool_name,
+                source_type="database",
+                observation={"error": f"TOOL_TIMEOUT: {tool_name} did not respond in time"},
+                success=False,
+                error_code="TOOL_TIMEOUT",
+            )
+            state.tool_call_count += 1
+            ObservationManager.record(state, sources, observation)
+            observations.append(observation)
+            await events.emit("agent.tool_completed", iteration=1, tool=tool_name, success=False)
+            continue
         state.tool_call_count += 1
         state.tool_history.append(record)
         if tool_name.startswith(( "get_", "create_", "save_", "update_", "mark_", "set_")):
@@ -468,6 +520,136 @@ async def _run_tools(
             success=observation.success,
         )
     return observations
+
+
+# Per-intent time targets (PART 12). These TIGHTEN the request-wide budget —
+# they can never extend it. Each is the response-time target for that class of
+# request, so a greeting is not allowed to spend the same 20 seconds that a
+# multi-source research question legitimately needs.
+_INTENT_TIME_TARGETS: dict[str, float] = {
+    # Simple questions: target 2-8s.
+    "knowledge": 9.0,
+    # EduNova data questions: a tool round-trip plus synthesis, target 8-20s.
+    "schedule_today": 15.0,
+    "schedule_general": 15.0,
+    "subjects": 13.0,
+    "profile": 13.0,
+    "assignments": 15.0,
+    "exams": 15.0,
+    "attendance": 13.0,
+    "progress": 15.0,
+    "performance_analysis": 17.0,
+    "study_history": 15.0,
+    "materials": 15.0,
+    "syllabus": 15.0,
+    "notes_goals": 13.0,
+    "events": 13.0,
+    # Multi-source: the most expensive fast paths, use the full budget.
+    "study_recommendation": 19.0,
+    "web_research": 19.0,
+    "action_create_quiz": 19.0,
+    "action_study_plan": 19.0,
+}
+
+
+def apply_intent_deadline(intent: str) -> None:
+    """Tighten the request deadline to this intent's response-time target."""
+    target = _INTENT_TIME_TARGETS.get(intent)
+    if target is None:
+        return
+    before = request_deadline.remaining()
+    request_deadline.tighten(target)
+    after = request_deadline.remaining()
+    if before is not None and after is not None and after < before - 0.05:
+        logger.info(
+            "[EduNova AI] INTENT_DEADLINE intent=%s target_s=%.1f remaining_s=%.1f",
+            intent, target, after,
+        )
+
+
+def _answer_token_budget(settings: Settings, goal: str, *, base: int) -> int:
+    """Adapt the output length to the question instead of always asking for max.
+
+    Generating 640 tokens for "what is ml" wastes seconds the request budget
+    does not have. Short, definitional questions get a short budget; requests
+    that explicitly ask for depth ("explain in detail", "compare", "write code")
+    keep the larger one. The model stops at its own EOS either way — this only
+    caps the worst case.
+    """
+    text = goal.lower().strip()
+    words = len(text.split())
+    wants_depth = bool(
+        re.search(
+            r"\b(in detail|detailed|step[- ]by[- ]step|compare|comparison|write|code|program|"
+            r"implement|essay|elaborate|thoroughly|full|complete|examples?|walk me through|teach me)\b",
+            text,
+        )
+    )
+    if wants_depth:
+        return min(settings.llm_max_output_tokens, base)
+    if re.match(r"^(hi|hello|hey|thanks|thank you|ok|okay|yo|good (morning|evening|afternoon))\b", text):
+        return min(settings.llm_max_output_tokens, 96)
+    if words <= 8:
+        # "what is ml", "define recursion" — a definition, an explanation and
+        # one example fits comfortably here.
+        return min(settings.llm_max_output_tokens, 320)
+    return min(settings.llm_max_output_tokens, 448)
+
+
+async def _generate_streaming(
+    *,
+    llm: Any,
+    events: EventEmitter,
+    system_prompt: str,
+    user_prompt: str,
+    max_output_tokens: int,
+) -> str:
+    """Generate text and emit REAL tokens as llama.cpp decodes them.
+
+    The token callback fires on the llama.cpp worker thread, so it cannot await
+    the event emitter directly. It pushes pieces onto a queue that this
+    coroutine drains on the event loop, which keeps the SSE stream flowing
+    during generation. This is genuine streaming: the student sees the answer
+    appear token by token, and the connection carries traffic throughout
+    inference so no proxy can consider it idle.
+
+    If the LLM implementation does not support token callbacks (the external
+    provider used only for emergency rollback), this degrades to a normal
+    single call rather than faking a stream.
+    """
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[str | None] = asyncio.Queue()
+
+    def on_token(piece: str) -> None:
+        # Called from the generation thread — hand off to the loop thread-safely.
+        loop.call_soon_threadsafe(queue.put_nowait, piece)
+
+    supports_streaming = "on_token" in inspect.signature(llm.complete_text).parameters
+    kwargs: dict[str, Any] = {
+        "system_prompt": system_prompt,
+        "user_prompt": user_prompt,
+        "max_output_tokens": max_output_tokens,
+    }
+    if supports_streaming:
+        kwargs["on_token"] = on_token
+
+    task = asyncio.create_task(llm.complete_text(**kwargs))
+    if not supports_streaming:
+        return await task
+
+    task.add_done_callback(lambda _: loop.call_soon_threadsafe(queue.put_nowait, None))
+
+    emitted = 0
+    while True:
+        piece = await queue.get()
+        if piece is None:
+            break
+        emitted += 1
+        await events.emit_token(piece)
+
+    text = await task  # re-raises any generation error, unchanged
+    logger.info("STREAMED_TOKENS pieces=%s chars=%s", emitted, len(text))
+    return text
 
 
 async def run_fast_path(
@@ -506,6 +688,11 @@ async def run_fast_path(
         "user_email": user_email,
     }
 
+    # Tighten the request budget to this intent's response-time target before
+    # any work starts, so token budgeting and tool slices are all sized off the
+    # right number rather than the global ceiling.
+    apply_intent_deadline(decision.intent)
+
     await events.emit("agent.started", iteration=0)
     await events.emit("agent.goal_identified", iteration=0)
     await events.emit("agent.planning", iteration=1)
@@ -514,15 +701,21 @@ async def run_fast_path(
     answer = ""
 
     if decision.intent == "knowledge":
+        # THE fast path: zero tools, zero database calls, zero web search,
+        # exactly ONE local-model inference. "what is ml" must reach the model
+        # this way — nothing else runs.
         convo = _format_recent_conversation(conversation)
         user_prompt = (
             (f"Recent conversation (use it to resolve any references in the question):\n{convo}\n\n" if convo else "")
             + f"Student question: {goal}"
         )
-        answer = await llm.complete_text(
+        await events.emit("agent.generating", iteration=1)
+        answer = await _generate_streaming(
+            llm=llm,
+            events=events,
             system_prompt=_KNOWLEDGE_SYSTEM,
             user_prompt=user_prompt,
-            max_output_tokens=min(settings.llm_max_output_tokens, 640),
+            max_output_tokens=_answer_token_budget(settings, goal, base=640),
         )
         state.used_web = False
 
@@ -553,10 +746,13 @@ async def run_fast_path(
                 f"Question: {goal}\n\nCURRENT WEB RESULTS (cite as [S#]):\n{_format_web_sources(state)}\n\n"
                 "Write a clear, student-friendly answer about the latest developments, citing sources."
             )
-            answer = await llm.complete_text(
+            await events.emit("agent.generating", iteration=1)
+            answer = await _generate_streaming(
+                llm=llm,
+                events=events,
                 system_prompt=_WEB_SYSTEM,
                 user_prompt=user_prompt,
-                max_output_tokens=min(settings.llm_max_output_tokens, 640),
+                max_output_tokens=_answer_token_budget(settings, goal, base=560),
             )
 
     elif decision.intent == "action_create_quiz":
@@ -699,10 +895,13 @@ async def run_fast_path(
             + (f"Recent conversation:\n{convo}\n\n" if convo else "")
             + "Now answer the question using only these facts."
         )
-        answer = await llm.complete_text(
+        await events.emit("agent.generating", iteration=1)
+        answer = await _generate_streaming(
+            llm=llm,
+            events=events,
             system_prompt=_DB_SYSTEM,
             user_prompt=user_prompt,
-            max_output_tokens=min(settings.llm_max_output_tokens, 700),
+            max_output_tokens=_answer_token_budget(settings, goal, base=600),
         )
 
     state.final_answer = answer.strip()

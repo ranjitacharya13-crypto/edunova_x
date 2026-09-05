@@ -55,6 +55,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from config import Settings, catalogue_default_file_for_repo, known_model_entry
+from . import deadline as request_deadline
 from .llm import LLMConfigurationError, LLMResponseError, parse_json_object
 
 logger = logging.getLogger("edunova.llm.local")
@@ -63,6 +64,18 @@ _USER_AGENT = "EduNovaLocalModel/1.0 (+self-hosted)"
 _FILENAME_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 _MIN_MODEL_BYTES = 10 * 1024 * 1024  # default floor; see Settings.local_model_min_bytes
 _GGUF_MAGIC = b"GGUF"
+
+# Wall-clock kept in reserve when generation stops on the request deadline, so
+# the answer can still be assembled, serialized and flushed to the browser
+# before the outer HTTP budget expires.
+_GENERATION_FLUSH_MARGIN_SECONDS = 1.5
+
+# Observed decode throughput, used only to *size* the token budget up front.
+# Sizing max_tokens to the time actually available means the common case ends
+# on the model's own stop token (a complete answer) rather than on the deadline
+# guard (a truncated one). It is seeded conservatively and then continuously
+# corrected with the real measured rate of this instance.
+_INITIAL_TOKENS_PER_SECOND = 12.0
 
 # HTTP statuses that mean "this will never work" — retrying is pointless and
 # only delays the operator seeing the real configuration problem.
@@ -264,6 +277,10 @@ class LocalModelManager:
         # second llama.cpp call while the first is still running — llama.cpp is
         # NOT thread-safe and this causes deadlocks or crashes.
         self._llama_thread_lock = threading.Lock()
+        # Measured decode throughput (tokens/second) for THIS instance, used to
+        # size token budgets against the remaining request time. Learned at
+        # runtime because it depends on the CPU Render actually gave us.
+        self._tokens_per_second: float | None = None
 
     # ------------------------------------------------------------- paths --
     @property
@@ -1094,11 +1111,21 @@ class LocalModelManager:
         temperature: float | None = None,
         json_schema: dict[str, Any] | None = None,
         allow_empty: bool = False,
+        on_token: Any = None,
     ) -> str:
         """Single-flight generation; returns raw text. Never fabricates output."""
-        await self.wait_ready(self.settings.local_chat_wait_seconds)
+        # Waiting for the model must never consume the whole request budget:
+        # cap the warmup wait at what is actually left, so a cold model fails
+        # fast with an honest 503 instead of silently burning the deadline.
+        wait_budget = self.settings.local_chat_wait_seconds
+        left = request_deadline.remaining()
+        if left is not None:
+            wait_budget = max(1, min(wait_budget, int(left - _GENERATION_FLUSH_MARGIN_SECONDS)))
+        await self.wait_ready(wait_budget)
+
         temp = self.settings.llm_temperature if temperature is None else temperature
         bounded_max = max(32, min(int(max_tokens), self.settings.llm_max_output_tokens))
+        bounded_max = self._budgeted_max_tokens(bounded_max, json_schema=json_schema)
 
         async with self._gen_lock:
             started = time.monotonic()
@@ -1118,10 +1145,20 @@ class LocalModelManager:
                         temp if attempt == 1 else max(temp, 0.4),
                         json_schema,
                         allow_empty,
+                        on_token,
                     )
                     break
                 except LLMResponseError as exc:
+                    # A deadline stop must never be retried: a retry would take
+                    # at least as long as the attempt that just ran out of time.
+                    if exc.error_type == "deadline_exceeded":
+                        raise
                     if exc.error_type == "invalid_response" and attempt < attempts:
+                        # Only retry if there is realistically time for another
+                        # full generation; otherwise surface the failure now.
+                        left = request_deadline.remaining()
+                        if left is not None and left < 3.0:
+                            raise
                         logger.info("LOCAL_MODEL_EMPTY_RETRY attempt=%s", attempt)
                         continue
                     raise
@@ -1137,6 +1174,48 @@ class LocalModelManager:
             )
             return text
 
+    def _budgeted_max_tokens(self, requested: int, *, json_schema: dict[str, Any] | None) -> int:
+        """Shrink the token budget to what the remaining time can actually decode.
+
+        Requesting 640 tokens is meaningless if only 6 seconds remain and the
+        instance decodes ~12 tokens/second. Asking for 640 anyway guarantees
+        the deadline guard fires mid-sentence; asking for ~70 lets the model
+        reach its own stop token and return a complete, if brief, answer.
+
+        Structured (grammar-constrained) generation is exempt from shrinking:
+        a JSON object needs its full length to be valid at all, so it is better
+        to attempt it and fail cleanly than to guarantee a truncated object.
+        """
+        left = request_deadline.remaining()
+        if left is None or json_schema is not None:
+            return requested
+        usable = max(0.0, left - _GENERATION_FLUSH_MARGIN_SECONDS)
+        rate = self._tokens_per_second or _INITIAL_TOKENS_PER_SECOND
+        affordable = int(usable * rate)
+        # Never go below a floor that can still express a useful sentence, and
+        # never inflate beyond what the caller actually asked for.
+        budgeted = max(48, min(requested, affordable))
+        if budgeted < requested:
+            logger.info(
+                "LOCAL_MODEL_TOKEN_BUDGET requested=%s budgeted=%s remaining_s=%.1f rate_tps=%.1f",
+                requested, budgeted, left, rate,
+            )
+        return budgeted
+
+    def _record_throughput(self, tokens: int, seconds: float) -> None:
+        """Track real decode speed with an EMA so budgeting self-calibrates.
+
+        Short bursts are ignored: they are dominated by prompt-eval and would
+        skew the estimate used to size future budgets.
+        """
+        if tokens < 8 or seconds <= 0.05:
+            return
+        observed = tokens / seconds
+        if self._tokens_per_second is None:
+            self._tokens_per_second = observed
+        else:
+            self._tokens_per_second = (0.7 * self._tokens_per_second) + (0.3 * observed)
+
     def _generate_sync_protected(
         self,
         system_prompt: str,
@@ -1145,6 +1224,7 @@ class LocalModelManager:
         temperature: float,
         json_schema: dict[str, Any] | None,
         allow_empty: bool = False,
+        on_token: Any = None,
     ) -> str:
         """Thread-safe wrapper around _generate_sync.
 
@@ -1152,7 +1232,16 @@ class LocalModelManager:
         cancelled (releasing the asyncio.Lock), a new thread cannot start a
         concurrent llama.cpp call while the previous one is still running.
         """
-        acquired = self._llama_thread_lock.acquire(timeout=300)
+        # Bound the wait for the in-process llama.cpp lock by the request
+        # deadline. The old 300s wait meant a queued request could sit behind
+        # another generation for five minutes and then still have to generate —
+        # far past any client timeout. Now a request that cannot get the lock
+        # in time fails immediately and honestly as MODEL_BUSY.
+        lock_wait = 300.0
+        left = request_deadline.remaining()
+        if left is not None:
+            lock_wait = max(0.1, left - _GENERATION_FLUSH_MARGIN_SECONDS)
+        acquired = self._llama_thread_lock.acquire(timeout=lock_wait)
         if not acquired:
             raise LLMResponseError(
                 "The local model is busy processing another request. Please try again.",
@@ -1160,9 +1249,26 @@ class LocalModelManager:
                 error_type="model_busy",
             )
         try:
+            # Queueing behind another generation consumes budget. If so little
+            # time is left that we could only emit a token or two, that stub is
+            # worse than useless — return an honest MODEL_BUSY so the caller
+            # (and the student) knows to retry rather than receiving a
+            # one-word "answer" dressed up as a real one.
+            left = request_deadline.remaining()
+            if left is not None and left < (_GENERATION_FLUSH_MARGIN_SECONDS + 1.0):
+                logger.warning(
+                    "LOCAL_MODEL_BUSY_NO_TIME remaining_s=%.2f — queued too long behind another generation",
+                    left,
+                )
+                raise LLMResponseError(
+                    "EduNova AI is busy with another request and could not start yours in time. "
+                    "Please try again in a moment.",
+                    status_code=503,
+                    error_type="model_busy",
+                )
             return self._generate_sync(
                 system_prompt, user_prompt, max_tokens,
-                temperature, json_schema, allow_empty,
+                temperature, json_schema, allow_empty, on_token,
             )
         finally:
             self._llama_thread_lock.release()
@@ -1175,6 +1281,7 @@ class LocalModelManager:
         temperature: float,
         json_schema: dict[str, Any] | None,
         allow_empty: bool = False,
+        on_token: Any = None,
     ) -> str:
         llama = self._llama
         if llama is None:
@@ -1201,6 +1308,14 @@ class LocalModelManager:
         inference_started = time.monotonic()
         first_token_ms: int | None = None
         pieces: list[str] = []
+        stopped_on_deadline = False
+
+        # Resolve the request deadline into an absolute instant, minus a margin
+        # that leaves the outer layers time to serialize and flush the SSE
+        # response. ContextVars propagate into asyncio.to_thread workers, which
+        # is how the budget set at the HTTP boundary reaches this thread.
+        deadline_at = request_deadline.deadline_at()
+        deadline_margin = (deadline_at - _GENERATION_FLUSH_MARGIN_SECONDS) if deadline_at else None
         try:
             # Ask llama.cpp for its genuine token iterator. Even callers that
             # consume a final response benefit: this records true first-token
@@ -1228,6 +1343,31 @@ class LocalModelManager:
                         first_token_ms = int((time.monotonic() - inference_started) * 1000)
                         logger.info("[EduNova AI] First token latency_ms=%s", first_token_ms)
                     pieces.append(piece)
+                    if on_token is not None:
+                        on_token(piece)
+                # --- THE request deadline, enforced between tokens ---------
+                # This is the loop that previously had NO time bound at all:
+                # it decoded until max_tokens no matter how slow the CPU was,
+                # which is what pushed simple questions past the outer 180s
+                # guard and produced "EduNova AI took too long to respond".
+                #
+                # Stopping here is a clean, cooperative stop: we break out of
+                # the generator, llama.cpp is left in a consistent state, the
+                # thread lock is released normally, and the student receives
+                # the (slightly shorter) text generated so far instead of an
+                # error. Grammar-constrained JSON is the one exception — a
+                # truncated JSON object is unparseable, so a partial result is
+                # worthless and we let the caller's error path handle it.
+                if deadline_margin is not None and time.monotonic() >= deadline_margin:
+                    stopped_on_deadline = True
+                    logger.warning(
+                        "[EduNova AI] Generation stopped on request deadline "
+                        "tokens_emitted=%s elapsed_ms=%s json=%s",
+                        len(pieces),
+                        int((time.monotonic() - inference_started) * 1000),
+                        bool(json_schema),
+                    )
+                    break
         except Exception as exc:
             raise LLMResponseError(
                 "The self-hosted EduNova model failed during generation",
@@ -1242,19 +1382,45 @@ class LocalModelManager:
             generated_tokens = len(llama.tokenize(text.encode("utf-8"), add_bos=False, special=True))
         except Exception:
             generated_tokens = max(0, len(text) // 3)
+        self._record_throughput(generated_tokens, generation_seconds)
         logger.info(
-            "[EduNova AI] Inference completed tokens=%s duration_ms=%s tokens_per_second=%.2f",
+            "[EduNova AI] Inference completed tokens=%s duration_ms=%s tokens_per_second=%.2f "
+            "first_token_ms=%s deadline_stop=%s",
             generated_tokens,
             int(generation_seconds * 1000),
             generated_tokens / generation_seconds,
+            first_token_ms if first_token_ms is not None else "n/a",
+            stopped_on_deadline,
         )
+        if stopped_on_deadline and json_schema is not None:
+            # A grammar-constrained object cut short is not parseable JSON, so
+            # unlike prose there is nothing useful to salvage. Fail honestly
+            # with a distinct, actionable code rather than emitting a broken
+            # structure into the quiz/plan validators.
+            raise LLMResponseError(
+                "EduNova AI ran out of time while building a structured result",
+                status_code=504,
+                error_type="deadline_exceeded",
+                provider_message="request deadline reached during JSON generation",
+            )
         if not text.strip() and not allow_empty:
+            if stopped_on_deadline:
+                raise LLMResponseError(
+                    "EduNova AI ran out of time before producing an answer",
+                    status_code=504,
+                    error_type="deadline_exceeded",
+                    provider_message="request deadline reached before first token",
+                )
             raise LLMResponseError(
                 "The self-hosted EduNova model returned an empty response",
                 status_code=502,
                 error_type="invalid_response",
                 provider_message="empty completion from local model",
             )
+        if stopped_on_deadline:
+            # Be transparent that the answer was cut short — never pretend a
+            # truncated answer is complete.
+            text = text.rstrip() + "\n\n_(Answer shortened to stay within the response time limit — ask me to continue for more detail.)_"
         return text.strip()
 
 
@@ -1320,8 +1486,14 @@ class LocalLlamaLLM:
         user_prompt: str,
         max_output_tokens: int | None = None,
         temperature: float | None = None,
+        on_token: Any = None,
     ) -> str:
-        """Plain-text generation used by deterministic fast paths."""
+        """Plain-text generation used by deterministic fast paths.
+
+        ``on_token`` receives each decoded piece as llama.cpp produces it,
+        which is what makes the SSE stream carry REAL tokens instead of a
+        single blob revealed after generation finishes.
+        """
         if self.settings.llm_provider != "local":
             raise LLMConfigurationError("LocalLlamaLLM used while LLM_PROVIDER is not 'local'")
         max_tokens = max_output_tokens or self.settings.llm_max_output_tokens
@@ -1331,6 +1503,7 @@ class LocalLlamaLLM:
             max_tokens=max_tokens,
             temperature=temperature,
             json_schema=None,
+            on_token=on_token,
         )
 
 

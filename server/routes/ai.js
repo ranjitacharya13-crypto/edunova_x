@@ -204,7 +204,18 @@ async function handleAgentChat(req, res) {
     headers["X-AI-Internal-Token"] = process.env.AI_INTERNAL_TOKEN;
   }
 
-  const timeout = Math.max(15_000, Number(process.env.AGENT_REQUEST_TIMEOUT) || 210_000);
+  // ---- Express's slice of the ONE coordinated deadline --------------------
+  // The AI service budgets itself to AI_REQUEST_BUDGET_SECONDS (20s by default)
+  // and always answers — with content or with an honest error — inside it. The
+  // proxy timeout only needs enough headroom above that to cover network and
+  // serialization, NOT another independent multi-minute window. The old
+  // 210s/240s values sat on top of the AI's own 180s guard, so a single
+  // question could legitimately hang for minutes before anyone gave up.
+  const AI_BUDGET_MS = Math.max(5_000, (Number(process.env.AI_REQUEST_BUDGET_SECONDS) || 20) * 1000);
+  const timeout = Math.max(
+    10_000,
+    Number(process.env.AGENT_REQUEST_TIMEOUT) || AI_BUDGET_MS + 10_000
+  );
   const controller = new AbortController();
   res.on("close", () => {
     if (!res.writableEnded) controller.abort();
@@ -302,7 +313,12 @@ function pipeAgentStream(res, upstreamStream) {
   // window, close the connection.  Without this, a stuck model (deadlock,
   // OOM, swap-thrash) leaves the Express response open indefinitely.
   // Sized to: 25s model load + 180s agent runtime + 35s buffer = 240s.
-  const STREAM_TIMEOUT_MS = Number(process.env.AGENT_STREAM_TIMEOUT_MS) || 240_000;
+  // Sized off the same single budget: AI budget + headroom for cold-start
+  // model wait and flush. It is the backstop for a genuinely stuck upstream,
+  // not a routine limit — the AI service stops itself well before this.
+  const AI_BUDGET_MS = Math.max(5_000, (Number(process.env.AI_REQUEST_BUDGET_SECONDS) || 20) * 1000);
+  const STREAM_TIMEOUT_MS =
+    Number(process.env.AGENT_STREAM_TIMEOUT_MS) || AI_BUDGET_MS + 25_000;
   const streamTimer = setTimeout(() => {
     console.warn(`[agent] stream timeout after ${STREAM_TIMEOUT_MS}ms — closing client connection`);
     if (!res.writableEnded) {
@@ -314,7 +330,10 @@ function pipeAgentStream(res, upstreamStream) {
           success: false,
           status: 504,
           message: "EduNova AI took too long to respond. Please try again.",
-          error: { code: "STREAM_TIMEOUT", message: "EduNova AI took too long to respond. Please try again." },
+          error: {
+            code: "AI_REQUEST_DEADLINE_EXCEEDED",
+            message: "EduNova AI took too long to respond. Please try again.",
+          },
           agentStatus: "failed",
         })}\n\n`
       );

@@ -22,6 +22,7 @@ STATUS_MESSAGES = {
     "agent.planning": "Deciding the best next step...",
     "agent.replanning": "Evaluating what I found...",
     "agent.verification_started": "Checking reliable sources...",
+    "agent.generating": "Writing your answer...",
     "agent.response_generated": "Preparing your answer...",
     "agent.goal_completed": "Answer ready.",
 }
@@ -64,6 +65,20 @@ class EventEmitter:
             result = self.callback(event)
             if inspect.isawaitable(result):
                 await result
+
+    async def emit_token(self, piece: str) -> None:
+        """Forward one REAL generated token piece to the client.
+
+        Deliberately minimal and NOT logged: this fires hundreds of times per
+        answer, and the content is the answer itself. Unlike ``emit`` there is
+        no status message wrapper — the frontend appends ``delta`` directly to
+        the visible answer as it arrives.
+        """
+        if not piece or not self.callback:
+            return
+        result = self.callback({"type": "token", "delta": piece})
+        if inspect.isawaitable(result):
+            await result
 
     @staticmethod
     def _message(event_type: str, tool: str | None) -> str:

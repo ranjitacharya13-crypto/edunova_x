@@ -294,6 +294,12 @@ class Settings:
     max_agent_iterations: int = 5
     max_tool_calls: int = 8
     max_agent_runtime_seconds: int = 180
+    # ONE coordinated end-to-end budget for a normal chat request (PART 13).
+    # Every downstream stage — model warmup wait, tool execution, web search
+    # and token generation — sizes itself against what is LEFT of this budget
+    # instead of owning an independent timeout. max_agent_runtime_seconds
+    # remains the hard backstop for the multi-step autonomous loop only.
+    request_budget_seconds: int = 20
     agent_max_context_chars: int = 24_000
     conversation_max_turns: int = 12
     conversation_ttl_seconds: int = 86_400
@@ -471,6 +477,7 @@ class Settings:
             "llm_base_url_has_double_v1": base_url_has_double_v1,
             "llm_base_url_is_localhost": base_url_is_localhost,
             "llm_timeout_seconds": self.llm_timeout_seconds,
+            "request_budget_seconds": self.request_budget_seconds,
             "llm_max_output_tokens": self.llm_max_output_tokens,
             "llm_temperature": self.llm_temperature,
             "llm_json_mode": self.llm_json_mode,
@@ -564,6 +571,7 @@ def load_settings() -> Settings:
         max_agent_iterations=max_iterations,
         max_tool_calls=max_tools,
         max_agent_runtime_seconds=_integer("MAX_AGENT_RUNTIME_SECONDS", 180, 30, 900),
+        request_budget_seconds=_integer("AI_REQUEST_BUDGET_SECONDS", 20, 5, 120),
         agent_max_context_chars=max_context,
         conversation_max_turns=_integer("CONVERSATION_MAX_TURNS", 12, 2, 30),
         conversation_ttl_seconds=_integer("CONVERSATION_TTL_SECONDS", 86_400, 300, 604_800),
