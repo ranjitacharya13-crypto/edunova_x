@@ -71,6 +71,13 @@ enables this requirement, so agent requests fail closed until the shared token
 is configured. All model/search keys belong only on the FastAPI service. Never
 prefix them with `VITE_`.
 
+Express additionally retries bounded upstream failures (proxy 502/503/504
+loading pages and connect errors) with a configurable backoff
+(`AI_UPSTREAM_RETRY_DELAYS_MS` within `AI_UPSTREAM_RETRY_WINDOW_MS`), so a
+Render free-tier cold start delays an answer instead of failing it. Genuinely
+unavailable services produce a user-safe error with `agentStatus` set to
+`unavailable`, never a stack trace or provider detail.
+
 ## Local run
 
 ```bash

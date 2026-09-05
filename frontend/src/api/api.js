@@ -351,7 +351,14 @@ export const streamAIEngine = async ({ message, conversationId, onEvent }) => {
       .map((line) => line.slice(5).trimStart())
       .join("\n");
     if (!dataText) return;
-    const event = JSON.parse(dataText);
+    let event;
+    try {
+      event = JSON.parse(dataText);
+    } catch {
+      // A truncated or malformed event must never surface as a raw parser
+      // error; treat it like any other recoverable stream failure.
+      throw new Error("EduNova AI returned a malformed update. Please try again.");
+    }
     onEvent?.(event);
     if (event.type === "answer") finalAnswer = event;
     if (event.type === "error") throw new Error(event.message || "EduNova AI request failed");

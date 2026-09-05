@@ -56,6 +56,88 @@ function safeUpstreamError(error) {
   return "EduNova AI could not complete this request. Please try again.";
 }
 
+// ---------------------------------------------------------------------------
+// Cold-start aware upstream handling.
+//
+// The Render free-tier AI service spins down after idle. While it wakes, the
+// Render router answers with an HTML 503 "Application loading" page (or the
+// connection fails outright). A single doomed attempt used to surface the
+// generic "EduNova AI could not start this request." even though the service
+// becomes healthy seconds later. We therefore retry bounded, fast-failing
+// upstream errors (proxy 502/503/504 pages and connect-level failures) before
+// reporting an error to the student.
+// ---------------------------------------------------------------------------
+const RETRYABLE_UPSTREAM_STATUSES = new Set([502, 503, 504]);
+const RETRYABLE_NETWORK_CODES = new Set([
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "ENOTFOUND",
+  "ETIMEDOUT",
+  "ECONNABORTED",
+  "EAI_AGAIN",
+]);
+
+function parseDelayList(raw, fallback) {
+  if (!raw) return fallback;
+  const values = String(raw)
+    .split(",")
+    .map((value) => Number.parseInt(value.trim(), 10))
+    .filter((value) => Number.isFinite(value) && value >= 0 && value <= 120_000);
+  return values.length ? values.slice(0, 6) : fallback;
+}
+
+const UPSTREAM_RETRY_DELAYS_MS = parseDelayList(process.env.AI_UPSTREAM_RETRY_DELAYS_MS, [
+  3_000,
+  8_000,
+  15_000,
+  30_000,
+]);
+const UPSTREAM_RETRY_WINDOW_MS = Math.min(
+  300_000,
+  Math.max(0, Number(process.env.AI_UPSTREAM_RETRY_WINDOW_MS) || 90_000)
+);
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function parseJsonBody(raw) {
+  try {
+    const parsed = JSON.parse(raw);
+    return typeof parsed === "object" && parsed !== null ? parsed : null;
+  } catch {
+    // HTML proxy pages (e.g. Render's loading screen) are expected here.
+    return null;
+  }
+}
+
+// User-safe message for upstream failures whose body is not our JSON (proxy
+// HTML pages, empty bodies). Never include the raw body: it may contain
+// provider/proxy internals.
+function upstreamStatusMessage(status) {
+  if (status === 401 || status === 403) {
+    return "EduNova AI authentication failed. Please sign in again; if it continues, the AI service configuration needs attention.";
+  }
+  if (status === 404) {
+    return "The EduNova AI endpoint is unavailable. Please try again after the service is redeployed.";
+  }
+  if (status === 429) {
+    return "EduNova AI is receiving too many requests. Please wait a moment and try again.";
+  }
+  if (status === 502 || status === 503) {
+    return "The EduNova AI service is starting up or temporarily unavailable. Please try again in a few seconds.";
+  }
+  if (status === 504) {
+    return "EduNova AI took too long to respond. Please try again.";
+  }
+  return "EduNova AI could not complete this request. Please try again.";
+}
+
+function agentStatusFor(status) {
+  if (status === 429) return "rate_limited";
+  if (status === 401 || status === 403) return "auth_failed";
+  if (status === 502 || status === 503 || status === 504) return "unavailable";
+  return "failed";
+}
+
 async function readLimitedStream(stream, maximum = 65_536) {
   const chunks = [];
   let size = 0;
@@ -65,6 +147,24 @@ async function readLimitedStream(stream, maximum = 65_536) {
     chunks.push(chunk);
   }
   return Buffer.concat(chunks).toString("utf8");
+}
+
+// One upstream POST attempt. Resolves with { ok, status, stream, body }
+// (body only populated for non-2xx so the success stream stays untouched) or
+// rejects with the axios error for non-response failures.
+async function postUpstream(url, payload, headers, timeout, signal) {
+  const response = await axios.post(url, payload, {
+    headers,
+    timeout,
+    responseType: "stream",
+    signal,
+    validateStatus: () => true,
+  });
+  if (response.status >= 400) {
+    const raw = await readLimitedStream(response.data);
+    return { ok: false, status: response.status, body: parseJsonBody(raw) };
+  }
+  return { ok: true, status: response.status, stream: response.data };
 }
 
 async function handleAgentChat(req, res) {
@@ -108,60 +208,106 @@ async function handleAgentChat(req, res) {
   }
 
   const timeout = Math.max(15_000, Number(process.env.AGENT_REQUEST_TIMEOUT) || 210_000);
-  try {
-    if (wantsStream) {
-      const controller = new AbortController();
-      res.on("close", () => {
-        if (!res.writableEnded) controller.abort();
-      });
-      const upstream = await axios.post(`${aiBaseUrl}/api/ai/chat`, payload, {
-        headers,
-        timeout,
-        responseType: "stream",
-        signal: controller.signal,
-        validateStatus: () => true,
-      });
-      if (upstream.status >= 400) {
-        const raw = await readLimitedStream(upstream.data);
-        let detail = "EduNova AI could not start this request.";
-        try {
-          const parsed = JSON.parse(raw);
-          detail = parsed.detail || parsed.error || detail;
-        } catch {
-          // Keep the safe generic detail.
-        }
-        return res.status(upstream.status).json({ success: false, error: detail });
+  const controller = new AbortController();
+  res.on("close", () => {
+    if (!res.writableEnded) controller.abort();
+  });
+
+  const startedAt = Date.now();
+  const attempts = UPSTREAM_RETRY_DELAYS_MS.length + 1;
+  let lastFailure = null;
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const result = await postUpstream(`${aiBaseUrl}/api/ai/chat`, payload, headers, timeout, controller.signal);
+
+      if (result.ok) {
+        console.log(
+          `[agent] upstream ok after ${attempt} attempt(s) stream=${wantsStream} elapsed=${Date.now() - startedAt}ms`
+        );
+        if (wantsStream) return pipeAgentStream(res, result.stream);
+        const raw = await readLimitedStream(result.stream, 2_097_152);
+        const parsed = parseJsonBody(raw);
+        if (parsed) return res.status(result.status).json(parsed);
+        // Non-JSON success body should never happen with our FastAPI service;
+        // forward it as text rather than failing the whole request.
+        return res.status(result.status).type("text/plain").send(raw);
       }
 
-      res.status(200);
-      res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
-      res.setHeader("Cache-Control", "no-cache, no-transform");
-      res.setHeader("Connection", "keep-alive");
-      res.setHeader("X-Accel-Buffering", "no");
-      res.flushHeaders?.();
-      upstream.data.on("error", (error) => {
-        console.error("[agent] upstream stream error:", error.message);
-        if (!res.writableEnded) res.end();
-      });
-      return upstream.data.pipe(res);
+      lastFailure = { kind: "status", status: result.status, body: result.body };
+      const retryable = RETRYABLE_UPSTREAM_STATUSES.has(result.status);
+      console.warn(
+        `[agent] upstream attempt ${attempt}/${attempts} returned HTTP ${result.status} retryable=${retryable}`
+      );
+      if (!retryable) break;
+    } catch (error) {
+      if (controller.signal.aborted || res.writableEnded) return; // client disconnected
+      lastFailure = { kind: "network", error };
+      const retryable = RETRYABLE_NETWORK_CODES.has(error.code);
+      console.warn(
+        `[agent] upstream attempt ${attempt}/${attempts} failed code=${error.code || "unknown"} retryable=${retryable}`
+      );
+      if (!retryable) break;
     }
 
-    const upstream = await axios.post(`${aiBaseUrl}/api/ai/chat`, payload, {
-      headers,
-      timeout,
-    });
-    return res.status(upstream.status).json(upstream.data);
-  } catch (error) {
-    const status = error.response?.status || 503;
-    console.error("[agent] AI engine error:", error.code || status, error.message);
+    if (attempt >= attempts) break;
+    const delay = UPSTREAM_RETRY_DELAYS_MS[attempt - 1];
+    if (UPSTREAM_RETRY_WINDOW_MS && Date.now() - startedAt + delay > UPSTREAM_RETRY_WINDOW_MS) {
+      console.warn("[agent] upstream retry window exhausted before final attempt");
+      break;
+    }
+    await sleep(delay);
+  }
+
+  // Every attempt failed: return an accurate, user-safe error. The deployment
+  // detail stays in Render logs; students never see provider secrets, stack
+  // traces, or raw proxy/HTML bodies.
+  if (lastFailure?.kind === "network") {
+    const status = lastFailure.error.response?.status || 503;
+    console.error(
+      "[agent] AI engine unreachable:",
+      lastFailure.error.code || status,
+      lastFailure.error.message
+    );
     return res.status(status).json({
       success: false,
-      error: safeUpstreamError(error),
+      error: safeUpstreamError(lastFailure.error),
       sources: [],
       usedWeb: false,
       agentStatus: "failed",
     });
   }
+
+  const status = lastFailure?.status ?? 502;
+  const bodyDetail = lastFailure?.body?.detail || lastFailure?.body?.error;
+  const detail =
+    typeof bodyDetail === "string" && bodyDetail.length > 0 && bodyDetail.length < 500
+      ? bodyDetail
+      : upstreamStatusMessage(status);
+  return res.status(status).json({
+    success: false,
+    error: detail,
+    sources: [],
+    usedWeb: false,
+    agentStatus: agentStatusFor(status),
+  });
+}
+
+// Forward the FastAPI SSE stream to the browser untouched. Status events and
+// the final answer/error event are produced by the AI service; no secrets or
+// private agent state are included in that stream.
+function pipeAgentStream(res, upstreamStream) {
+  res.status(200);
+  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders?.();
+  upstreamStream.on("error", (error) => {
+    console.error("[agent] upstream stream error:", error.message);
+    if (!res.writableEnded) res.end();
+  });
+  upstreamStream.pipe(res);
 }
 
 // /chat is the v2 agent API. /query remains as a non-streaming compatibility
