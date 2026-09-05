@@ -112,9 +112,11 @@ Required agent environment:
 
 | Variable | Notes |
 |---|---|
-| `LLM_API_KEY` | Server-side model credential |
+| `LLM_PROVIDER` | `openai` for the production endpoint |
+| `LLM_API_KEY` | Server-side OpenAI model credential |
 | `LLM_MODEL` | OpenAI-compatible model name |
-| `LLM_BASE_URL` | Compatible `/v1` base URL |
+| `LLM_BASE_URL` | `https://api.openai.com/v1` |
+| `APP_BACKEND_URL` | Public HTTPS URL of `edunova-api` (AI service only) |
 | `WEB_SEARCH_API_KEY` | Brave, Tavily, or Serper credential |
 | `WEB_SEARCH_PROVIDER` | `brave`, `tavily`, or `serper` |
 | `AI_INTERNAL_TOKEN` | Required in production; exact same value as API service |

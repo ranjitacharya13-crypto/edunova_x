@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { streamAIEngine } from "../api/api";
+import { confirmAIAction, streamAIEngine } from "../api/api";
 import EduNovaAIAvatar from "./EduNovaAIAvatar";
 
 const ASSISTANT_NAME = "EduNova AI";
@@ -128,7 +128,7 @@ if (typeof window !== "undefined") {
   };
 }
 
-export default function FloatingAIChat() {
+export default function FloatingAIChat({ feature = "dashboard" }) {
   const [isOpen, setIsOpen] = useState(false);
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState([]);
@@ -233,6 +233,7 @@ export default function FloatingAIChat() {
         const data = await streamAIEngine({
           message: userMessage,
           conversationId: conversationIdRef.current,
+          applicationContext: { route: window.location.pathname, feature },
           onEvent: (event) => {
             if (event?.type === "status" && event?.message) {
               setAgentStatus(event.message);
@@ -280,8 +281,23 @@ export default function FloatingAIChat() {
         setAgentStatus(STATUS_LABEL);
       }
     },
-    [loading]
+    [loading, feature]
   );
+
+
+  const confirmAction = useCallback(async (messageId, index, token) => {
+    try {
+      const response = await confirmAIAction(token);
+      setMessages((items) => items.map((item) => item.id !== messageId ? item : {
+        ...item,
+        actions: item.actions.map((action, actionIndex) => actionIndex === index
+          ? { ...action, message: response?.data?.message || "Saved to EduNova", data: { ...action.data, pending: false, requiresConfirmation: false } }
+          : action),
+      }));
+    } catch {
+      setMessages((items) => [...items, { id: makeMessageId("action_err"), role: "assistant", type: "error", content: "That action could not be saved. It may have expired." }]);
+    }
+  }, []);
 
   const sendMessage = useCallback(() => {
     submitMessage(input);
@@ -559,7 +575,7 @@ export default function FloatingAIChat() {
           ) : (
             <div className="space-y-4">
               {messages.map((message) => (
-                <ChatMessage key={message.id} message={message} onRetry={handleRetry} retryDisabled={loading} />
+                <ChatMessage key={message.id} message={message} onRetry={handleRetry} onConfirmAction={confirmAction} retryDisabled={loading} />
               ))}
               {loading && <TypingIndicator status={agentStatus} />}
             </div>
@@ -668,7 +684,7 @@ function WelcomeState({ onPrompt, loading }) {
   );
 }
 
-function ChatMessage({ message, onRetry, retryDisabled }) {
+function ChatMessage({ message, onRetry, onConfirmAction, retryDisabled }) {
   if (message.role === "user") {
     return (
       <div className="flex justify-end">
@@ -725,7 +741,11 @@ function ChatMessage({ message, onRetry, retryDisabled }) {
                   key={`msg-act-${i}`}
                   className="rounded bg-emerald-50 px-2 py-1 text-[11px] font-medium text-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-200"
                 >
-                  ✓ {act.message || act.tool}
+                  {act.data?.requiresConfirmation ? (
+                    <button type="button" onClick={() => onConfirmAction(message.id, i, act.data.confirmationToken)} className="font-bold underline">
+                      Confirm: {act.message || act.tool}
+                    </button>
+                  ) : `✓ ${act.message || act.tool}`}
                 </div>
               ))}
             </div>

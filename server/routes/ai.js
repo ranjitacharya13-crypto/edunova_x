@@ -1,7 +1,7 @@
 const express = require("express");
 const axios = require("axios");
 const auth = require("../middleware/auth");
-const { executeApplicationTool } = require("../services/applicationTools");
+const { executeApplicationTool, confirmApplicationTool } = require("../services/applicationTools");
 
 const router = express.Router();
 
@@ -50,7 +50,8 @@ function getAiBaseUrl() {
 function safeUpstreamError(error) {
   const upstream = error.response?.data;
   const detail = upstream?.detail || upstream?.error;
-  if (typeof detail === "string" && detail.length < 500) return detail;
+  const message = typeof detail === "object" ? detail?.message : detail;
+  if (typeof message === "string" && message.length < 500) return message;
   if (["ECONNREFUSED", "ENOTFOUND", "ETIMEDOUT", "ECONNABORTED", "EAI_AGAIN"].includes(error.code)) {
     return "AI service is temporarily unavailable. It may be starting up—please try again shortly.";
   }
@@ -156,6 +157,14 @@ async function postUpstream(url, payload, headers, timeout, signal) {
 async function handleAgentChat(req, res) {
   const message = String(req.body?.message || "").trim();
   const conversationId = String(req.body?.conversationId || "").trim() || undefined;
+  const rawContext = req.body?.applicationContext;
+  const applicationContext = rawContext && typeof rawContext === "object"
+    ? {
+        route: String(rawContext.route || "").slice(0, 200),
+        feature: String(rawContext.feature || "").slice(0, 80),
+        context: rawContext.context && typeof rawContext.context === "object" ? rawContext.context : {},
+      }
+    : {};
   if (!message) {
     return res.status(400).json({ success: false, error: "message is required" });
   }
@@ -184,6 +193,7 @@ async function handleAgentChat(req, res) {
     userRole: String(req.user?.role || "student"),
     userName: String(req.user?.name || "Student"),
     userEmail: String(req.user?.email || ""),
+    applicationContext,
     stream: wantsStream,
   };
   const headers = {
@@ -262,13 +272,14 @@ async function handleAgentChat(req, res) {
 
   const status = lastFailure?.status ?? 502;
   const bodyDetail = lastFailure?.body?.detail || lastFailure?.body?.error;
-  const detail =
-    typeof bodyDetail === "string" && bodyDetail.length > 0 && bodyDetail.length < 500
-      ? bodyDetail
-      : upstreamStatusMessage(status);
+  const errorCode = typeof bodyDetail === "object" ? bodyDetail?.code : undefined;
+  const bodyMessage = typeof bodyDetail === "object" ? bodyDetail?.message : bodyDetail;
+  const detail = typeof bodyMessage === "string" && bodyMessage.length > 0 && bodyMessage.length < 500
+    ? bodyMessage : upstreamStatusMessage(status);
   return res.status(status).json({
     success: false,
-    error: detail,
+    error: { code: errorCode || "LLM_PROVIDER_UNAVAILABLE", message: detail },
+    message: detail,
     sources: [],
     usedWeb: false,
     agentStatus: agentStatusFor(status),
@@ -292,54 +303,54 @@ function pipeAgentStream(res, upstreamStream) {
 // ---------------------------------------------------------------------------
 // Secure Internal Tool Execution Endpoint for AI Agent
 // ---------------------------------------------------------------------------
-// Only callable by FastAPI AI Engine or internal services with internal token.
-// The backend strictly enforces user context: authenticated student ID cannot be forged.
-router.post("/internal/tools", async (req, res) => {
-  const internalToken = req.headers["x-ai-internal-token"];
-  if (process.env.AI_INTERNAL_TOKEN && internalToken !== process.env.AI_INTERNAL_TOKEN) {
-    return res.status(401).json({ success: false, error: "Unauthorized internal tool request" });
+function authorizeInternal(req, res, next) {
+  const configured = String(process.env.AI_INTERNAL_TOKEN || "");
+  const supplied = String(req.headers["x-ai-internal-token"] || "");
+  if (!configured) {
+    return res.status(503).json({ success: false, error: "AI internal authentication is not configured" });
   }
+  if (supplied !== configured) {
+    return res.status(401).json({ success: false, error: "Unauthorized internal request" });
+  }
+  return next();
+}
 
+async function executeInternalTool(req, res) {
   const toolName = String(req.body?.tool || req.body?.name || "").trim();
   const toolArgs = typeof req.body?.arguments === "object" && req.body.arguments !== null ? req.body.arguments : {};
-  const userId = req.headers["x-user-id"] || req.body?.userId;
-  const conversationId = req.body?.conversationId || "";
-
-  if (!toolName) {
-    return res.status(400).json({ success: false, error: "tool name is required" });
-  }
-
+  // Identity is accepted only from the trusted FastAPI service header. The model
+  // cannot select a user ID through tool arguments or request JSON.
+  const userId = String(req.headers["x-user-id"] || "");
+  const conversationId = String(req.body?.conversationId || "").slice(0, 100);
+  if (!toolName) return res.status(400).json({ success: false, error: "tool name is required" });
+  if (!userId) return res.status(400).json({ success: false, error: "authenticated user identity is required" });
   try {
     const result = await executeApplicationTool(toolName, toolArgs, userId, conversationId);
-    return res.json(result);
+    return res.status(result.success ? 200 : 400).json(result);
   } catch (err) {
-    console.error("[internal-tools] Execution error:", err);
-    return res.status(500).json({ success: false, error: err.message || "Internal tool execution failed" });
+    console.error("[internal-tools] Execution failed:", err.message);
+    return res.status(500).json({ success: false, error: "Internal tool execution failed" });
   }
+}
+
+router.post("/actions/:token/confirm", auth, async (req, res) => {
+  const result = await confirmApplicationTool(req.params.token, String(req.user?.id || ""));
+  return res.status(result.success ? 200 : 400).json(result);
 });
 
-// Alias
-router.post("/tools/execute", async (req, res) => {
-  const internalToken = req.headers["x-ai-internal-token"];
-  if (process.env.AI_INTERNAL_TOKEN && internalToken !== process.env.AI_INTERNAL_TOKEN) {
-    return res.status(401).json({ success: false, error: "Unauthorized internal tool request" });
-  }
+router.post("/internal/tools", authorizeInternal, executeInternalTool);
+router.post("/tools/execute", authorizeInternal, executeInternalTool);
 
-  const toolName = String(req.body?.tool || req.body?.name || "").trim();
-  const toolArgs = typeof req.body?.arguments === "object" && req.body.arguments !== null ? req.body.arguments : {};
-  const userId = req.headers["x-user-id"] || req.body?.userId;
-  const conversationId = req.body?.conversationId || "";
-
-  if (!toolName) {
-    return res.status(400).json({ success: false, error: "tool name is required" });
-  }
-
+router.get("/health", auth, async (req, res) => {
+  const aiBaseUrl = getAiBaseUrl();
+  if (!aiBaseUrl) return res.status(503).json({ success: false, status: "missing_config", serviceAvailable: false });
+  const headers = process.env.AI_INTERNAL_TOKEN ? { "X-AI-Internal-Token": process.env.AI_INTERNAL_TOKEN } : {};
   try {
-    const result = await executeApplicationTool(toolName, toolArgs, userId, conversationId);
-    return res.json(result);
-  } catch (err) {
-    console.error("[internal-tools] Execution error:", err);
-    return res.status(500).json({ success: false, error: err.message || "Internal tool execution failed" });
+    const response = await axios.get(`${aiBaseUrl}/api/ai/health`, { headers, timeout: 15_000, validateStatus: () => true });
+    const body = response.data && typeof response.data === "object" ? response.data : {};
+    return res.status(response.status).json(body);
+  } catch (error) {
+    return res.status(503).json({ success: false, status: "provider_unavailable", serviceAvailable: false });
   }
 });
 

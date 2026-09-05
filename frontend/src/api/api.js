@@ -309,17 +309,24 @@ export function aiRequestErrorMessage(status, detail) {
   return safeDetail || "EduNova AI could not complete this request. Please try again.";
 }
 
-export const queryAIEngine = async ({ message, conversationId }) => {
+export const confirmAIAction = async (confirmationToken) => {
+  const token = encodeURIComponent(String(confirmationToken || ""));
+  const res = await API.post(`/ai/actions/${token}/confirm`, {}, { headers: aiAuthHeaders() });
+  return res.data;
+};
+
+export const queryAIEngine = async ({ message, conversationId, applicationContext }) => {
   try {
     const res = await API.post(
       "/ai/chat",
-      { message, conversationId },
+      { message, conversationId, applicationContext },
       { headers: aiAuthHeaders() }
     );
     return res.data;
   } catch (err) {
     const status = err.response?.status;
-    const detail = err.response?.data?.error || err.response?.data?.detail;
+    const rawDetail = err.response?.data?.error || err.response?.data?.detail;
+    const detail = typeof rawDetail === "object" ? rawDetail?.message : rawDetail;
     return {
       success: false,
       status,
@@ -332,7 +339,7 @@ export const queryAIEngine = async ({ message, conversationId }) => {
 
 // Consume the safe high-level SSE event stream from the autonomous agent. Tool
 // observations and private model reasoning never reach this browser API.
-export const streamAIEngine = async ({ message, conversationId, onEvent }) => {
+export const streamAIEngine = async ({ message, conversationId, applicationContext, onEvent }) => {
   let response;
   try {
     response = await fetch(apiUrl("/ai/chat"), {
@@ -341,7 +348,7 @@ export const streamAIEngine = async ({ message, conversationId, onEvent }) => {
         "Content-Type": "application/json",
         Accept: "text/event-stream",
       }),
-      body: JSON.stringify({ message, conversationId }),
+      body: JSON.stringify({ message, conversationId, applicationContext }),
     });
   } catch (error) {
     console.error("[EduNova AI] Backend request failed:", error);
@@ -352,7 +359,8 @@ export const streamAIEngine = async ({ message, conversationId, onEvent }) => {
     let detail = "";
     try {
       const body = await response.json();
-      detail = body.error || body.detail || "";
+      const rawDetail = body.error || body.detail || "";
+      detail = typeof rawDetail === "object" ? rawDetail?.message || "" : rawDetail;
     } catch {
       // Use the status-specific, user-safe fallback for non-JSON proxy errors.
     }

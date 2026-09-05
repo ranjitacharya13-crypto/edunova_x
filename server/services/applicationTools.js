@@ -10,6 +10,7 @@
  */
 
 const mongoose = require("mongoose");
+const crypto = require("node:crypto");
 const User = require("../models/User");
 const Timetable = require("../models/Timetable");
 const TeacherTimetable = require("../models/TeacherTimetable");
@@ -40,6 +41,37 @@ const DAYS_OF_WEEK = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "F
 
 function isDbConnected() {
   return mongoose.connection.readyState === 1;
+}
+
+
+const pendingActions = new Map();
+const PENDING_ACTION_TTL_MS = 10 * 60 * 1000;
+
+function preparePendingAction(toolName, args, userId, conversationId) {
+  const token = crypto.randomBytes(24).toString("base64url");
+  pendingActions.set(token, { toolName, args, userId: String(userId), conversationId, expiresAt: Date.now() + PENDING_ACTION_TTL_MS });
+  return {
+    success: true,
+    sourceType: "application",
+    source: toolName.replace(/^create_|^update_|^mark_|^save_|^set_/, ""),
+    data: {
+      pending: true,
+      requiresConfirmation: true,
+      confirmationToken: token,
+      toolName,
+      message: `Confirm to apply ${toolName.replaceAll("_", " ")} to EduNova.`,
+    },
+  };
+}
+
+async function confirmApplicationTool(token, userId) {
+  const pending = pendingActions.get(String(token || ""));
+  if (!pending || pending.expiresAt < Date.now() || pending.userId !== String(userId)) {
+    pendingActions.delete(String(token || ""));
+    return { success: false, error: "Confirmation is invalid or expired." };
+  }
+  pendingActions.delete(String(token));
+  return executeApplicationTool(pending.toolName, pending.args, userId, pending.conversationId, { confirmed: true });
 }
 
 // Safe audit logging helper
@@ -73,9 +105,9 @@ async function getStudentProfile(user) {
     username: user.username,
     email: user.email,
     role: user.role || "student",
-    grade: user.grade || "10th Grade",
-    subjects: user.subjects || ["Physics", "Mathematics", "Chemistry", "Computer Science"],
-    enrolledClasses: user.enrolledClasses || ["Class-10A"],
+    grade: user.grade || null,
+    subjects: user.subjects || [],
+    enrolledClasses: user.enrolledClasses || [],
     goalsCount: (user.goals || []).length,
     notesCount: (user.notes || []).length,
   };
@@ -95,12 +127,9 @@ async function getSubjects(user) {
       subjects = Array.from(set);
     }
   }
-  if (!subjects.length) {
-    subjects = ["Physics", "Mathematics", "Chemistry", "Computer Science"];
-  }
   return {
     subjects,
-    enrolledClasses: user.enrolledClasses || ["Class-10A"],
+    enrolledClasses: user.enrolledClasses || [],
     totalSubjects: subjects.length,
   };
 }
@@ -116,33 +145,9 @@ async function getTimetable(user, args = {}) {
   const dayFilter = args.day ? String(args.day).trim() : null;
   const days = dayFilter ? [dayFilter] : ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
 
-  const defaultSchedule = {
-    Monday: [
-      { period: 1, time: "9:30 - 10:15", subject: "Mathematics" },
-      { period: 2, time: "10:15 - 11:00", subject: "Physics" },
-      { period: 6, time: "1:30 - 2:15", subject: "Chemistry" },
-    ],
-    Tuesday: [
-      { period: 1, time: "9:30 - 10:15", subject: "Physics" },
-      { period: 3, time: "11:00 - 11:45", subject: "Computer Science" },
-    ],
-    Wednesday: [
-      { period: 2, time: "10:15 - 11:00", subject: "Mathematics" },
-      { period: 4, time: "11:45 - 12:30", subject: "Chemistry" },
-    ],
-    Thursday: [
-      { period: 1, time: "9:30 - 10:15", subject: "Computer Science" },
-      { period: 2, time: "10:15 - 11:00", subject: "Physics" },
-    ],
-    Friday: [
-      { period: 1, time: "9:30 - 10:15", subject: "Mathematics" },
-      { period: 6, time: "1:30 - 2:15", subject: "Physics Lab" },
-    ],
-  };
-
   const schedule = {};
   for (const d of days) {
-    const rawList = doc?.[d] || defaultSchedule[d] || [];
+    const rawList = doc?.[d] || [];
     schedule[d] = rawList.map((p) => {
       const plain = typeof p?.toObject === "function" ? p.toObject() : p;
       const periodKey = plain?.period ? Number(plain.period) : null;
@@ -183,35 +188,7 @@ async function getTodaySchedule(user) {
       .lean();
   }
 
-  const defaultSchedule = {
-    Monday: [
-      { period: 1, time: "9:30 - 10:15", subject: "Mathematics" },
-      { period: 2, time: "10:15 - 11:00", subject: "Physics" },
-      { period: 6, time: "1:30 - 2:15", subject: "Chemistry" },
-    ],
-    Tuesday: [
-      { period: 1, time: "9:30 - 10:15", subject: "Physics" },
-      { period: 3, time: "11:00 - 11:45", subject: "Computer Science" },
-    ],
-    Wednesday: [
-      { period: 2, time: "10:15 - 11:00", subject: "Mathematics" },
-      { period: 4, time: "11:45 - 12:30", subject: "Chemistry" },
-    ],
-    Thursday: [
-      { period: 1, time: "9:30 - 10:15", subject: "Computer Science" },
-      { period: 2, time: "10:15 - 11:00", subject: "Physics" },
-    ],
-    Friday: [
-      { period: 1, time: "9:30 - 10:15", subject: "Mathematics" },
-      { period: 6, time: "1:30 - 2:15", subject: "Physics Lab" },
-    ],
-  };
-
-  const periodsRaw = timetableDoc?.[today] || defaultSchedule[today] || [
-    { period: 1, time: "9:30 - 10:15", subject: "Mathematics" },
-    { period: 2, time: "10:15 - 11:00", subject: "Physics" },
-    { period: 6, time: "1:30 - 2:15", subject: "Computer Science" },
-  ];
+  const periodsRaw = timetableDoc?.[today] || [];
 
   const periods = periodsRaw.map((p) => {
     const plain = typeof p?.toObject === "function" ? p.toObject() : p;
@@ -280,18 +257,10 @@ async function getSyllabus(user, args = {}) {
     );
   }
 
-  const coreSyllabusTopics = {
-    Physics: ["Kinematics & Dynamics", "Work, Energy & Power", "Thermodynamics", "Electromagnetism", "Optics & Waves", "Modern Physics"],
-    Mathematics: ["Calculus (Differentiation & Integration)", "Linear Algebra & Matrices", "Probability & Statistics", "Differential Equations", "Coordinate Geometry"],
-    Chemistry: ["Atomic Structure & Chemical Bonding", "Chemical Kinetics", "Equilibrium & Thermodynamics", "Organic Chemistry Reactions", "Inorganic & Coordination Chemistry"],
-    "Computer Science": ["Data Structures & Algorithms", "Object-Oriented Programming", "Operating Systems", "Database Management Systems", "Computer Networks"],
-  };
+
 
   return {
     uploadedSyllabusFiles: filtered.slice(0, 10),
-    standardCurriculumTopics: subjectFilter
-      ? { [args.subject]: coreSyllabusTopics[args.subject] || [] }
-      : coreSyllabusTopics,
     totalFiles: filtered.length,
   };
 }
@@ -329,13 +298,6 @@ async function getLearningMaterials(user, args = {}) {
     );
   }
 
-  if (!list.length) {
-    list = [
-      { id: "mat-1", filename: "Physics - Thermodynamics & Mechanics Revision.pdf", contentType: "application/pdf" },
-      { id: "mat-2", filename: "Calculus Formula Sheet & Practice Sets.pdf", contentType: "application/pdf" },
-    ];
-  }
-
   return {
     materials: list.slice(0, 10),
     recentRecordings: recordings.map((r) => ({
@@ -355,24 +317,7 @@ async function getProgress(user, args = {}) {
   }
 
   if (!progress) {
-    const subjects = user.subjects || ["Physics", "Mathematics", "Chemistry", "Computer Science"];
-    const subjectProgressList = subjects.map((subj) => ({
-      subject: subj,
-      overallProgressPercent: subj === "Physics" ? 58 : subj === "Mathematics" ? 82 : 70,
-      completedModules: subj === "Physics" ? 5 : 8,
-      totalModules: 10,
-      weakTopics: subj === "Physics" ? ["Thermodynamics", "Rotational Dynamics"] : ["Integration by Parts"],
-      strongTopics: subj === "Physics" ? ["Kinematics", "Newton's Laws"] : ["Algebra", "Matrices"],
-      recentAverageScore: subj === "Physics" ? 42 : 85,
-      lastStudiedAt: new Date(),
-    }));
-
-    progress = {
-      overallProgressPercent: 70,
-      subjects: subjectProgressList,
-      studyStreakDays: 3,
-      totalStudyMinutes: 180,
-    };
+    return { hasProgress: false, overallProgressPercent: null, studyStreakDays: 0, totalStudyMinutes: 0, subjects: [] };
   }
 
   const subjectFilter = args.subject ? String(args.subject).toLowerCase().trim() : null;
@@ -397,13 +342,6 @@ async function getStudyHistory(user, args = {}) {
     sessions = await StudySession.find(filter).sort({ date: -1, createdAt: -1 }).limit(limit).lean();
   }
 
-  if (!sessions.length) {
-    sessions = [
-      { _id: "s1", subject: "Physics", topic: "Thermodynamics laws", durationMinutes: 45, date: new Date() },
-      { _id: "s2", subject: "Mathematics", topic: "Definite integrals", durationMinutes: 60, date: new Date() },
-    ];
-  }
-
   return {
     totalSessions: sessions.length,
     sessions: sessions.map((s) => ({
@@ -425,13 +363,6 @@ async function getQuizHistory(user, args = {}) {
     const filter = { userId: user._id };
     if (args.subject) filter.subject = new RegExp(String(args.subject).trim(), "i");
     attempts = await QuizAttempt.find(filter).sort({ createdAt: -1 }).limit(limit).lean();
-  }
-
-  if (!attempts.length) {
-    attempts = [
-      { _id: "q1", quizTitle: "Physics Thermodynamics Quiz", subject: "Physics", topic: "Heat Transfer", score: 42, totalQuestions: 10, correctAnswers: 4, createdAt: new Date() },
-      { _id: "q2", quizTitle: "Calculus Fundamentals", subject: "Mathematics", topic: "Limits & Integrals", score: 88, totalQuestions: 10, correctAnswers: 8, createdAt: new Date() },
-    ];
   }
 
   return {
@@ -462,22 +393,7 @@ async function getQuizResults(user, args = {}) {
   }
 
   if (!attempt) {
-    const subject = args.subject || "Physics";
-    attempt = {
-      quizTitle: `${subject} Midterm Practice Quiz`,
-      subject: subject,
-      topic: "Thermodynamics & Heat Transfer",
-      score: 42,
-      totalQuestions: 10,
-      correctAnswers: 4,
-      weakTopics: ["Carnot Cycle", "Second Law of Thermodynamics", "Entropy"],
-      feedback: "Needs significant review in Thermodynamics principles and Carnot efficiency equations.",
-      answers: [
-        { question: "What is the efficiency of a Carnot engine between T1 and T2?", selectedOption: "1 + T2/T1", correctOption: "1 - T2/T1", isCorrect: false, topic: "Carnot Cycle" },
-        { question: "Which law states that entropy never decreases?", selectedOption: "First Law", correctOption: "Second Law", isCorrect: false, topic: "Entropy" },
-      ],
-      createdAt: new Date(),
-    };
+    return { hasResults: false, quizTitle: null, subject: args.subject || null, weakTopics: [], answersSummary: [] };
   }
 
   return {
@@ -489,7 +405,7 @@ async function getQuizResults(user, args = {}) {
     totalQuestions: attempt.totalQuestions,
     correctAnswers: attempt.correctAnswers,
     weakTopics: attempt.weakTopics || [],
-    feedback: attempt.feedback || "Review weak topics.",
+    feedback: attempt.feedback || "",
     answersSummary: (attempt.answers || []).map((a) => ({
       question: a.question,
       selectedOption: a.selectedOption,
@@ -509,13 +425,6 @@ async function getAssignments(user, args = {}) {
     assignments = await Assignment.find(filter).sort({ createdAt: -1 }).limit(10).lean();
   }
 
-  if (!assignments.length) {
-    assignments = [
-      { _id: "a1", room: "physics-101", title: "Physics Lab Report - Optics", filename: "Optics_Lab.pdf", quiz: [{ question: "Sample", options: ["A", "B"], answerIndex: 0 }] },
-      { _id: "a2", room: "math-201", title: "Calculus Assignment 3", filename: "Calculus_3.pdf", quiz: [] },
-    ];
-  }
-
   return {
     total: assignments.length,
     assignments: assignments.map((a) => ({
@@ -525,7 +434,7 @@ async function getAssignments(user, args = {}) {
       filename: a.filename,
       hasQuiz: Boolean(a.quiz && a.quiz.length > 0),
       quizQuestionCount: (a.quiz || []).length,
-      createdAt: a.createdAt || new Date(),
+      createdAt: a.createdAt || null,
     })),
   };
 }
@@ -536,22 +445,6 @@ async function getExams(user, args = {}) {
     const filter = {};
     if (args.subject) filter.subject = new RegExp(String(args.subject).trim(), "i");
     exams = await Exam.find(filter).sort({ date: 1 }).lean();
-  }
-
-  if (!exams.length) {
-    const subject = args.subject || "Physics";
-    exams = [
-      {
-        _id: "e1",
-        title: `${subject} Semester Examination`,
-        subject: subject,
-        date: new Date(Date.now() + 7 * 86400 * 1000),
-        venue: "Hall A",
-        syllabusTopics: ["Kinematics", "Thermodynamics", "Electromagnetism"],
-        durationMinutes: 120,
-        totalMarks: 100,
-      },
-    ];
   }
 
   return {
@@ -577,12 +470,12 @@ async function getAttendance(user) {
 
   const total = records.length;
   const presentCount = records.filter((r) => r.status === "present").length;
-  const attendanceRate = total ? Math.round((presentCount / total) * 100) : 94;
+  const attendanceRate = total ? Math.round((presentCount / total) * 100) : null;
 
   return {
     attendanceRatePercent: attendanceRate,
-    totalClassesRecorded: total || 32,
-    presentCount: presentCount || 30,
+    totalClassesRecorded: total,
+    presentCount,
     recentRecords: records.slice(0, 10).map((r) => ({
       subject: r.subject,
       date: r.date,
@@ -634,12 +527,7 @@ async function getUpcomingEvents(user) {
 }
 
 async function getNotifications(user) {
-  return {
-    notifications: [
-      { id: "1", title: "Timetable updated", message: "Check your updated schedule.", date: new Date().toISOString() },
-      { id: "2", title: "New Assignment posted", message: "A new assignment is available.", date: new Date().toISOString() },
-    ],
-  };
+  return { notifications: [], available: false };
 }
 
 // ---------------------------------------------------------------------------
@@ -952,7 +840,7 @@ const TOOL_HANDLERS = {
   create_study_plan: { handler: createStudyPlan, sourceType: "application", isWrite: true },
 };
 
-async function executeApplicationTool(toolName, rawArgs = {}, userId, conversationId = "") {
+async function executeApplicationTool(toolName, rawArgs = {}, userId, conversationId = "", options = {}) {
   const started = Date.now();
   const toolEntry = TOOL_HANDLERS[toolName];
 
@@ -972,26 +860,21 @@ async function executeApplicationTool(toolName, rawArgs = {}, userId, conversati
     };
   }
 
-  let user = null;
-  if (isDbConnected() && userId && mongoose.Types.ObjectId.isValid(userId)) {
-    user = await User.findById(userId);
+  if (!isDbConnected()) {
+    return { success: false, error: "EduNova database is unavailable." };
+  }
+  if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+    return { success: false, error: "Authenticated user identity is invalid." };
+  }
+  const user = await User.findById(userId);
+  if (!user || user.isBlocked) {
+    return { success: false, error: "Authenticated user was not found or is blocked." };
   }
 
-  if (!user) {
-    user = {
-      _id: userId || new mongoose.Types.ObjectId(),
-      name: "Authenticated Student",
-      username: "student",
-      email: "student@edunova.com",
-      role: "student",
-      grade: "10th Grade",
-      subjects: ["Physics", "Mathematics", "Chemistry", "Computer Science"],
-      enrolledClasses: ["Class-10A"],
-      goals: [],
-      notes: [],
-      save: async () => {},
-    };
+  if (toolEntry.isWrite && !options.confirmed) {
+    return preparePendingAction(toolName, rawArgs, userId, conversationId);
   }
+
 
   try {
     const result = await toolEntry.handler(user, rawArgs);
@@ -1037,4 +920,5 @@ module.exports = {
   executeApplicationTool,
   TOOL_HANDLERS,
   recordAuditLog,
+  confirmApplicationTool,
 };

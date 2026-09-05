@@ -108,6 +108,7 @@ def _normalize_base_url(raw: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class Settings:
+    llm_provider: str = "openai"
     llm_api_key: str = ""
     llm_model: str = "gpt-4.1-mini"
     llm_base_url: str = "https://api.openai.com/v1"
@@ -142,7 +143,29 @@ class Settings:
 
     @property
     def llm_configured(self) -> bool:
-        return bool(self.llm_api_key and self.llm_model and self.llm_base_url)
+        return bool(
+            self.llm_provider in {"openai", "openai_compatible"}
+            and self.llm_api_key
+            and self.llm_model
+            and self.llm_base_url
+            and self.llm_configuration_error is None
+        )
+
+    @property
+    def llm_configuration_error(self) -> str | None:
+        if self.llm_provider not in {"openai", "openai_compatible"}:
+            return "unsupported_provider"
+        try:
+            from urllib.parse import urlsplit
+            parsed = urlsplit(self.llm_base_url)
+            host = (parsed.hostname or "").lower()
+        except Exception:
+            return "invalid_base_url"
+        if parsed.scheme != "https" or not host:
+            return "invalid_base_url"
+        if self.llm_provider == "openai" and host != "api.openai.com":
+            return "provider_base_url_mismatch"
+        return None
 
     @property
     def search_configured(self) -> bool:
@@ -164,6 +187,11 @@ class Settings:
             for token in ("localhost", "127.0.0.1", "0.0.0.0", "::1")
         )
         return {
+            "configured": self.llm_configured,
+            "provider": self.llm_provider,
+            "model": self.llm_model[:60] if self.llm_model else "",
+            "apiKeyPresent": api_key_present,
+            "configurationError": self.llm_configuration_error,
             "llm_configured": self.llm_configured,
             "llm_api_key_present": api_key_present,
             "llm_model_present": bool(self.llm_model),
@@ -192,11 +220,14 @@ def load_settings() -> Settings:
         "https://edunova-x.ranjitacharya13.workers.dev",
     )
 
-    llm_api_key = _first_env("LLM_API_KEY", "OPENAI_API_KEY", "OPENAI_KEY")
-    llm_model = _first_env("LLM_MODEL", "OPENAI_MODEL", default="gpt-4.1-mini")
+    # One canonical configuration contract. Provider-specific aliases are intentionally
+    # not accepted: aliases made it possible to send a key for one provider to another.
+    llm_provider = _first_env("LLM_PROVIDER", default="openai").lower()
+    llm_api_key = _first_env("LLM_API_KEY")
+    llm_model = _first_env("LLM_MODEL", default="gpt-4.1-mini")
     llm_model = _clean_env_value(llm_model) or "gpt-4.1-mini"
     raw_base_url = _first_env(
-        "LLM_BASE_URL", "OPENAI_BASE_URL", "OPENAI_API_BASE", "OPENAI_API_BASE_URL", default="https://api.openai.com/v1"
+        "LLM_BASE_URL", default="https://api.openai.com/v1"
     )
     llm_base_url = _normalize_base_url(raw_base_url)
 
@@ -205,6 +236,7 @@ def load_settings() -> Settings:
     ).rstrip("/")
 
     return Settings(
+        llm_provider=llm_provider,
         llm_api_key=llm_api_key,
         llm_model=llm_model,
         llm_base_url=llm_base_url,

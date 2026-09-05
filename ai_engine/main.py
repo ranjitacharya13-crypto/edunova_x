@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import secrets
 from typing import Any
+from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Header, HTTPException, Request
@@ -48,8 +49,9 @@ def _log_startup_diagnostics() -> None:
     if diag.get("llm_base_url_is_localhost") and is_prod:
         localhost_warning = " [WARNING: base_url points to localhost in production]"
     logger.info(
-        "AI_SERVICE_STARTUP llm_configured=%s provider_host=%s model=%s api_key_present=%s search_configured=%s internal_auth_required=%s%s",
+        "AI_SERVICE_STARTUP llm_configured=%s provider=%s provider_host=%s model=%s api_key_present=%s search_configured=%s internal_auth_required=%s%s",
         diag.get("llm_configured"),
+        settings.llm_provider,
         host,
         diag.get("llm_model") or "none",
         diag.get("llm_api_key_present"),
@@ -67,7 +69,7 @@ def _log_startup_diagnostics() -> None:
             missing.append("LLM_BASE_URL")
         logger.warning(
             "AI_LLM_CONFIGURATION_INCOMPLETE missing=%s llm_key_present=%s llm_model_present=%s llm_base_url_present=%s "
-            "hint=Set LLM_API_KEY, LLM_MODEL, LLM_BASE_URL on the ai_engine service (OPENAI_API_KEY alias supported)",
+            "hint=Set LLM_PROVIDER, LLM_API_KEY, LLM_MODEL, LLM_BASE_URL on the ai_engine service (canonical variables only)",
             ",".join(missing) if missing else "unknown",
             diag.get("llm_api_key_present"),
             diag.get("llm_model_present"),
@@ -93,6 +95,23 @@ for definition in build_all_tools(settings):
 
 llm = OpenAICompatibleLLM(settings)
 agent = AgentEngine(settings, llm, registry)
+provider_runtime = {
+    "state": "ready" if settings.llm_configured else "missing_config",
+    "lastCheckedAt": None,
+    "lastHttpStatus": None,
+    "lastErrorType": None,
+}
+
+
+def _set_provider_state(state: str, status: int | None = None, error_type: str | None = None) -> None:
+    provider_runtime.update({
+        "state": state,
+        "lastCheckedAt": datetime.now(timezone.utc).isoformat(),
+        "lastHttpStatus": status,
+        "lastErrorType": error_type,
+    })
+
+
 conversations = ConversationStore(
     max_turns=settings.conversation_max_turns,
     ttl_seconds=settings.conversation_ttl_seconds,
@@ -122,6 +141,7 @@ class ChatRequest(BaseModel):
     user_name: str | None = Field(default="Student", alias="userName", max_length=100)
     user_email: str | None = Field(default=None, alias="userEmail", max_length=320)
     email: str | None = Field(default=None, max_length=320)  # Legacy client compatibility.
+    application_context: dict[str, Any] = Field(default_factory=dict, alias="applicationContext")
     stream: bool = False
 
 
@@ -142,6 +162,7 @@ async def health() -> dict[str, Any]:
     return {
         "status": "live",
         "service": "edunova-agent",
+        "providerState": provider_runtime["state"],
         "llmConfigured": settings.llm_configured,
         "llmDiagnostics": diag,
         "webSearchConfigured": settings.search_configured,
@@ -153,6 +174,31 @@ async def health() -> dict[str, Any]:
             "maxToolCalls": settings.max_tool_calls,
             "maxRuntimeSeconds": settings.max_agent_runtime_seconds,
         },
+    }
+
+
+@app.get("/api/ai/health")
+async def ai_health(
+    x_ai_internal_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _authorize_internal_request(x_ai_internal_token)
+    try:
+        await llm.probe()
+        _set_provider_state("ready", 200, None)
+    except Exception as exc:
+        _safe_error(exc)
+    return {
+        "success": provider_runtime["state"] == "ready",
+        "status": provider_runtime["state"],
+        "serviceAvailable": True,
+        "configured": settings.llm_configured,
+        "provider": settings.llm_provider,
+        "model": settings.llm_model,
+        "apiKeyPresent": bool(settings.llm_api_key),
+        "configurationError": settings.llm_configuration_error,
+        "lastCheckedAt": provider_runtime["lastCheckedAt"],
+        "lastProviderHttpStatus": provider_runtime["lastHttpStatus"],
+        "lastProviderErrorType": provider_runtime["lastErrorType"],
     }
 
 
@@ -203,72 +249,37 @@ def _sanitize_provider_message_for_user(text: str, limit: int = 180) -> str:
     return t
 
 
-def _safe_error(exc: Exception) -> tuple[int, str]:
+def _safe_error(exc: Exception) -> tuple[int, str, str]:
     if isinstance(exc, asyncio.TimeoutError):
-        logger.warning("AI_AGENT_TIMEOUT runtime limit reached")
-        return 504, "EduNova AI reached its runtime safety limit. Please narrow the request and try again."
+        _set_provider_state("provider_unavailable", 504, "timeout")
+        return 504, "LLM_TIMEOUT", "EduNova AI took too long to respond. Please try again."
     if isinstance(exc, LLMConfigurationError):
-        logger.error(
-            "AI_PROVIDER_CONFIGURATION_ERROR: %s llm_key_present=%s model=%s host=%s",
-            exc,
-            bool(settings.llm_api_key),
-            settings.llm_model,
-            urlsplit(settings.llm_base_url).hostname if settings.llm_base_url else "none",
-        )
-        return 503, "EduNova AI configuration requires attention. The AI provider is not configured. Please check LLM_API_KEY, LLM_MODEL, and LLM_BASE_URL on the AI service."
+        _set_provider_state("missing_config", None, settings.llm_configuration_error or "missing_config")
+        logger.error("AI_PROVIDER_CONFIGURATION_ERROR provider=%s model=%s host=%s reason=%s", settings.llm_provider, settings.llm_model, urlsplit(settings.llm_base_url).hostname if settings.llm_base_url else "none", settings.llm_configuration_error)
+        return 503, "LLM_MISSING_CONFIG", "EduNova AI is not configured correctly."
     if isinstance(exc, LLMResponseError):
         status = getattr(exc, "status_code", None)
-        error_type = getattr(exc, "error_type", "") or ""
-        provider_msg = getattr(exc, "provider_message", "") or str(exc)
-        safe_provider_hint = _sanitize_provider_message_for_user(provider_msg, limit=160)
-        logger.error(
-            "AI_PROVIDER_ERROR status=%s type=%s message=%s model=%s host=%s",
-            status,
-            error_type,
-            safe_provider_hint or str(exc)[:200],
-            settings.llm_model,
-            urlsplit(settings.llm_base_url).hostname if settings.llm_base_url else "none",
-        )
-        if status == 401:
-            return 503, "EduNova AI configuration requires attention. The model provider rejected the credentials (authentication failed). Please verify LLM_API_KEY for the configured provider."
-        if status == 403:
-            return 503, "EduNova AI configuration requires attention. The model provider denied permission for this request (403). Check API key permissions and model access."
-        if status == 404:
-            model_name = settings.llm_model or "unknown"
-            hint = ""
-            if safe_provider_hint and "model" in safe_provider_hint.lower():
-                hint = f" Provider hint: {safe_provider_hint[:100]}"
-            return 503, f"EduNova AI configuration requires attention. The configured model '{model_name}' or endpoint was not found (404). Verify LLM_MODEL and LLM_BASE_URL are compatible.{hint}"
-        if status == 429:
-            return 429, "EduNova AI is busy right now. Please try again shortly."
-        if status in (408, 504):
-            return 504, "EduNova AI took too long to respond. Please try again."
-        if status in (500, 502, 503):
-            if safe_provider_hint and len(safe_provider_hint) < 120 and "api_key" not in safe_provider_hint.lower() and "<" not in safe_provider_hint:
-                return 502, f"The AI model provider is temporarily unavailable. Please try again. ({safe_provider_hint})"
-            return 502, "The AI model provider is temporarily unavailable. Please try again."
+        error_type = str(getattr(exc, "error_type", "") or "provider_error")
+        logger.error("AI_PROVIDER_ERROR provider=%s model=%s host=%s status=%s type=%s", settings.llm_provider, settings.llm_model, urlsplit(settings.llm_base_url).hostname if settings.llm_base_url else "none", status, error_type)
+        if status in (401, 403):
+            _set_provider_state("authentication_failed", status, error_type)
+            return 503, "LLM_AUTHENTICATION_FAILED", "EduNova AI provider authentication is not configured correctly."
+        if status == 404 or error_type in {"not_found", "model_not_found"}:
+            _set_provider_state("model_not_found", status, error_type)
+            return 503, "LLM_MODEL_NOT_FOUND", "The configured AI model is unavailable."
+        if status == 429 or error_type == "rate_limit":
+            _set_provider_state("rate_limited", 429, error_type)
+            return 429, "LLM_RATE_LIMITED", "EduNova AI is rate limited. Please try again shortly."
+        if status in (408, 504) or error_type == "timeout":
+            _set_provider_state("provider_unavailable", status or 504, error_type)
+            return 504, "LLM_TIMEOUT", "EduNova AI took too long to respond. Please try again."
         if status == 400:
-            lower = safe_provider_hint.lower()
-            if "model" in lower or "not found" in lower or "does not exist" in lower:
-                return 503, f"EduNova AI configuration requires attention. The provider rejected the model '{settings.llm_model}'. Verify LLM_MODEL is valid for {urlsplit(settings.llm_base_url).hostname or 'the provider'}."
-            if "response_format" in lower or "json" in lower:
-                return 502, "The AI model provider is temporarily unavailable. Please try again."
-            return 503, "EduNova AI configuration requires attention. The provider rejected the request (400). Check model, base URL, and request parameters."
-        if status and 400 <= status < 500:
-            return 503, "EduNova AI configuration requires attention. The provider rejected the request. Please verify model and endpoint configuration."
-        if status and 500 <= status < 600:
-            return 502, "The AI model provider is temporarily unavailable. Please try again."
-        err_type_lower = str(error_type).lower()
-        if err_type_lower in ("timeout",):
-            return 504, "EduNova AI took too long to respond. Please try again."
-        if err_type_lower in ("rate_limit",):
-            return 429, "EduNova AI is busy right now. Please try again shortly."
-        if err_type_lower in ("dns_error", "network_error"):
-            return 502, "The AI model provider is temporarily unavailable. Please try again."
-        logger.error("AI model provider request failed: %s", exc)
-        return 502, "The AI model provider is temporarily unavailable. Please try again."
+            _set_provider_state("provider_unavailable", status, error_type)
+            return 502, "LLM_INVALID_REQUEST", "The AI provider rejected the request."
+        _set_provider_state("provider_unavailable", status, error_type)
+        return 502, "LLM_PROVIDER_UNAVAILABLE", "The AI model provider is temporarily unavailable. Please try again."
     logger.exception("Agent request failed")
-    return 500, "EduNova AI could not complete this request. Please try again."
+    return 500, "LLM_INTERNAL_ERROR", "EduNova AI could not complete this request. Please try again."
 
 
 async def _run_non_stream(request: ChatRequest) -> dict[str, Any]:
@@ -282,10 +293,12 @@ async def _run_non_stream(request: ChatRequest) -> dict[str, Any]:
             user_role=str(request.user_role or "student"),
             user_name=str(request.user_name or "Student"),
             user_email=str(request.user_email or request.email or ""),
+            application_context=request.application_context,
         ),
         timeout=settings.max_agent_runtime_seconds,
     )
     conversations.append_turn(conversation, request.message.strip(), result.message)
+    _set_provider_state("ready", 200, None)
     return result.public()
 
 
@@ -307,20 +320,23 @@ async def _stream(request: ChatRequest):
                     user_role=str(request.user_role or "student"),
                     user_name=str(request.user_name or "Student"),
                     user_email=str(request.user_email or request.email or ""),
+                    application_context=request.application_context,
                     event_callback=event_callback,
                 ),
                 timeout=settings.max_agent_runtime_seconds,
             )
             conversations.append_turn(conversation, request.message.strip(), result.message)
+            _set_provider_state("ready", 200, None)
             await queue.put({"type": "answer", **result.public()})
         except Exception as exc:
-            status, message = _safe_error(exc)
+            status, code, message = _safe_error(exc)
             await queue.put(
                 {
                     "type": "error",
                     "success": False,
                     "status": status,
                     "message": message,
+                    "error": {"code": code, "message": message},
                     "agentStatus": "failed",
                     "conversationId": conversation.id,
                 }
@@ -370,8 +386,8 @@ async def chat(
     try:
         return await _run_non_stream(payload)
     except Exception as exc:
-        status, message = _safe_error(exc)
-        raise HTTPException(status_code=status, detail=message) from exc
+        status, code, message = _safe_error(exc)
+        raise HTTPException(status_code=status, detail={"code": code, "message": message}) from exc
 
 
 @app.post("/api/ai/query")
@@ -385,5 +401,5 @@ async def legacy_query(
     try:
         return await _run_non_stream(payload)
     except Exception as exc:
-        status, message = _safe_error(exc)
-        raise HTTPException(status_code=status, detail=message) from exc
+        status, code, message = _safe_error(exc)
+        raise HTTPException(status_code=status, detail={"code": code, "message": message}) from exc

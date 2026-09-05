@@ -75,6 +75,7 @@ class AgentState:
     user_role: str = "student"
     user_name: str = "Student"
     user_email: str = ""
+    application_context: dict[str, Any] = field(default_factory=dict)
     current_understanding: str = ""
     goal_type: str = "question"
     known_facts: list[str] = field(default_factory=list)

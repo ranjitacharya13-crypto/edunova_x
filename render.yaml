@@ -128,6 +128,8 @@ services:
       - key: CORS_ORIGIN
         value: https://edunova-x.ranjitacharya13.workers.dev
       # ---- Agent credentials: AI service only, never frontend ---------------
+      - key: LLM_PROVIDER
+        value: openai
       - key: LLM_API_KEY
         sync: false
       - key: LLM_MODEL
@@ -138,7 +140,10 @@ services:
         sync: false
       - key: WEB_SEARCH_PROVIDER
         value: brave
-      # Optional but recommended: same value as on edunova-api.
+      # Public HTTPS URL of edunova-api, required for real authenticated tools.
+      - key: APP_BACKEND_URL
+        sync: false
+      # Required: same random value as on edunova-api.
       - key: AI_INTERNAL_TOKEN
         sync: false
       - key: AI_REQUIRE_INTERNAL_TOKEN

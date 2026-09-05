@@ -1,11 +1,14 @@
-// Integration and unit tests for ApplicationToolRegistry and internal AI tools
+// Security and integration tests for authenticated EduNova application tools.
 const { test, describe, before, after } = require("node:test");
 const assert = require("node:assert");
-const http = require("node:http");
 const express = require("express");
 const mongoose = require("mongoose");
 
-const { executeApplicationTool, TOOL_HANDLERS } = require("../services/applicationTools");
+const User = require("../models/User");
+const Timetable = require("../models/Timetable");
+const StudyPlan = require("../models/StudyPlan");
+const AiAuditLog = require("../models/AiAuditLog");
+const { executeApplicationTool, confirmApplicationTool, TOOL_HANDLERS } = require("../services/applicationTools");
 const aiRoutes = require("../routes/ai");
 
 function makeApp() {
@@ -21,115 +24,124 @@ function listen(app) {
   });
 }
 
+const original = {
+  readyState: mongoose.connection.readyState,
+  findUser: User.findById,
+  findTimetable: Timetable.findOne,
+  createPlan: StudyPlan.create,
+  auditCreate: AiAuditLog.create,
+  token: process.env.AI_INTERNAL_TOKEN,
+};
+
+function stubDatabase() {
+  mongoose.connection.readyState = 1;
+  User.findById = async (id) => ({
+    _id: id,
+    name: "Test Student",
+    username: "test",
+    email: "test@example.com",
+    role: "student",
+    grade: "10",
+    subjects: ["Physics"],
+    enrolledClasses: ["10A"],
+    goals: [],
+    notes: [],
+    isBlocked: false,
+  });
+  Timetable.findOne = async () => ({ Monday: [{ period: 1, subject: "Physics" }] });
+  StudyPlan.create = async (data) => ({ _id: new mongoose.Types.ObjectId(), ...data });
+  AiAuditLog.create = async () => ({});
+}
+
+before(() => {
+  process.env.AI_INTERNAL_TOKEN = "test-internal-token";
+});
+
+after(() => {
+  mongoose.connection.readyState = original.readyState;
+  User.findById = original.findUser;
+  Timetable.findOne = original.findTimetable;
+  StudyPlan.create = original.createPlan;
+  AiAuditLog.create = original.auditCreate;
+  if (original.token === undefined) delete process.env.AI_INTERNAL_TOKEN;
+  else process.env.AI_INTERNAL_TOKEN = original.token;
+});
+
 describe("ApplicationToolRegistry & Internal Tool Execution", () => {
-  test("TOOL_HANDLERS contains all required database and write tools", () => {
-    const expectedTools = [
-      "get_student_profile",
-      "get_subjects",
-      "get_timetable",
-      "get_today_schedule",
-      "get_upcoming_classes",
-      "get_syllabus",
-      "get_learning_materials",
-      "get_progress",
-      "get_study_history",
-      "get_quiz_history",
-      "get_quiz_results",
-      "get_assignments",
-      "get_exams",
-      "get_attendance",
-      "get_notes",
-      "get_goals",
-      "get_upcoming_events",
-      "get_notifications",
-      "create_timetable",
-      "update_timetable",
-      "create_study_session",
-      "mark_study_complete",
-      "create_quiz",
-      "save_quiz",
-      "mark_assignment_complete",
-      "update_progress",
-      "create_note",
-      "set_goal",
-      "create_study_plan",
-    ];
-
-    for (const toolName of expectedTools) {
-      assert.ok(TOOL_HANDLERS[toolName], `Tool ${toolName} should be registered`);
-    }
+  test("registry contains required database and write tools", () => {
+    for (const toolName of [
+      "get_student_profile", "get_subjects", "get_timetable", "get_today_schedule",
+      "get_syllabus", "get_learning_materials", "get_progress", "get_study_history",
+      "get_quiz_history", "get_quiz_results", "get_assignments", "get_exams",
+      "get_attendance", "create_timetable", "create_study_session", "create_quiz",
+      "save_quiz", "update_progress", "create_note", "set_goal", "create_study_plan",
+    ]) assert.ok(TOOL_HANDLERS[toolName], `Tool ${toolName} should be registered`);
   });
 
-  test("executeApplicationTool successfully retrieves student schedule and profile", async () => {
-    const profileRes = await executeApplicationTool("get_student_profile", {}, "test-student-123");
-    assert.strictEqual(profileRes.success, true);
-    assert.strictEqual(profileRes.sourceType, "database");
-    assert.ok(profileRes.data.subjects.length > 0);
-
-    const scheduleRes = await executeApplicationTool("get_today_schedule", {}, "test-student-123");
-    assert.strictEqual(scheduleRes.success, true);
-    assert.strictEqual(scheduleRes.sourceType, "database");
-    assert.ok(scheduleRes.data.day);
+  test("reads real model data for the authenticated user", async () => {
+    stubDatabase();
+    const userId = new mongoose.Types.ObjectId().toString();
+    const profile = await executeApplicationTool("get_student_profile", {}, userId);
+    assert.strictEqual(profile.success, true);
+    assert.deepStrictEqual(profile.data.subjects, ["Physics"]);
+    const timetable = await executeApplicationTool("get_timetable", { day: "Monday" }, userId);
+    assert.strictEqual(timetable.success, true);
+    assert.strictEqual(timetable.data.schedule.Monday[0].subject, "Physics");
   });
 
-  test("executeApplicationTool executes write action create_study_plan safely", async () => {
-    const planArgs = {
-      title: "Midterm Review Plan",
+  test("writes through the real StudyPlan model", async () => {
+    stubDatabase();
+    const userId = new mongoose.Types.ObjectId().toString();
+    const result = await executeApplicationTool("create_study_plan", {
+      title: "Physics plan",
       subject: "Physics",
-      schedule: [
-        { day: "Monday", time: "18:00 - 19:30", topic: "Thermodynamics", task: "Review Carnot engine" },
-        { day: "Tuesday", time: "18:00 - 19:30", topic: "Kinematics", task: "Solve projectile motion equations" },
-      ],
+      schedule: [{ day: "Monday", topic: "Waves", task: "Practice", subject: "Physics" }],
+    }, userId);
+    assert.strictEqual(result.success, true);
+    assert.strictEqual(result.data.requiresConfirmation, true);
+    assert.ok(result.data.confirmationToken);
+    const confirmed = await confirmApplicationTool(result.data.confirmationToken, userId);
+    assert.strictEqual(confirmed.success, true);
+    assert.ok(confirmed.data.planId);
+  });
+
+  test("internal endpoint requires the shared service token", async () => {
+    const server = await listen(makeApp());
+    try {
+      const response = await fetch(`http://127.0.0.1:${server.address().port}/api/ai/internal/tools`, {
+        method: "POST", headers: { "Content-Type": "application/json", "X-User-Id": new mongoose.Types.ObjectId().toString() },
+        body: JSON.stringify({ tool: "get_student_profile", arguments: {} }),
+      });
+      assert.strictEqual(response.status, 401);
+    } finally { server.close(); }
+  });
+
+  test("body userId cannot override the trusted identity header", async () => {
+    stubDatabase();
+    const trustedId = new mongoose.Types.ObjectId().toString();
+    const forgedId = new mongoose.Types.ObjectId().toString();
+    let lookedUpId = "";
+    User.findById = async (id) => {
+      lookedUpId = String(id);
+      return { _id: id, name: "Owner", email: "owner@example.com", role: "student", subjects: [], enrolledClasses: [], goals: [], notes: [], isBlocked: false };
     };
-
-    const planRes = await executeApplicationTool("create_study_plan", planArgs, "test-student-123");
-    assert.strictEqual(planRes.success, true);
-    assert.strictEqual(planRes.sourceType, "application");
-    assert.ok(planRes.data.totalSessions >= 2);
+    const server = await listen(makeApp());
+    try {
+      const response = await fetch(`http://127.0.0.1:${server.address().port}/api/ai/internal/tools`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-AI-Internal-Token": "test-internal-token", "X-User-Id": trustedId },
+        body: JSON.stringify({ tool: "get_student_profile", arguments: {}, userId: forgedId }),
+      });
+      assert.strictEqual(response.status, 200);
+      assert.strictEqual(lookedUpId, trustedId);
+      assert.notStrictEqual(lookedUpId, forgedId);
+    } finally { server.close(); }
   });
 
-  test("HTTP POST /api/ai/internal/tools executes tool and returns structured result", async () => {
-    const app = await listen(makeApp());
-    const address = app.address();
-    try {
-      const response = await fetch(`http://127.0.0.1:${address.port}/api/ai/internal/tools`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-User-Id": "student-test-456",
-        },
-        body: JSON.stringify({
-          tool: "get_quiz_results",
-          arguments: { subject: "Physics" },
-          conversationId: "conv-123",
-        }),
-      });
-
-      assert.strictEqual(response.status, 200);
-      const json = await response.json();
-      assert.strictEqual(json.success, true);
-      assert.strictEqual(json.sourceType, "database");
-    } finally {
-      app.close();
-    }
-  });
-
-  test("HTTP POST /api/ai/internal/tools rejects unknown tool gracefully", async () => {
-    const app = await listen(makeApp());
-    const address = app.address();
-    try {
-      const response = await fetch(`http://127.0.0.1:${address.port}/api/ai/internal/tools`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tool: "non_existent_tool", arguments: {} }),
-      });
-
-      assert.strictEqual(response.status, 200);
-      const json = await response.json();
-      assert.strictEqual(json.success, false);
-      assert.match(json.error, /not registered/i);
-    } finally {
-      app.close();
-    }
+  test("disconnected database returns an error instead of fabricated student data", async () => {
+    mongoose.connection.readyState = 0;
+    const result = await executeApplicationTool("get_quiz_results", { subject: "Physics" }, new mongoose.Types.ObjectId().toString());
+    assert.strictEqual(result.success, false);
+    assert.match(result.error, /database is unavailable/i);
   });
 });

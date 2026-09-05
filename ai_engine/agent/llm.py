@@ -260,6 +260,28 @@ class OpenAICompatibleLLM:
         self.settings = settings
         self._client = client
 
+    async def probe(self) -> None:
+        """Authenticate and verify model access without generating completion tokens."""
+        if not self.settings.llm_configured:
+            raise LLMConfigurationError("LLM provider configuration is incomplete or inconsistent")
+        from urllib.parse import quote
+        url = f"{self.settings.llm_base_url.rstrip('/')}/models/{quote(self.settings.llm_model, safe='')}"
+        headers = {"Authorization": f"Bearer {self.settings.llm_api_key}"}
+        owns_client = self._client is None
+        client = self._client or httpx.AsyncClient(timeout=httpx.Timeout(self.settings.llm_timeout_seconds), follow_redirects=False)
+        try:
+            response = await client.get(url, headers=headers)
+            if response.status_code >= 400:
+                safe_msg, err_type, status = _extract_provider_error(response)
+                raise LLMResponseError("LLM provider health check failed", status_code=status, error_type=err_type, provider_message=safe_msg)
+        except httpx.TimeoutException as exc:
+            raise LLMResponseError("LLM provider health check timed out", status_code=504, error_type="timeout") from exc
+        except httpx.NetworkError as exc:
+            raise LLMResponseError("LLM provider health check failed", status_code=503, error_type="network_error") from exc
+        finally:
+            if owns_client:
+                await client.aclose()
+
     async def complete_json(
         self,
         *,
