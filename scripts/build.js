@@ -46,10 +46,18 @@ function inspectWranglerConfig(configFile) {
 process.env.ELECTRON_SKIP_BINARY_DOWNLOAD = '1';
 
 // Step 1: Install frontend dependencies if needed
+// Use `npm ci` whenever a lockfile exists so the production build is fully
+// reproducible from a clean checkout (it installs exactly what the lockfile
+// pins and fails loudly on any drift). Fall back to `npm install` only if
+// there is no lockfile to honor.
 const frontendNodeModules = path.join(frontendDir, 'node_modules');
 if (!fs.existsSync(frontendNodeModules)) {
   console.log('📦 [EduNova X Build] Installing frontend dependencies...');
-  execSync('npm install --no-audit --no-fund', {
+  const lockfile = path.join(frontendDir, 'package-lock.json');
+  const installCmd = fs.existsSync(lockfile)
+    ? 'npm ci --no-audit --no-fund'
+    : 'npm install --no-audit --no-fund';
+  execSync(installCmd, {
     cwd: frontendDir,
     stdio: 'inherit',
     env: { ...process.env, ELECTRON_SKIP_BINARY_DOWNLOAD: '1' }
