@@ -3,13 +3,13 @@ import { streamAIEngine } from "../api/api";
 import EduNovaAIAvatar from "./EduNovaAIAvatar";
 
 const ASSISTANT_NAME = "EduNova AI";
-const ASSISTANT_SUBTITLE = "Your personal learning assistant";
+const ASSISTANT_SUBTITLE = "Unified Data-Aware Learning & Academic Assistant";
 
 const QUICK_PROMPTS = [
-  "Explain today's topic",
-  "Help me prepare for an exam",
-  "Give me practice questions",
-  "Summarize my study material",
+  "What classes do I have today?",
+  "What should I study today based on my weak topics?",
+  "Why did I perform badly in my last physics quiz?",
+  "Make me a study plan for next week's exam",
 ];
 
 export default function AIChatAssistant() {
@@ -26,7 +26,7 @@ export default function AIChatAssistant() {
     if (!cleanMessage || loading) return;
 
     setLoading(true);
-    setAgentStatus("Understanding your question...");
+    setAgentStatus("Analyzing request & querying relevant sources...");
     setError("");
     setResult(null);
 
@@ -81,7 +81,7 @@ export default function AIChatAssistant() {
           <div>
             <label className="block text-sm font-semibold text-slate-700 dark:text-slate-200">Ask EduNova AI</label>
             <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-              Get help with lessons, revision, practice questions, and study planning.
+              Combines your timetable, quiz history, syllabus, progress, and external research intelligently.
             </p>
           </div>
 
@@ -89,7 +89,7 @@ export default function AIChatAssistant() {
             value={message}
             onChange={(event) => setMessage(event.target.value)}
             rows={6}
-            placeholder="Example: Explain photosynthesis in simple terms"
+            placeholder="Example: What classes do I have today and what weak topics should I revise?"
             className="w-full resize-none rounded-2xl border border-slate-200 bg-white/90 px-4 py-3 text-sm leading-6 text-slate-900 shadow-inner transition placeholder:text-slate-400 focus:outline-none focus:ring-4 focus:ring-teal-400/15 dark:border-white/10 dark:bg-slate-900/80 dark:text-white dark:placeholder:text-slate-500"
           />
 
@@ -98,7 +98,7 @@ export default function AIChatAssistant() {
             disabled={loading || !message.trim()}
             className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-br from-teal-500 to-cyan-500 px-4 py-3 text-sm font-bold text-white shadow-[0_12px_24px_rgba(13,148,136,0.24)] transition hover:-translate-y-0.5 hover:shadow-[0_16px_30px_rgba(13,148,136,0.3)] focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-300 disabled:translate-y-0 disabled:cursor-not-allowed disabled:from-slate-300 disabled:to-slate-300 disabled:text-slate-500 disabled:shadow-none dark:disabled:from-slate-700 dark:disabled:to-slate-700 dark:disabled:text-slate-400"
           >
-            {loading ? "Thinking..." : "Ask EduNova AI"}
+            {loading ? "Reasoning across sources..." : "Ask EduNova AI"}
           </button>
 
           <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
@@ -122,7 +122,7 @@ export default function AIChatAssistant() {
               <EduNovaAIAvatar size={62} decorative />
               <h3 className="mt-4 text-lg font-bold text-slate-900 dark:text-white">How can I help you today?</h3>
               <p className="mt-2 max-w-sm text-sm leading-6 text-slate-500 dark:text-slate-400">
-                Ask about your subjects, assignments, study materials, or exam preparation.
+                Ask about your classes, quiz performance, weak topics, study plans, or explore any academic concept.
               </p>
             </div>
           )}
@@ -153,9 +153,52 @@ export default function AIChatAssistant() {
                 <EduNovaAIAvatar size={36} decorative />
                 <div className="rounded-2xl rounded-tl-md border border-slate-200 bg-white px-4 py-3 text-sm leading-6 text-slate-700 shadow-sm dark:border-white/10 dark:bg-white/[0.07] dark:text-slate-100">
                   <p className="whitespace-pre-wrap">{result.reply}</p>
-                  {Array.isArray(result.sources) && result.sources.length > 0 && (
+
+                  {/* Internal DB Sources Badges */}
+                  {Array.isArray(result.internalSources) && result.internalSources.length > 0 && (
                     <div className="mt-4 border-t border-slate-200 pt-3 dark:border-white/10">
-                      <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.14em] text-slate-400">Sources checked</p>
+                      <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.14em] text-teal-600 dark:text-teal-300">
+                        EduNova Data Consulted
+                      </p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {result.internalSources.map((src, i) => (
+                          <span
+                            key={`int-src-${i}`}
+                            className="inline-flex items-center gap-1 rounded-md bg-teal-50 px-2.5 py-1 text-xs font-semibold text-teal-700 dark:bg-teal-900/30 dark:text-teal-200"
+                          >
+                            <span className="h-1.5 w-1.5 rounded-full bg-teal-500" />
+                            {src.title || src.source}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Executed Actions Tags */}
+                  {Array.isArray(result.actions) && result.actions.length > 0 && (
+                    <div className="mt-3 border-t border-slate-200 pt-3 dark:border-white/10">
+                      <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.14em] text-emerald-600 dark:text-emerald-300">
+                        Application Actions Saved
+                      </p>
+                      <div className="space-y-1">
+                        {result.actions.map((act, i) => (
+                          <div
+                            key={`act-${i}`}
+                            className="rounded-lg bg-emerald-50 px-2.5 py-1.5 text-xs font-medium text-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-200"
+                          >
+                            ✓ {act.message || act.tool}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* External Web Sources */}
+                  {Array.isArray(result.sources) && result.sources.length > 0 && (
+                    <div className="mt-3 border-t border-slate-200 pt-3 dark:border-white/10">
+                      <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.14em] text-slate-400">
+                        External Verified Sources
+                      </p>
                       <div className="space-y-1.5">
                         {result.sources.slice(0, 6).map((source) => (
                           <a

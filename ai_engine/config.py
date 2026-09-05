@@ -34,35 +34,19 @@ def _boolean(name: str, default: bool) -> bool:
 
 
 def _clean_env_value(raw: str | None) -> str:
-    """Strip whitespace and surrounding quotes without exposing secrets.
-
-    Handles common misconfigurations:
-    - LLM_API_KEY="sk-xxx"  (quotes pasted into Render dashboard)
-    - LLM_API_KEY='sk-xxx'
-    - LLM_BASE_URL=" https://api.openai.com/v1/ "
-    - LLM_BASE_URL='https://api.openai.com/v1'
-    Returns empty string for None/empty.
-    Never returns the secret itself in logs; caller decides what to log.
-    """
+    """Strip whitespace and surrounding quotes without exposing secrets."""
     if raw is None:
         return ""
     value = str(raw).strip()
     if not value:
         return ""
-    # Remove outer matching quotes repeatedly: "'sk-xxx'" -> '"sk-xxx"' -> sk-xxx
-    # Also handle stray leading/trailing quotes like `"sk-xxx` or `sk-xxx"`
-    # Loop stripping ensures "' https://... '" -> https://...
-    # We strip whitespace between layers too.
     iteration = 0
     while len(value) >= 2 and value[0] in "\"'`" and value[-1] in "\"'`" and iteration < 5:
         inner = value[1:-1].strip()
-        # If inner is empty after stripping, break to avoid infinite loop
         if inner == value:
             break
         value = inner
         iteration += 1
-    # Strip any remaining single leading/trailing quote characters that were
-    # mismatched, e.g. '"https://api.openai.com/v1' or 'https://...''
     value = value.strip().strip("\"'`").strip()
     return value
 
@@ -76,79 +60,44 @@ def _first_env(*names: str, default: str = "") -> str:
         cleaned = _clean_env_value(raw)
         if cleaned:
             return cleaned
-        # If explicitly set but empty after cleaning, treat as missing and
-        # continue searching aliases; but if the caller explicitly set
-        # LLM_API_KEY="" we want to respect that as missing.
         continue
     return _clean_env_value(default) if default else ""
 
 
 def _normalize_base_url(raw: str) -> str:
-    """Normalize LLM base URL to a safe, deduplicated form.
-
-    Handles:
-    - whitespace:                  " https://api.openai.com/v1 " -> https://api.openai.com/v1
-    - trailing slash:              https://api.openai.com/v1/ -> https://api.openai.com/v1
-    - missing scheme:              api.openai.com/v1 -> https://api.openai.com/v1
-    - duplicate /v1/v1:            https://api.openai.com/v1/v1 -> https://api.openai.com/v1
-    - already includes /chat/completions: https://api.openai.com/v1/chat/completions -> https://api.openai.com/v1
-    - duplicate slashes:           https://api.openai.com//v1 -> https://api.openai.com/v1
-    - surrounding quotes already stripped by _clean_env_value
-    - localhost detection is left to caller for warning, not mutation
-    Never includes secrets.
-    """
+    """Normalize LLM base URL to a safe, deduplicated form."""
     cleaned = _clean_env_value(raw)
     if not cleaned:
         return "https://api.openai.com/v1"
 
     cleaned = cleaned.strip()
-    # Remove internal whitespace that would break URL (e.g. copy-paste with spaces)
-    # We do not remove encoded spaces; just strip and reject whitespace inside.
     if " " in cleaned or "\n" in cleaned or "\t" in cleaned:
-        # Collapse whitespace to empty and strip; safer to remove spaces then validate
         cleaned = "".join(cleaned.split())
 
-    # Strip trailing slash(es) for consistent handling
     cleaned = cleaned.rstrip("/")
-
-    # If it already ends with /chat/completions (or /chat/completion), strip that suffix
-    # because the LLM client appends /chat/completions itself.
     lower = cleaned.lower()
     if lower.endswith("/chat/completions"):
         cleaned = cleaned[: -len("/chat/completions")].rstrip("/")
-        lower = cleaned.lower()
     elif lower.endswith("/chat/completion"):
         cleaned = cleaned[: -len("/chat/completion")].rstrip("/")
-        lower = cleaned.lower()
-    # Also handle case where provider was configured as full endpoint with version:
-    # https://api.openai.com/v1/chat/completions -> https://api.openai.com/v1 (already above)
 
-    # Separate scheme to safely collapse duplicate slashes without breaking https://
-    proto = ""
-    rest = cleaned
     if "://" in cleaned:
         proto, rest = cleaned.split("://", 1)
         proto = proto.lower() + "://"
-        # Normalize duplicate slashes in rest
         while "//" in rest:
             rest = rest.replace("//", "/")
         cleaned = proto + rest
     else:
-        # No scheme: collapse duplicate slashes anyway
+        rest = cleaned
         while "//" in rest:
             rest = rest.replace("//", "/")
         cleaned = rest
 
-    # Collapse duplicate /v1/v1 segments (common when ENV has /v1 and code appends /v1 logic)
-    # Do this after scheme normalization
     while "/v1/v1" in cleaned:
         cleaned = cleaned.replace("/v1/v1", "/v1")
-    # Also handle trailing /v1/ already stripped, but double-check
     cleaned = cleaned.rstrip("/")
 
-    # Ensure scheme present: default to https:// if missing and not localhost
     if not cleaned.startswith("http://") and not cleaned.startswith("https://"):
-        # Avoid double-adding if cleaned starts with //
         cleaned = "https://" + cleaned.lstrip("/")
 
     cleaned = cleaned.rstrip("/")
@@ -159,32 +108,37 @@ def _normalize_base_url(raw: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class Settings:
-    llm_api_key: str
-    llm_model: str
-    llm_base_url: str
-    llm_timeout_seconds: int
-    llm_max_output_tokens: int
-    llm_temperature: float
-    llm_json_mode: bool
+    llm_api_key: str = ""
+    llm_model: str = "gpt-4.1-mini"
+    llm_base_url: str = "https://api.openai.com/v1"
+    llm_timeout_seconds: int = 60
+    llm_max_output_tokens: int = 3000
+    llm_temperature: float = 0.2
+    llm_json_mode: bool = True
 
-    web_search_api_key: str
-    web_search_provider: str
-    web_search_max_results: int
-    web_request_timeout_seconds: int
-    web_max_content_length: int
-    web_max_extracted_chars: int
-    web_max_redirects: int
+    web_search_api_key: str = ""
+    web_search_provider: str = "brave"
+    web_search_max_results: int = 5
+    web_request_timeout_seconds: int = 10
+    web_max_content_length: int = 200_000
+    web_max_extracted_chars: int = 45_000
+    web_max_redirects: int = 5
 
-    max_agent_iterations: int
-    max_tool_calls: int
-    max_agent_runtime_seconds: int
-    agent_max_context_chars: int
-    conversation_max_turns: int
-    conversation_ttl_seconds: int
+    max_agent_iterations: int = 12
+    max_tool_calls: int = 15
+    max_agent_runtime_seconds: int = 180
+    agent_max_context_chars: int = 90_000
+    conversation_max_turns: int = 12
+    conversation_ttl_seconds: int = 86_400
 
-    ai_internal_token: str
-    ai_require_internal_token: bool
-    cors_origins: tuple[str, ...]
+    ai_internal_token: str = ""
+    ai_require_internal_token: bool = False
+    app_backend_url: str = "http://127.0.0.1:4000"
+    cors_origins: tuple[str, ...] = (
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "https://edunova-x.ranjitacharya13.workers.dev",
+    )
 
     @property
     def llm_configured(self) -> bool:
@@ -195,11 +149,6 @@ class Settings:
         return bool(self.web_search_api_key and self.web_search_provider)
 
     def llm_safe_diagnostics(self) -> dict[str, object]:
-        """Safe diagnostics that never include secrets.
-
-        Returns only presence/shape, not values, for LLM credentials.
-        Useful for /health and startup logs.
-        """
         host = ""
         try:
             from urllib.parse import urlsplit
@@ -207,9 +156,7 @@ class Settings:
             host = urlsplit(self.llm_base_url).hostname or ""
         except Exception:
             host = "invalid"
-        # Detect common misconfigurations without exposing secrets
         api_key_present = bool(self.llm_api_key)
-        # Detect if base_url looks like it still contains endpoint suffix (should not after normalization)
         base_url_has_chat_completions = "/chat/completions" in (self.llm_base_url or "").lower()
         base_url_has_double_v1 = "/v1/v1" in (self.llm_base_url or "")
         base_url_is_localhost = any(
@@ -245,17 +192,17 @@ def load_settings() -> Settings:
         "https://edunova-x.ranjitacharya13.workers.dev",
     )
 
-    # Canonical LLM variables with sensible aliases for compatibility.
-    # LLM_* is primary; OPENAI_* aliases are supported so a deployment that
-    # used OPENAI_API_KEY does not silently appear as "not configured".
     llm_api_key = _first_env("LLM_API_KEY", "OPENAI_API_KEY", "OPENAI_KEY")
     llm_model = _first_env("LLM_MODEL", "OPENAI_MODEL", default="gpt-4.1-mini")
-    # Re-clean model separately to handle quotes edge case in alias path
     llm_model = _clean_env_value(llm_model) or "gpt-4.1-mini"
     raw_base_url = _first_env(
         "LLM_BASE_URL", "OPENAI_BASE_URL", "OPENAI_API_BASE", "OPENAI_API_BASE_URL", default="https://api.openai.com/v1"
     )
     llm_base_url = _normalize_base_url(raw_base_url)
+
+    app_backend_url = _first_env(
+        "APP_BACKEND_URL", "EXPRESS_URL", "SERVER_URL", default="http://127.0.0.1:4000"
+    ).rstrip("/")
 
     return Settings(
         llm_api_key=llm_api_key,
@@ -280,5 +227,6 @@ def load_settings() -> Settings:
         conversation_ttl_seconds=_integer("CONVERSATION_TTL_SECONDS", 86_400, 300, 604_800),
         ai_internal_token=_clean_env_value(os.getenv("AI_INTERNAL_TOKEN", "")),
         ai_require_internal_token=_boolean("AI_REQUIRE_INTERNAL_TOKEN", False),
+        app_backend_url=app_backend_url,
         cors_origins=cors_origins,
     )

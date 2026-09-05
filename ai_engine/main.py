@@ -1,4 +1,4 @@
-"""FastAPI entrypoint for the EduNova autonomous AI agent."""
+"""FastAPI entrypoint for the EduNova unified autonomous AI agent."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ except ImportError:
 from agent.engine import AgentEngine
 from agent.llm import LLMConfigurationError, LLMResponseError, OpenAICompatibleLLM
 from agent.memory import ConversationStore
-from agent.tools import ToolRegistry, build_web_tools
+from agent.tools import ToolRegistry, build_all_tools
 from config import load_settings
 
 logging.basicConfig(
@@ -38,16 +38,15 @@ logging.basicConfig(
 logger = logging.getLogger("edunova.api")
 settings = load_settings()
 
+
 # --- Safe startup diagnostics (no secrets) ---
 def _log_startup_diagnostics() -> None:
     diag = settings.llm_safe_diagnostics()
     host = diag.get("llm_base_url_host") or "unknown"
-    # Detect localhost in production as a likely misconfiguration
     is_prod = os.getenv("NODE_ENV", "").lower() == "production" or os.getenv("ENV", "").lower() == "production"
     localhost_warning = ""
     if diag.get("llm_base_url_is_localhost") and is_prod:
         localhost_warning = " [WARNING: base_url points to localhost in production]"
-    # Structured logs
     logger.info(
         "AI_SERVICE_STARTUP llm_configured=%s provider_host=%s model=%s api_key_present=%s search_configured=%s internal_auth_required=%s%s",
         diag.get("llm_configured"),
@@ -58,13 +57,6 @@ def _log_startup_diagnostics() -> None:
         settings.ai_require_internal_token,
         localhost_warning,
     )
-    if diag.get("llm_base_url_has_chat_completions_suffix"):
-        logger.warning(
-            "AI_PROVIDER_CONFIG_WARNING base_url contains /chat/completions suffix (will be normalized) host=%s",
-            host,
-        )
-    if diag.get("llm_base_url_has_double_v1"):
-        logger.warning("AI_PROVIDER_CONFIG_WARNING base_url contains duplicate /v1/v1 host=%s", host)
     if not settings.llm_configured:
         missing: list[str] = []
         if not settings.llm_api_key:
@@ -73,8 +65,6 @@ def _log_startup_diagnostics() -> None:
             missing.append("LLM_MODEL")
         if not settings.llm_base_url:
             missing.append("LLM_BASE_URL")
-        # Suggest alias if OPENAI_* was used but not LLM_*? The config already handles aliases, so if still missing, no alias helped.
-        # Provide safe hint without secret
         logger.warning(
             "AI_LLM_CONFIGURATION_INCOMPLETE missing=%s llm_key_present=%s llm_model_present=%s llm_base_url_present=%s "
             "hint=Set LLM_API_KEY, LLM_MODEL, LLM_BASE_URL on the ai_engine service (OPENAI_API_KEY alias supported)",
@@ -83,7 +73,6 @@ def _log_startup_diagnostics() -> None:
             diag.get("llm_model_present"),
             diag.get("llm_base_url_present"),
         )
-        logger.info("LLM configuration invalid: provider_key_present=%s", diag.get("llm_api_key_present"))
     else:
         logger.info(
             "AI_PROVIDER_STARTUP_OK provider_host=%s model=%s timeout=%s json_mode=%s",
@@ -93,11 +82,15 @@ def _log_startup_diagnostics() -> None:
             settings.llm_json_mode,
         )
 
+
 _log_startup_diagnostics()
 
-registry = ToolRegistry(allowed_permissions={"READ_EXTERNAL"})
-for definition in build_web_tools(settings):
+registry = ToolRegistry(
+    allowed_permissions={"READ_INTERNAL", "WRITE_INTERNAL", "READ_EXTERNAL", "UTILITY"}
+)
+for definition in build_all_tools(settings):
     registry.register(definition)
+
 llm = OpenAICompatibleLLM(settings)
 agent = AgentEngine(settings, llm, registry)
 conversations = ConversationStore(
@@ -107,8 +100,8 @@ conversations = ConversationStore(
 
 app = FastAPI(
     title="EduNova AI Agent",
-    version="2.0.0",
-    description="Goal-oriented learning and research agent with permissioned tools.",
+    version="2.1.0",
+    description="Unified data-aware learning and research agent combining internal database, external data, conversation context, and LLM knowledge.",
 )
 app.add_middleware(
     CORSMiddleware,
@@ -125,6 +118,9 @@ class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=12_000)
     conversation_id: str | None = Field(default=None, alias="conversationId", max_length=100)
     owner_id: str | None = Field(default=None, alias="ownerId", max_length=200)
+    user_role: str | None = Field(default="student", alias="userRole", max_length=50)
+    user_name: str | None = Field(default="Student", alias="userName", max_length=100)
+    user_email: str | None = Field(default=None, alias="userEmail", max_length=320)
     email: str | None = Field(default=None, max_length=320)  # Legacy client compatibility.
     stream: bool = False
 
@@ -134,8 +130,8 @@ async def root() -> dict[str, Any]:
     return {
         "success": True,
         "service": "edunova-agent",
-        "version": "2.0.0",
-        "architecture": "autonomous-agent-loop",
+        "version": "2.1.0",
+        "architecture": "unified-data-aware-agent",
         "endpoint": "POST /api/ai/chat",
     }
 
@@ -160,17 +156,12 @@ async def health() -> dict[str, Any]:
     }
 
 
-# Safe diagnostic endpoint that verifies provider reachability without exposing secrets.
-# Requires internal token when AI_REQUIRE_INTERNAL_TOKEN is true, or any authenticated
-# request; it never returns the API key.
 @app.get("/api/ai/diagnostics")
 async def diagnostics(
     x_ai_internal_token: str | None = Header(default=None),
 ) -> dict[str, Any]:
-    # Reuse same auth as chat: if internal auth is required, enforce it
     _authorize_internal_request(x_ai_internal_token)
     diag = settings.llm_safe_diagnostics()
-    # Add runtime check: is the configured base_url reachable in terms of host parsing?
     host = diag.get("llm_base_url_host") or "unknown"
     base_url_ok = bool(host and host != "unknown" and "." in host)
     return {
@@ -199,18 +190,14 @@ def _owner(request: ChatRequest) -> str:
 
 
 def _sanitize_provider_message_for_user(text: str, limit: int = 180) -> str:
-    """Return a short safe provider hint for user-facing messages (no secrets, no HTML)."""
     import re
 
     t = str(text or "").strip()
     if not t:
         return ""
-    # Strip HTML
     t = re.sub(r"<[^>]*>", " ", t)
     t = re.sub(r"\s+", " ", t).strip()
-    # Remove secret patterns
     t = re.sub(r"sk-[A-Za-z0-9-_]{10,}", "[redacted]", t)
-    # Truncate
     if len(t) > limit:
         t = t[:limit].rstrip() + "…"
     return t
@@ -221,16 +208,19 @@ def _safe_error(exc: Exception) -> tuple[int, str]:
         logger.warning("AI_AGENT_TIMEOUT runtime limit reached")
         return 504, "EduNova AI reached its runtime safety limit. Please narrow the request and try again."
     if isinstance(exc, LLMConfigurationError):
-        # Log the actionable variable names on the server, but expose only a
-        # stable, user-safe message to students.
-        logger.error("AI_PROVIDER_CONFIGURATION_ERROR: %s llm_key_present=%s model=%s host=%s", exc, bool(settings.llm_api_key), settings.llm_model, urlsplit(settings.llm_base_url).hostname if settings.llm_base_url else "none")
+        logger.error(
+            "AI_PROVIDER_CONFIGURATION_ERROR: %s llm_key_present=%s model=%s host=%s",
+            exc,
+            bool(settings.llm_api_key),
+            settings.llm_model,
+            urlsplit(settings.llm_base_url).hostname if settings.llm_base_url else "none",
+        )
         return 503, "EduNova AI configuration requires attention. The AI provider is not configured. Please check LLM_API_KEY, LLM_MODEL, and LLM_BASE_URL on the AI service."
     if isinstance(exc, LLMResponseError):
         status = getattr(exc, "status_code", None)
         error_type = getattr(exc, "error_type", "") or ""
         provider_msg = getattr(exc, "provider_message", "") or str(exc)
         safe_provider_hint = _sanitize_provider_message_for_user(provider_msg, limit=160)
-        # Structured log with safe fields
         logger.error(
             "AI_PROVIDER_ERROR status=%s type=%s message=%s model=%s host=%s",
             status,
@@ -239,44 +229,35 @@ def _safe_error(exc: Exception) -> tuple[int, str]:
             settings.llm_model,
             urlsplit(settings.llm_base_url).hostname if settings.llm_base_url else "none",
         )
-        # Classify safely per HTTP semantics
         if status == 401:
             return 503, "EduNova AI configuration requires attention. The model provider rejected the credentials (authentication failed). Please verify LLM_API_KEY for the configured provider."
         if status == 403:
             return 503, "EduNova AI configuration requires attention. The model provider denied permission for this request (403). Check API key permissions and model access."
         if status == 404:
-            # Could be invalid model or endpoint
             model_name = settings.llm_model or "unknown"
             hint = ""
             if safe_provider_hint and "model" in safe_provider_hint.lower():
                 hint = f" Provider hint: {safe_provider_hint[:100]}"
-            # Avoid exposing internal URL, just mention model
             return 503, f"EduNova AI configuration requires attention. The configured model '{model_name}' or endpoint was not found (404). Verify LLM_MODEL and LLM_BASE_URL are compatible.{hint}"
         if status == 429:
             return 429, "EduNova AI is busy right now. Please try again shortly."
         if status in (408, 504):
             return 504, "EduNova AI took too long to respond. Please try again."
         if status in (500, 502, 503):
-            # Temporary provider outage - keep generic but include safe hint if short and useful
             if safe_provider_hint and len(safe_provider_hint) < 120 and "api_key" not in safe_provider_hint.lower() and "<" not in safe_provider_hint:
-                # Only include hint if it's not HTML and not too long
                 return 502, f"The AI model provider is temporarily unavailable. Please try again. ({safe_provider_hint})"
             return 502, "The AI model provider is temporarily unavailable. Please try again."
         if status == 400:
-            # Bad request often means misconfiguration (invalid model, unsupported params) but we already retried fixable params
             lower = safe_provider_hint.lower()
             if "model" in lower or "not found" in lower or "does not exist" in lower:
                 return 503, f"EduNova AI configuration requires attention. The provider rejected the model '{settings.llm_model}'. Verify LLM_MODEL is valid for {urlsplit(settings.llm_base_url).hostname or 'the provider'}."
             if "response_format" in lower or "json" in lower:
                 return 502, "The AI model provider is temporarily unavailable. Please try again."
-            # Generic 400 as config issue
             return 503, "EduNova AI configuration requires attention. The provider rejected the request (400). Check model, base URL, and request parameters."
-        # Fallback classification for other 4xx/5xx
         if status and 400 <= status < 500:
             return 503, "EduNova AI configuration requires attention. The provider rejected the request. Please verify model and endpoint configuration."
         if status and 500 <= status < 600:
             return 502, "The AI model provider is temporarily unavailable. Please try again."
-        # If LLMResponseError has no status (e.g. invalid JSON, network with no status)
         err_type_lower = str(error_type).lower()
         if err_type_lower in ("timeout",):
             return 504, "EduNova AI took too long to respond. Please try again."
@@ -284,7 +265,6 @@ def _safe_error(exc: Exception) -> tuple[int, str]:
             return 429, "EduNova AI is busy right now. Please try again shortly."
         if err_type_lower in ("dns_error", "network_error"):
             return 502, "The AI model provider is temporarily unavailable. Please try again."
-        # Generic provider error
         logger.error("AI model provider request failed: %s", exc)
         return 502, "The AI model provider is temporarily unavailable. Please try again."
     logger.exception("Agent request failed")
@@ -298,6 +278,10 @@ async def _run_non_stream(request: ChatRequest) -> dict[str, Any]:
             goal=request.message.strip(),
             conversation=list(conversation.messages),
             conversation_id=conversation.id,
+            user_id=str(request.owner_id or request.email or "authenticated-user"),
+            user_role=str(request.user_role or "student"),
+            user_name=str(request.user_name or "Student"),
+            user_email=str(request.user_email or request.email or ""),
         ),
         timeout=settings.max_agent_runtime_seconds,
     )
@@ -319,13 +303,17 @@ async def _stream(request: ChatRequest):
                     goal=request.message.strip(),
                     conversation=list(conversation.messages),
                     conversation_id=conversation.id,
+                    user_id=str(request.owner_id or request.email or "authenticated-user"),
+                    user_role=str(request.user_role or "student"),
+                    user_name=str(request.user_name or "Student"),
+                    user_email=str(request.user_email or request.email or ""),
                     event_callback=event_callback,
                 ),
                 timeout=settings.max_agent_runtime_seconds,
             )
             conversations.append_turn(conversation, request.message.strip(), result.message)
             await queue.put({"type": "answer", **result.public()})
-        except Exception as exc:  # The HTTP stream is already open; report a safe SSE error.
+        except Exception as exc:
             status, message = _safe_error(exc)
             await queue.put(
                 {
@@ -346,7 +334,6 @@ async def _stream(request: ChatRequest):
             try:
                 event = await asyncio.wait_for(queue.get(), timeout=15)
             except asyncio.TimeoutError:
-                # Keeps proxies from closing the stream during a long provider call.
                 yield ": keep-alive\n\n"
                 continue
             if event is None:
@@ -387,8 +374,6 @@ async def chat(
         raise HTTPException(status_code=status, detail=message) from exc
 
 
-# Backward-compatible endpoint for older deployed Node clients. It invokes the
-# same agent engine; there is no separate fixed timetable workflow.
 @app.post("/api/ai/query")
 @app.post("/ai/query")
 async def legacy_query(

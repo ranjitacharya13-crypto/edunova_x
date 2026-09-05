@@ -7,9 +7,9 @@ const ASSISTANT_SUBTITLE = "Your personal learning assistant";
 const STATUS_LABEL = "Ready to help";
 
 // ---- Constants & Configuration ----
-export const BUTTON_SIZE = 72; // matches w-[72px] h-[72px]
+export const BUTTON_SIZE = 72;
 export const STORAGE_KEY = "eduNova_ai_position";
-export const DRAG_THRESHOLD = 8; // px – movement beyond this counts as drag, not click
+export const DRAG_THRESHOLD = 8;
 const Z_INDEX_BUTTON = 50;
 const Z_INDEX_CHAT = 49;
 const CHAT_WIDTH = 400;
@@ -18,32 +18,31 @@ const CHAT_GAP = 12;
 
 const QUICK_PROMPTS = [
   {
-    id: "explain-topic",
-    title: "Explain today's topic",
-    prompt: "Explain today's topic in simple language with a quick example.",
+    id: "today-classes",
+    title: "What classes do I have today?",
+    prompt: "What classes do I have today according to my timetable?",
     icon: BookOpenIcon,
   },
   {
-    id: "exam-prep",
-    title: "Help me prepare for an exam",
-    prompt: "Help me prepare for an exam with a focused study plan and key revision tips.",
+    id: "study-recommendation",
+    title: "What should I study today?",
+    prompt: "What should I study today based on my weak topics and syllabus?",
     icon: SparkleIcon,
   },
   {
-    id: "practice-questions",
-    title: "Give me practice questions",
-    prompt: "Give me practice questions for the topic I am studying, with answers after each question.",
+    id: "exam-study-plan",
+    title: "Make me an exam study plan",
+    prompt: "Make me a study plan for my upcoming exam based on my weak topics.",
     icon: ClipboardIcon,
   },
   {
-    id: "summarize-material",
-    title: "Summarize my study material",
-    prompt: "Summarize my study material into clear bullet points and important takeaways.",
+    id: "quiz-analysis",
+    title: "Analyze my last quiz",
+    prompt: "Why did I perform badly in my last physics quiz?",
     icon: DocumentIcon,
   },
 ];
 
-// ---- Viewport and Clamping Helpers ----
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
@@ -93,7 +92,7 @@ function savePosition(x, y) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ x, y }));
   } catch {
-    // localStorage may be unavailable (private browsing, quota exceeded, etc.)
+    // localStorage may be unavailable
   }
 }
 
@@ -119,7 +118,6 @@ function isNearBottom(element) {
   return element.scrollHeight - element.scrollTop - element.clientHeight < 96;
 }
 
-// Preserve configuration and helpers for testing / bundle inspection
 if (typeof window !== "undefined") {
   window.__eduNovaAI = {
     clampPosition,
@@ -130,9 +128,7 @@ if (typeof window !== "undefined") {
   };
 }
 
-// ---- Main Component ----
 export default function FloatingAIChat() {
-  // ---- Chat state ----
   const [isOpen, setIsOpen] = useState(false);
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState([]);
@@ -140,14 +136,12 @@ export default function FloatingAIChat() {
   const [agentStatus, setAgentStatus] = useState(STATUS_LABEL);
   const [showInfo, setShowInfo] = useState(false);
 
-  // ---- Position & Drag State ----
   const [position, setPosition] = useState(() => {
     const saved = loadSavedPosition();
     return saved || getDefaultPosition();
   });
   const [isDragging, setIsDragging] = useState(false);
 
-  // ---- Refs ----
   const buttonRef = useRef(null);
   const chatRef = useRef(null);
   const scrollRef = useRef(null);
@@ -162,11 +156,9 @@ export default function FloatingAIChat() {
   const rafRef = useRef(null);
   const conversationIdRef = useRef(null);
 
-  // Keep refs in sync with state
   currentPosRef.current = position;
   isOpenRef.current = isOpen;
 
-  // ---- Clamp and save on window resize (debounced) ----
   useEffect(() => {
     let timeoutId;
     function handleResize() {
@@ -201,13 +193,11 @@ export default function FloatingAIChat() {
     });
   }, []);
 
-  // ---- Intelligent auto-scroll on new messages or loading changes ----
   useEffect(() => {
     if (!isOpen || !autoScrollRef.current) return;
     scrollToBottom();
   }, [messages, loading, isOpen, scrollToBottom]);
 
-  // ---- Auto-size composer textarea ----
   useEffect(() => {
     const textarea = textareaRef.current;
     if (!textarea) return;
@@ -237,7 +227,7 @@ export default function FloatingAIChat() {
       }
       setInput("");
       setLoading(true);
-      setAgentStatus("Understanding your question...");
+      setAgentStatus("Reasoning across sources...");
 
       try {
         const data = await streamAIEngine({
@@ -267,7 +257,10 @@ export default function FloatingAIChat() {
             role: "assistant",
             content: reply,
             sources: Array.isArray(data.sources) ? data.sources : [],
+            internalSources: Array.isArray(data.internalSources) ? data.internalSources : [],
+            actions: Array.isArray(data.actions) ? data.actions : [],
             usedWeb: Boolean(data.usedWeb),
+            usedInternalDb: Boolean(data.usedInternalDb),
           },
         ]);
       } catch (error) {
@@ -317,7 +310,6 @@ export default function FloatingAIChat() {
     autoScrollRef.current = isNearBottom(scrollRef.current);
   }, []);
 
-  // ---- Toggle and close chat ----
   const toggleChat = useCallback(() => {
     setIsOpen((prev) => !prev);
   }, []);
@@ -326,7 +318,6 @@ export default function FloatingAIChat() {
     setIsOpen(false);
   }, []);
 
-  // ---- Compute chat placement intelligently relative to button ----
   const getChatPlacement = useCallback(() => {
     const vp = getViewport();
     const isMobile = vp.width < 640;
@@ -372,9 +363,7 @@ export default function FloatingAIChat() {
 
   const chatPlacement = getChatPlacement();
 
-  // ---- Pointer Events for Drag & Click ----
   const handlePointerDown = useCallback((event) => {
-    // Only respond to main button clicks (left mouse button or touch/pen)
     if (event.button !== 0 && event.pointerType === "mouse") return;
 
     isPointerDownRef.current = true;
@@ -388,13 +377,10 @@ export default function FloatingAIChat() {
       buttonY: currentPosRef.current.y,
     };
 
-    // Capture pointer events for smooth dragging even outside button boundaries
     if (buttonRef.current && typeof buttonRef.current.setPointerCapture === "function") {
       try {
         buttonRef.current.setPointerCapture(event.pointerId);
-      } catch {
-        // Fallback safely if setPointerCapture is unsupported
-      }
+      } catch {}
     }
   }, []);
 
@@ -405,12 +391,9 @@ export default function FloatingAIChat() {
     const dy = event.clientY - dragStartRef.current.pointerY;
     const distance = Math.hypot(dx, dy);
 
-    // Check if movement exceeds threshold
     if (!hasDraggedRef.current && distance >= DRAG_THRESHOLD) {
       hasDraggedRef.current = true;
       setIsDragging(true);
-
-      // Gracefully close open chat window on drag start
       if (isOpenRef.current) {
         setIsOpen(false);
       }
@@ -421,9 +404,7 @@ export default function FloatingAIChat() {
       const nextY = dragStartRef.current.buttonY + dy;
       const clamped = clampPosition(nextX, nextY, BUTTON_SIZE, BUTTON_SIZE);
 
-      if (rafRef.current) {
-        cancelAnimationFrame(rafRef.current);
-      }
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
       rafRef.current = requestAnimationFrame(() => {
         setPosition(clamped);
       });
@@ -433,24 +414,18 @@ export default function FloatingAIChat() {
   const handlePointerUp = useCallback(
     (event) => {
       if (!isPointerDownRef.current) return;
-
       isPointerDownRef.current = false;
 
-      // Release pointer capture
       if (buttonRef.current && typeof buttonRef.current.releasePointerCapture === "function") {
         try {
           if (activePointerIdRef.current !== null) {
             buttonRef.current.releasePointerCapture(activePointerIdRef.current);
           }
-        } catch {
-          // Ignore release errors
-        }
+        } catch {}
       }
       activePointerIdRef.current = null;
 
-      if (rafRef.current) {
-        cancelAnimationFrame(rafRef.current);
-      }
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
 
       if (hasDraggedRef.current) {
         setIsDragging(false);
@@ -463,7 +438,6 @@ export default function FloatingAIChat() {
         setPosition(finalPos);
         savePosition(finalPos.x, finalPos.y);
       } else {
-        // Tap/click detected without drag -> Toggle chat
         toggleChat();
       }
 
@@ -472,7 +446,6 @@ export default function FloatingAIChat() {
     [toggleChat]
   );
 
-  // ---- Keyboard accessibility ----
   const handleLauncherKeyDown = useCallback(
     (event) => {
       if (event.key === "Enter" || event.key === " ") {
@@ -483,7 +456,6 @@ export default function FloatingAIChat() {
     [toggleChat]
   );
 
-  // ---- Dynamic Styles ----
   const buttonCursorClass = isDragging ? "cursor-grabbing cursor:grabbing" : "cursor-grab cursor:grab";
   const hasConversation = messages.length > 0;
   const canSend = Boolean(input.trim()) && !loading;
@@ -512,7 +484,6 @@ export default function FloatingAIChat() {
 
   return (
     <>
-      {/* ===== AI Chat Window ===== */}
       <div
         id="eduNova-ai-chat"
         ref={chatRef}
@@ -536,7 +507,7 @@ export default function FloatingAIChat() {
                     {ASSISTANT_NAME}
                   </h2>
                   <span className="hidden rounded-full border border-teal-200 bg-teal-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-teal-700 dark:border-teal-400/20 dark:bg-teal-400/10 dark:text-teal-200 sm:inline-flex">
-                    AI
+                    DATA-AWARE
                   </span>
                 </div>
                 <p className="truncate text-xs font-medium text-slate-500 dark:text-slate-300">
@@ -572,7 +543,7 @@ export default function FloatingAIChat() {
 
           {showInfo && (
             <div className="absolute right-4 top-[4.25rem] z-10 w-[min(310px,calc(100%-2rem))] rounded-2xl border border-teal-100 bg-white/95 p-3 text-xs leading-relaxed text-slate-600 shadow-xl backdrop-blur-md dark:border-white/10 dark:bg-slate-900/95 dark:text-slate-300">
-              EduNova AI helps students understand lessons, revise topics, generate practice questions, and learn more effectively.
+              EduNova AI is a unified data-aware assistant. It intelligently accesses your timetable, syllabus, quiz performance, and study progress from EduNova and supplements with verified web research.
             </div>
           )}
         </header>
@@ -608,7 +579,7 @@ export default function FloatingAIChat() {
               value={input}
               onChange={(event) => setInput(event.target.value)}
               onKeyDown={onComposerKeyDown}
-              placeholder="Ask EduNova AI anything..."
+              placeholder="Ask about timetable, quizzes, weak topics, study plans..."
               rows={1}
               className="max-h-[120px] min-h-[42px] flex-1 resize-none bg-transparent px-3 py-2.5 text-sm leading-5 text-slate-900 placeholder:text-slate-400 focus:outline-none disabled:opacity-60 dark:text-white dark:placeholder:text-slate-500"
               disabled={loading}
@@ -629,7 +600,6 @@ export default function FloatingAIChat() {
         </form>
       </div>
 
-      {/* ===== AI Assistant Button (Freely Draggable) ===== */}
       <button
         ref={buttonRef}
         type="button"
@@ -670,9 +640,9 @@ function WelcomeState({ onPrompt, loading }) {
         <EduNovaAIAvatar size={64} className="relative" decorative />
       </div>
       <h3 className="text-lg font-bold text-slate-950 dark:text-white">EduNova AI</h3>
-      <p className="mt-1 text-base font-semibold text-slate-800 dark:text-slate-100">How can I help you today?</p>
+      <p className="mt-1 text-base font-semibold text-slate-800 dark:text-slate-100">Unified Data-Aware Assistant</p>
       <p className="mt-2 max-w-[18rem] text-sm leading-6 text-slate-500 dark:text-slate-400">
-        Ask me about lessons, subjects, assignments, study material, or exam preparation.
+        Connected to your timetable, subjects, quiz scores, and verified research.
       </p>
 
       <div className="mt-5 grid w-full gap-2.5">
@@ -722,10 +692,51 @@ function ChatMessage({ message, onRetry, retryDisabled }) {
         }`}
       >
         <RichMessage content={message.content} />
+
+        {/* Internal DB Sources Badges */}
+        {!isError && Array.isArray(message.internalSources) && message.internalSources.length > 0 && (
+          <div className="mt-3 border-t border-slate-200/80 pt-2.5 dark:border-white/10">
+            <p className="mb-1.5 text-[10px] font-bold uppercase tracking-[0.14em] text-teal-600 dark:text-teal-300">
+              EduNova Data Consulted
+            </p>
+            <div className="flex flex-wrap gap-1.5">
+              {message.internalSources.map((src, i) => (
+                <span
+                  key={`msg-src-${i}`}
+                  className="inline-flex items-center gap-1 rounded bg-teal-50 px-2 py-0.5 text-[11px] font-semibold text-teal-700 dark:bg-teal-900/30 dark:text-teal-200"
+                >
+                  <span className="h-1.5 w-1.5 rounded-full bg-teal-500" />
+                  {src.title || src.source}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Executed Actions Tags */}
+        {!isError && Array.isArray(message.actions) && message.actions.length > 0 && (
+          <div className="mt-2.5 border-t border-slate-200/80 pt-2 dark:border-white/10">
+            <p className="mb-1 text-[10px] font-bold uppercase tracking-[0.14em] text-emerald-600 dark:text-emerald-300">
+              Actions Saved
+            </p>
+            <div className="space-y-1">
+              {message.actions.map((act, i) => (
+                <div
+                  key={`msg-act-${i}`}
+                  className="rounded bg-emerald-50 px-2 py-1 text-[11px] font-medium text-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-200"
+                >
+                  ✓ {act.message || act.tool}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* External Web Sources */}
         {!isError && Array.isArray(message.sources) && message.sources.length > 0 && (
           <div className="mt-3 border-t border-slate-200/80 pt-3 dark:border-white/10">
             <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.14em] text-slate-400 dark:text-slate-500">
-              Sources checked
+              External Sources
             </p>
             <div className="space-y-1.5">
               {message.sources.slice(0, 5).map((source) => (
@@ -743,6 +754,7 @@ function ChatMessage({ message, onRetry, retryDisabled }) {
             </div>
           </div>
         )}
+
         {isError && (
           <button
             type="button"
