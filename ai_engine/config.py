@@ -525,6 +525,13 @@ def load_settings() -> Settings:
     # budget, otherwise every rich turn hits the truncation guard.
     max_context = _integer("AGENT_MAX_CONTEXT_CHARS", 12_000 if is_local else 90_000, 4_000, 250_000)
     max_output = _integer("LLM_MAX_OUTPUT_TOKENS", 2048 if is_local else 3000, 128, 12_000)
+    # Production previously pinned 512/900 in the Render dashboard. Do not let
+    # that stale optimization silently reintroduce incomplete code or lessons.
+    if is_local:
+        max_output = max(2048, max_output)
+    local_ctx = _integer("LOCAL_MODEL_CTX", 6144, 1024, 32768)
+    if is_local:
+        local_ctx = max(6144, local_ctx)
 
     app_backend_url = _first_env(
         "APP_BACKEND_URL", "EXPRESS_URL", "SERVER_URL", default="http://127.0.0.1:4000"
@@ -547,7 +554,7 @@ def load_settings() -> Settings:
         local_model_expected_bytes=_integer("LOCAL_MODEL_BYTES", 0, 0, 200_000_000_000),
         local_model_min_bytes=_integer("LOCAL_MODEL_MIN_BYTES", 10 * 1024 * 1024, 4096, 20_000_000_000),
         local_model_download_retries=_integer("LOCAL_MODEL_DOWNLOAD_RETRIES", 3, 0, 8),
-        local_model_ctx_size=_integer("LOCAL_MODEL_CTX", 4096, 1024, 32768),
+        local_model_ctx_size=local_ctx,
         local_model_threads=_integer("LOCAL_MODEL_THREADS", 2, 1, 8),
         local_model_batch=_integer("LOCAL_MODEL_BATCH", 256, 32, 2048),
         local_model_chat_format=_clean_env_value(os.getenv("LOCAL_MODEL_CHAT_FORMAT", "chatml")).lower() or "chatml",
