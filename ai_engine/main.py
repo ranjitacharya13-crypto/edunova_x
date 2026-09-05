@@ -470,6 +470,111 @@ async def diagnostics(
     }
 
 
+@app.get("/api/ai/diagnose")
+async def diagnose(
+    x_ai_internal_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Direct model diagnostic — tests ONLY: model state → inference → response.
+
+    Bypasses AgentEngine, ToolRegistry, MongoDB, web search, and all tools.
+    Measures: model load state, inference latency, first-token time, full
+    generation time.  Returns structured results so the operator can see
+    exactly where the pipeline breaks.
+    """
+    _authorize_internal_request(x_ai_internal_token)
+
+    started_total = time.monotonic()
+    results: dict[str, Any] = {
+        "success": False,
+        "model": settings.local_model_id if settings.is_local_llm else "external",
+        "provider": settings.llm_provider,
+    }
+
+    # --- 1. Model state ---
+    if model_manager is not None:
+        snap = model_manager.snapshot()
+        results["modelState"] = snap.get("state", "unknown")
+        results["modelReady"] = snap.get("ready", False)
+        results["modelFileExists"] = snap.get("fileExists")
+        results["fileSizeBytes"] = snap.get("fileSizeBytes")
+        results["runtimeAvailable"] = snap.get("runtimeAvailable")
+        results["runtimeVersion"] = snap.get("runtimeVersion")
+        results["contextSize"] = snap.get("contextSize")
+        results["threads"] = snap.get("threads")
+        results["lastError"] = snap.get("lastError")
+        results["loadedAt"] = snap.get("loadedAt")
+    else:
+        results["modelState"] = "no_manager"
+        results["modelReady"] = False
+
+    # --- 2. Wait for model if not ready ---
+    load_wait_ms = 0
+    if model_manager is not None and model_manager.state != "ready":
+        results["loadAttempted"] = True
+        load_started = time.monotonic()
+        try:
+            await model_manager.wait_ready(timeout=min(60, settings.local_chat_wait_seconds))
+            load_wait_ms = int((time.monotonic() - load_started) * 1000)
+            results["modelState"] = "ready"
+            results["modelReady"] = True
+            results["loadWaitMs"] = load_wait_ms
+        except Exception as exc:
+            load_wait_ms = int((time.monotonic() - load_started) * 1000)
+            results["loadWaitMs"] = load_wait_ms
+            results["loadError"] = str(exc)[:300]
+            results["totalMs"] = int((time.monotonic() - started_total) * 1000)
+            return results
+
+    # --- 3. Direct inference test ---
+    if not (model_manager is not None and model_manager.state == "ready"):
+        results["inferenceSkipped"] = True
+        results["inferenceSkipReason"] = "model not ready"
+        results["totalMs"] = int((time.monotonic() - started_total) * 1000)
+        return results
+
+    inference_started = time.monotonic()
+    try:
+        text = await llm.complete_text(
+            system_prompt="You are EduNova AI.",
+            user_prompt="Say hello in one sentence.",
+            max_output_tokens=50,
+        )
+        inference_ms = int((time.monotonic() - inference_started) * 1000)
+        results["inferenceResult"] = "SUCCESS"
+        results["responseText"] = text[:500]
+        results["responseLength"] = len(text)
+        results["inferenceMs"] = inference_ms
+        results["success"] = True
+    except Exception as exc:
+        inference_ms = int((time.monotonic() - inference_started) * 1000)
+        results["inferenceResult"] = "FAILED"
+        results["inferenceError"] = str(exc)[:300]
+        results["inferenceMs"] = inference_ms
+
+    results["totalMs"] = int((time.monotonic() - started_total) * 1000)
+
+    # --- 4. Log the diagnostic block ---
+    logger.info(
+        "[AI DIAGNOSTIC]\n"
+        "Model: %s\n"
+        "Model state: %s\n"
+        "Model loaded: %s\n"
+        "Load wait: %s ms\n"
+        "Inference: %s\n"
+        "Inference time: %s ms\n"
+        "Total: %s ms",
+        results.get("model"),
+        results.get("modelState"),
+        results.get("modelReady"),
+        load_wait_ms,
+        results.get("inferenceResult"),
+        results.get("inferenceMs"),
+        results.get("totalMs"),
+    )
+
+    return results
+
+
 def _authorize_internal_request(token: str | None) -> None:
     if settings.ai_require_internal_token and not settings.ai_internal_token:
         raise HTTPException(
@@ -570,6 +675,30 @@ def _safe_error(exc: Exception) -> tuple[int, str, str]:
             status,
             error_type,
         )
+        if error_type == "model_loading":
+            _set_provider_state("model_loading", 503, error_type)
+            return (
+                503,
+                "LLM_MODEL_LOADING",
+                "EduNova AI is starting its self-hosted model (downloading/loading weights). Please try again shortly.",
+            )
+        if error_type == "model_unavailable":
+            _set_provider_state("model_unavailable", 503, error_type)
+            report = model_manager.error_report if (model_manager is not None) else None
+            if report:
+                logger.error(
+                    "MODEL_STARTUP_ERROR model=%s url=%s status=%s stage=%s reason=%s",
+                    report.get("model"), report.get("url"), report.get("status"),
+                    report.get("stage"), report.get("reason"),
+                )
+            return (
+                503,
+                "LLM_MODEL_UNAVAILABLE",
+                getattr(exc, "provider_message", None) or "EduNova AI's self-hosted model could not start. Please try again in a moment.",
+            )
+        if error_type == "model_busy":
+            _set_provider_state("model_busy", 503, error_type)
+            return 503, "LLM_MODEL_BUSY", "EduNova AI is processing another request. Please try again shortly."
         if status in (401, 403):
             _set_provider_state("authentication_failed", status, error_type)
             return 503, "LLM_AUTHENTICATION_FAILED", "EduNova AI provider authentication is not configured correctly."
@@ -595,6 +724,57 @@ async def _ready_gate() -> None:
     """Ensure the model is usable before any chat work; raises honest errors."""
     if settings.is_local_llm and model_manager is not None:
         await model_manager.wait_ready(timeout=settings.local_chat_wait_seconds)
+
+
+async def _ready_gate_with_keepalive():
+    """Wait for the model to become ready, yielding SSE keep-alive comments.
+
+    The plain ``_ready_gate()`` blocks silently: no data flows through the SSE
+    stream for up to ``local_chat_wait_seconds``.  During that silence Render's
+    reverse proxy (and any CDN in the path) considers the connection idle and
+    closes it, surfacing as a 504 to the student.
+
+    This variant polls the model-manager state every 2 seconds and yields a
+    harmless SSE comment (``: model-loading\\n\\n``) so the proxy sees traffic.
+    Returns normally when the model is ready; raises ``LLMResponseError`` if
+    the wait deadline is exceeded.
+    """
+    if not settings.is_local_llm or model_manager is None:
+        return
+
+    # Already ready — fast path, no polling.
+    if model_manager.state == "ready":
+        return
+
+    deadline = time.monotonic() + settings.local_chat_wait_seconds
+    last_state = model_manager.state
+    while time.monotonic() < deadline:
+        state = model_manager.state
+        if state == "ready":
+            logger.info("[EduNova AI] Model became ready during keep-alive polling state=%s", state)
+            return
+        if state == "error":
+            raise LLMResponseError(
+                "The self-hosted EduNova model failed to start",
+                status_code=503,
+                error_type="model_unavailable",
+                provider_message=model_manager.last_error or "model load failed",
+            )
+        if state != last_state:
+            logger.info("[EduNova AI] Model state transition %s -> %s", last_state, state)
+            last_state = state
+        # Yield a keep-alive comment — SSE comments (lines starting with ':')
+        # are ignored by clients but keep the TCP connection alive.
+        yield ": model-loading\n\n"
+        await asyncio.sleep(2)
+
+    # Deadline exceeded — model did not become ready.
+    raise LLMResponseError(
+        "The self-hosted EduNova model is still starting (downloading/loading weights)",
+        status_code=503,
+        error_type="model_loading",
+        provider_message=f"state={model_manager.state} after {settings.local_chat_wait_seconds}s",
+    )
 
 
 async def _execute(
@@ -649,7 +829,11 @@ async def _run_non_stream(request: ChatRequest) -> dict[str, Any]:
 
 async def _stream(request: ChatRequest):
     try:
-        await _ready_gate()
+        # Use keep-alive polling instead of the silent blocking gate.
+        # This prevents Render/CDN proxies from closing the idle connection
+        # while the model downloads or loads weights (can take 10-25 seconds).
+        async for keepalive in _ready_gate_with_keepalive():
+            yield keepalive
     except Exception as exc:
         status, code, message = _safe_error(exc)
         yield "data: " + json.dumps(

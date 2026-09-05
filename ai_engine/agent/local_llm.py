@@ -47,6 +47,7 @@ import logging
 import os
 from pathlib import Path
 import re
+import threading
 import time
 from typing import Any
 from urllib.parse import urlsplit
@@ -256,6 +257,13 @@ class LocalModelManager:
         self._llama: Any = None
         self._load_task: asyncio.Task[None] | None = None
         self._gen_lock = asyncio.Lock()
+        # Thread-level lock: prevents concurrent llama.cpp inference.
+        # The asyncio.Lock above releases when an asyncio task is cancelled
+        # (e.g. timeout), but the underlying _generate_sync() THREAD continues
+        # running. Without this threading.Lock, a second request could start a
+        # second llama.cpp call while the first is still running — llama.cpp is
+        # NOT thread-safe and this causes deadlocks or crashes.
+        self._llama_thread_lock = threading.Lock()
 
     # ------------------------------------------------------------- paths --
     @property
@@ -1098,14 +1106,15 @@ class LocalModelManager:
             attempts = 1 if allow_empty else 2
             for attempt in range(1, attempts + 1):
                 try:
+                    # The _llama_thread_lock is acquired INSIDE the thread to
+                    # prevent concurrent llama.cpp access even when the asyncio
+                    # task is cancelled (asyncio.Lock releases on cancel, but
+                    # the thread continues).
                     text = await asyncio.to_thread(
-                        self._generate_sync,
+                        self._generate_sync_protected,
                         system_prompt,
                         user_prompt,
                         bounded_max,
-                        # A greedy decode that immediately hits the stop token
-                        # yields nothing; one warmer retry recovers it without
-                        # ever inventing content.
                         temp if attempt == 1 else max(temp, 0.4),
                         json_schema,
                         allow_empty,
@@ -1127,6 +1136,36 @@ class LocalModelManager:
                 len(text),
             )
             return text
+
+    def _generate_sync_protected(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int,
+        temperature: float,
+        json_schema: dict[str, Any] | None,
+        allow_empty: bool = False,
+    ) -> str:
+        """Thread-safe wrapper around _generate_sync.
+
+        Acquires the threading-level lock so that even if an asyncio task is
+        cancelled (releasing the asyncio.Lock), a new thread cannot start a
+        concurrent llama.cpp call while the previous one is still running.
+        """
+        acquired = self._llama_thread_lock.acquire(timeout=300)
+        if not acquired:
+            raise LLMResponseError(
+                "The local model is busy processing another request. Please try again.",
+                status_code=503,
+                error_type="model_busy",
+            )
+        try:
+            return self._generate_sync(
+                system_prompt, user_prompt, max_tokens,
+                temperature, json_schema, allow_empty,
+            )
+        finally:
+            self._llama_thread_lock.release()
 
     def _generate_sync(
         self,

@@ -87,6 +87,8 @@ services:
         sync: false
       - key: AGENT_REQUEST_TIMEOUT
         value: "210000"
+      - key: AGENT_STREAM_TIMEOUT_MS
+        value: "240000"
       - key: AI_RATE_LIMIT_WINDOW_MS
         value: "60000"
       - key: AI_RATE_LIMIT_MAX_REQUESTS
