@@ -249,6 +249,7 @@ class LocalModelManager:
         self.download_attempts: int = 0
         self.last_inference_at: float | None = None
         self.last_generation_metrics: dict[str, Any] | None = None
+        self.last_self_test: dict[str, Any] | None = None
         self.source_check: dict[str, Any] | None = None
         # Self-healing state for a stale/broken LOCAL_MODEL_FILE override (the
         # production incident: the env pinned a filename that was never
@@ -338,6 +339,7 @@ class LocalModelManager:
             "inferenceAvailable": self.state == "ready" and self._llama is not None,
             "lastInferenceAt": _iso(self.last_inference_at),
             "lastGeneration": self.last_generation_metrics,
+            "lastSelfTest": self.last_self_test,
             "contextSize": self.settings.local_model_ctx_size,
             "threads": self.settings.local_model_threads,
             "chatFormat": self.settings.local_model_chat_format,
@@ -449,6 +451,11 @@ class LocalModelManager:
                 self.last_error = ""
                 self.error_detail = ""
                 self.error_report = None
+                # Readiness means real inference works, not merely that the
+                # weights were mmap'd. This one-time generated smoke answer also
+                # captures TTFT/throughput for production diagnostics.
+                if self._llama is not None and hasattr(self._llama, "create_completion"):
+                    self.last_self_test = await self.self_test()
                 logger.info(
                     "LOCAL_MODEL_READY model=%s file=%s bytes=%s ctx=%s threads=%s elapsed_s=%.1f",
                     self.settings.local_model_id,
@@ -988,16 +995,22 @@ class LocalModelManager:
         """
         started = time.monotonic()
         text = await self.generate(
-            system_prompt="You are EduNova AI.",
-            user_prompt="Reply with the single word: ready",
-            max_tokens=8,
-            temperature=0.0,
-            allow_empty=True,
+            system_prompt=(
+                "You are EduNova AI, a patient tutor. Answer completely with a definition, "
+                "simple explanation, and concrete example."
+            ),
+            user_prompt="What is ML?",
+            max_tokens=256,
+            temperature=0.2,
         )
         return {
             "ok": True,
+            "prompt": "What is ML?",
+            "answer": text,
+            "complete": bool(len(text.strip()) >= 80 and "machine learning" in text.lower()),
             "durationMs": int((time.monotonic() - started) * 1000),
             "sampleChars": len(text.strip()),
+            "generation": self.last_generation_metrics,
         }
 
     def _render_prompt(self, system_prompt: str, user_prompt: str) -> tuple[str, list[str]]:
