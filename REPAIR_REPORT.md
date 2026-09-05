@@ -124,3 +124,111 @@ Before running: **fill `VITE_TURN_URL`, `VITE_TURN_USERNAME`, `VITE_TURN_CREDENT
 3. Connect a custom domain on Render (free instances spin down after 15 min idle — a wake-up is recommended, e.g. cron ping of `/health`).
 4. Delete the stale `server/index.js` and the `* 1.js / * 2.js / * 3.js` backup duplicates from git history.
 5. Add `VITE_TURN_URL` etc. also to the Capacitor/Electron builds (`frontend/.env.production` covers Vite builds; native shells need their own env wiring).
+
+---
+
+# Addendum — 2026-09-05 · Self-hosted AI model startup 404
+
+**Branch:** `arena/01a071df-edunova-x` · **PR:** #39
+**Symptom:** every EduNova AI question (e.g. "what is ml") answered
+*"The self-hosted EduNova AI model failed to start on the server.
+(model download failed with HTTP 404)"*.
+
+## 1. Root cause
+
+`LOCAL_MODEL_FILE` defaulted to **`Qwen2.5-0.5B-Instruct-IQ3_XXS.gguf`**.
+That quantization **has never been published** in
+`bartowski/Qwen2.5-0.5B-Instruct-GGUF`. The URL the service builds —
+
+```
+https://huggingface.co/{LOCAL_MODEL_REPO}/resolve/main/{LOCAL_MODEL_FILE}
+```
+
+— therefore resolved to a file that does not exist, and Hugging Face returned
+its `Entry not found` **404** page. `LocalModelManager` correctly refused to
+load a non-GGUF HTML body, the model never reached `ready`, and every chat
+turn short-circuited into the download error. The 404 was **not** a network,
+auth, quota, or Render problem: it was a wrong filename baked into five files.
+
+Confirmed against the HF file tree — the repo publishes `Q2_K`, `Q3_K_M`,
+`IQ4_XS`, `Q4_K_S`, `Q4_K_M`, `Q5_K_M`, `Q8_0`, and **no `IQ3_XXS`**.
+
+## 2. Old vs new configuration
+
+| | Before | After |
+|---|---|---|
+| `LOCAL_MODEL_REPO` | `bartowski/Qwen2.5-0.5B-Instruct-GGUF` | unchanged |
+| `LOCAL_MODEL_FILE` | `Qwen2.5-0.5B-Instruct-IQ3_XXS.gguf` (**does not exist → 404**) | `Qwen2.5-0.5B-Instruct-Q4_K_M.gguf` (**verified, 397,808,192 B**) |
+| `LOCAL_MODEL_CTX` | `3072` | `6144` |
+| `AGENT_MAX_CONTEXT_CHARS` | `24000` | `12000` (must fit the window) |
+| `llama-cpp-python` | `0.2.90` | `0.3.35` (prebuilt CPU wheel) |
+| Weights cache | ephemeral `./models_cache` | persistent disk `/var/data/models` (2GB) |
+| Render plan (`edunova-ai`) | free | `standard` (2GB / 1 CPU) |
+
+New env vars: `LOCAL_MODEL_BYTES`, `LOCAL_MODEL_MIN_BYTES` (default 10MB),
+`LOCAL_MODEL_DOWNLOAD_RETRIES` (default 3). Nothing was removed — MongoDB,
+`AI_INTERNAL_TOKEN`, auth, CORS, web search and EduNova API config are intact.
+No secrets were added to the repo.
+
+## 3. Secondary defects found and fixed
+
+| # | Defect | Fix |
+|---|---|---|
+| 1 | Oversized prompts crashed llama.cpp mid-request, surfacing as `502 LLM_PROVIDER_UNAVAILABLE` on exactly the data-rich questions the agent exists for. `AGENT_MAX_CONTEXT_CHARS` (24000 ≈ 8000 tokens) could not fit `LOCAL_MODEL_CTX` (3072). | Runtime context guard trims the middle of the tool context and logs `LOCAL_MODEL_PROMPT_TRUNCATED`; context/env budgets rebalanced. |
+| 2 | A greedy decode that immediately emits the stop token produced an empty answer and a hard error. | One warmer retry (`LOCAL_MODEL_EMPTY_RETRY`); still never fabricates output. |
+| 3 | `self_test()` treated an empty warmup decode as a health failure. | Warmup asserts "a decode ran without raising"; empty *chat* answers still error. |
+| 4 | A truncated/corrupt cached file would be loaded blindly. | Cache re-validated on boot (size + `GGUF` magic); `LOCAL_MODEL_CACHE_REJECTED` triggers a refetch. |
+| 5 | `AI_PROVIDER_ERROR` logged `host=api.openai.com` for the in-process model. | Logs `host=in-process:llama.cpp` for the local provider. |
+| 6 | UI said "Ready to help" while the model was still downloading. | `useAIStatus` gates on real readiness and shows download progress. |
+
+## 4. Diagnostics now emitted
+
+Startup: `AI_SERVICE_STARTUP`, `LOCAL_MODEL_STARTUP`, `LOCAL_MODEL_SOURCE`
+(URL, expected bytes, sha256-pinned, estimated RAM), `LOCAL_MODEL_RUNTIME`,
+`LOCAL_MODEL_SOURCE_OK`, `LOCAL_MODEL_DOWNLOAD_START`,
+`LOCAL_MODEL_DOWNLOAD_RETRY`, `LOCAL_MODEL_DOWNLOADED`,
+`LOCAL_MODEL_CACHE_HIT`, `LOCAL_MODEL_CACHE_REJECTED`,
+`LOCAL_MODEL_LOAD_START`, `LOCAL_MODEL_READY`, `LOCAL_MODEL_ERROR`.
+
+On failure, instead of a bare 404 string:
+
+```
+MODEL_STARTUP_ERROR
+Model: bartowski/Qwen2.5-0.5B-Instruct-GGUF:<file>.gguf
+URL: https://huggingface.co/.../resolve/main/<file>.gguf
+Status: 404
+Stage: preflight
+Reason: model file not found at the configured URL
+Fix: LOCAL_MODEL_FILE does not exist in LOCAL_MODEL_REPO. Verify the exact
+     filename at https://huggingface.co/<repo>/tree/main ...
+```
+
+The student-facing response is a clean
+`503 LLM_MODEL_UNAVAILABLE` — the raw 404 never reaches the browser.
+
+## 5. Health contract
+
+`GET /api/ai/health` (and `?deep=true` for an active inference probe) reports
+all four required signals plus download progress:
+
+```json
+{"modelReady": true, "modelState": "ready",
+ "readiness": {"modelFileExists": true, "runtimeAvailable": true,
+               "modelInitialized": true, "inferenceAvailable": true}}
+```
+
+`GET /api/ai/model/source-check` validates the configured URL without loading
+the model — run it before changing `LOCAL_MODEL_FILE`.
+
+## 6. Verification
+
+- `ai_engine`: **90/90** unit tests, including `tests/test_local_model_runtime.py`
+  which drives **real `llama-cpp-python` 0.3.35** against a **real GGUF** served
+  over **real HTTP** (no mocks).
+- `server`: **15/15** — MongoDB tools, auth, and `X-User-Id` identity
+  enforcement unchanged.
+- `frontend`: `npm run build` green.
+- Live: 404 reproduction; happy path (source-check → download → verify → load →
+  ready → chat → follow-up with memory → restart hits the cache without
+  re-downloading); tool path (schedule, performance, quiz, web-research intents
+  all routed, backend receives `X-User-Id` from the trusted header only).
