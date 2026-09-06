@@ -1006,6 +1006,8 @@ class LocalModelManager:
                 "sampleChars": len(text), "generation": self.last_generation_metrics}
 
     def _render_prompt(self, system_prompt: str, user_prompt: str) -> tuple[str, list[str]]:
+        from agent.security import escape_chat_controls
+        user_prompt = escape_chat_controls(user_prompt)
         fmt = _CHAT_TEMPLATES.get(self.settings.local_model_chat_format) or _CHAT_TEMPLATES["chatml"]
         return (
             fmt["prompt"].format(system=system_prompt.strip(), user=user_prompt.strip()),
@@ -1432,8 +1434,8 @@ def runtime_version_for(settings: Settings) -> str:
 
 def create_llm(settings: Settings) -> tuple[Any, Any]:
     """The application uses a persistent supervised self-hosted runtime only."""
-    if settings.llm_provider != "local":
-        raise LLMConfigurationError("Commercial LLM providers are disabled. Use LLM_PROVIDER=local.")
+    # Invalid external-provider configuration is reported by the supervised
+    # startup as CONFIG_FAILED, so the diagnostic HTTP service stays reachable.
     from inference.manager import ModelManager
     manager = ModelManager(settings)
     if settings.local_model_runtime == "torch":

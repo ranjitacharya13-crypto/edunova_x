@@ -101,6 +101,11 @@ class ToolRegistry:
                 source_type,
             )
 
+        if source_type == "external" and context and context.get("allow_external") is False:
+            return self._failure(name, arguments, started, "PERMISSION_DENIED", "External access was not requested by the user", source_type)
+        if name in {"open_url", "extract_webpage"} and context and "allowed_urls" in context and arguments.get("url") not in context["allowed_urls"]:
+            return self._failure(name, arguments, started, "URL_BLOCKED", "URL must come from the user's request or a search result, not private retrieved text", source_type)
+
         try:
             _validate_input(tool.input_schema, arguments)
             

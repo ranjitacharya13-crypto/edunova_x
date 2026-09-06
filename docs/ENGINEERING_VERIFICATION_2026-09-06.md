@@ -52,6 +52,12 @@ Source: public `https://edunova-ai-o2vy.onrender.com/health` observation during 
 
 **This hardware cannot meet the requested normal-response target of approximately 10–20 seconds. Increasing a timeout, truncating an answer or reporting an HTTP 200 would not fix that.**
 
+### Later production observation (still the old v4 build)
+
+A subsequent public health read returned **READY**, with the same 512-MiB/0.15-core resource limits. Its latest recorded warmup was **1,054,508 ms**, generation **213 tokens / 1,054,497 ms / 0.20 tokens/sec**, and TTFT **9,344 ms**. This supersedes “currently warming”; it does **not** meet the latency target or establish that the new implementation is deployed. Its last recorded inference timestamp was `2026-09-06T10:34:34Z`.
+
+The new implementation identifies itself as **v5.0.0** in AI/API health and the frontend `edunova-version` meta tag. Local disk at verification: 21,834,924,032-byte filesystem, 12,178,903,040 bytes available; production storage was not exposed by the old health endpoint.
+
 ## Integrated application changes
 
 - Mongo identity/role/enrollment filters, blocked-user rejection, strict nested tool schemas and owner-bound one-use confirmation tokens. Model arguments cannot choose a student identity or arbitrary database mutation.
@@ -60,7 +66,7 @@ Source: public `https://edunova-ai-o2vy.onrender.com/health` observation during 
 - Study plans, quizzes and progress have application views and whitelisted navigation actions. Pending changes are reviewed/confirmed, not labelled as already saved.
 - Existing GridFS study/syllabus uploads receive bounded text/PDF extraction. Legacy text backfill is bounded and reports unavailable/scanned/pending material honestly. MongoDB remains the source of truth.
 - RAG uses chunking, explicit MiniLM/PyTorch embeddings, cosine ranking, embedding-space fingerprints, owner isolation, ACL/deletion reconciliation and bounded caches. `lexical` must be selected explicitly by an operator; embedding failures never silently switch vector spaces.
-- Bounded conversation history, request/tool/model timing records and source-aware context. Current-data answers use the existing web data tools; the reasoning engine remains local.
+- Bounded conversation history, request/tool/model timing records and source-aware context. Untrusted tokenizer control markers are escaped, external access is request-scoped, and unresolved tool failures/iteration limits produce partial rather than successful completion status. Current-data answers use the existing web data tools; the reasoning engine remains local.
 
 ## AR and low-memory client implementation
 
@@ -75,18 +81,18 @@ Source: public `https://edunova-ai-o2vy.onrender.com/health` observation during 
 
 | Area | Current result | Scope / limitation |
 |---|---|---|
-| Python regression | PASS: 122 tests + 8 subtests; 9 skipped | Includes real tiny offline PyTorch pipeline tests; tiny random fixture is NOT intelligence evidence |
+| Python regression | PASS: 131 tests + 8 subtests; 9 skipped | Includes actual supervised tiny-PyTorch generation, cancellation retaining the resident worker, a killed startup-deadline worker, observational HTTP health and configuration rejection. The random fixture is NOT intelligence evidence |
 | Node regression | PASS: 15 tests | Six new real-Mongo integration tests skipped locally without Mongo |
-| Frontend production build | PASS | Build is not live acceptance |
+| Frontend production build / Worker bundle | PASS | Vite and Wrangler 4.129.0 deploy dry run pass; not live acceptance |
 | Dependency audit | PASS: zero reported vulnerabilities in frontend/server installed trees | npm audit at verification time |
-| Browser AR/fallback/context/quiz contracts | PASS: 5 Chromium tests | Explicit API fixtures; actual original GLB loads and disposes; not a deployed AI test |
+| Browser AR/fallback/context/quiz contracts | PASS: 5 Chromium tests | Explicit API fixtures; actual original GLB loads and disposes; mobile 390×844 reading/context path; not a deployed AI test |
 | Real pretrained model reasoning / streaming | UNVERIFIED | Executable records real weights, answers, throughput and cancellation evidence; CI activation blocked by GitHub workflow permission |
 | Real semantic embedding inference | UNVERIFIED | Verifier targets actual MiniLM weights; local owner-isolation tests use explicit lexical backend |
 | Real Mongo integration | UNVERIFIED | Inactive CI template defines disposable MongoDB; no production credentials used |
 | Live web research and mixed student/current answers | UNVERIFIED | Code/regression contracts are not verified live results |
 | Physical WebXR camera / 2-GB phone | UNVERIFIED | Browser capability/fallback paths are tested; actual phone/camera is unavailable |
 | Deployed AI/DB/RAG/AR combined acceptance | BLOCKED | No authenticated production test session/deployment credentials; inadequate observed AI capacity |
-| GitHub push / merge | PENDING | Updated below after repository operations |
+| GitHub push / merge | PUSHED; merge pending | [PR #57](https://github.com/ranjitacharya13-crypto/edunova_x/pull/57); updated below after merge |
 
 ## Deployment boundaries
 
@@ -97,4 +103,16 @@ The actual public hosts observed are:
 
 The frontend uses relative `/api` requests, with Cloudflare/Vercel server-side proxying to the known API. Camera frames are not proxied to AI. The Cloudflare Worker is a streaming network proxy, never a model host.
 
-GitHub access is available for application branch/PR operations; the first push was rejected because the connection lacks workflow-edit permission. `.github/ci/quality.workflow.yml` is an **inactive** template, not an executed workflow. Access to Actions secrets returned HTTP 403, and Render/Cloudflare production credentials and Mongo credentials are not available. No new production account or demo data has been inserted. Tests never operate on a live database. A merge may trigger existing connected deployment integrations, but deployment must be verified separately; it is not assumed successful.
+GitHub access is available for application branch/PR operations; the first push was rejected because the connection lacks workflow-edit permission. `.github/ci/quality.workflow.yml` is an **inactive** template, not an executed workflow. Access to Actions secrets returned HTTP 403, and Render/Cloudflare production credentials and Mongo credentials are not available. Deployment checks on the first pushed revision: **Cloudflare Workers build FAILED; both Vercel builds FAILED**. The GitHub check exposes provider dashboard links, not diagnostic logs. The local equivalent Worker build/bundle succeeds; the actual remote failure cause remains unverified, and is not claimed fixed.
+
+No new production account or demo data has been inserted. Tests never operate on a live database. A merge may trigger existing connected deployment integrations, but deployment must be verified separately; it is not assumed successful.
+
+## Remaining acceptance gaps / explicit limitations
+
+- No actual pretrained GGUF or MiniLM weights could be downloaded in this sandbox (TLS connections to model/binary hosts failed). PyPI runtime imports and real offline tensor/native-worker mechanics passed, but this is not pretrained reasoning quality evidence.
+- No real Mongo server was available locally. The six isolated Mongo integration tests are committed but not counted as passing; the inactive CI template cannot run until GitHub workflow permission is granted.
+- Ordinary answer fast paths stream actual decoded pieces. The general multi-step planner's JSON planning and quiz/plan JSON generation expose status events; their structured results are delivered when validation completes. Universal token-by-token streaming of every structured/complex output is not certified.
+- Legacy PDF extraction backfills at most one bounded file per retrieval request; unavailable, scanned/OCR-required and pending material is explicitly reported. OCR is not implemented. Semantic retrieval needs its server-side pretrained embedding model.
+- Strict schema checks validate quiz structure, not the educational correctness of every generated answer. Actual learning quality, saved-quiz round trips on production Mongo, mixed current-data research and authenticated live conversations remain unverified.
+- Physical camera/WebXR behavior and performance on an actual 2-GB phone remain unverified; desktop Chromium emulates low-memory hints and mobile viewport for fallback checks.
+- A merge is a repository operation, not a passed deployment. The observed AI hardware and failed deployment checks still require operator attention; no paid resource changes or credential-dependent provider actions were performed.

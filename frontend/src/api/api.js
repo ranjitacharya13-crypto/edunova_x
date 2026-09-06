@@ -101,10 +101,10 @@ export const loginUser = async (formData) => {
 
 export const getTodayTimetable = async () => {
   try {
-    const res = await API.get("/timetable/today");
+    const res = await API.get("/timetable/today", { headers: aiAuthHeaders() });
     return res.data;
-  } catch {
-    return { timetable: [] };
+  } catch (error) {
+    return { timetable: [], error: error.response?.data?.error || "Timetable could not be loaded" };
   }
 };
 
@@ -114,10 +114,10 @@ export const getTodayTimetable = async () => {
 
 export const getTodayTeacherTimetable = async () => {
   try {
-    const res = await API.get("/teacher-timetable/today");
+    const res = await API.get("/teacher-timetable/today", { headers: aiAuthHeaders() });
     return res.data;
-  } catch {
-    return { timetable: [] };
+  } catch (error) {
+    return { timetable: [], error: error.response?.data?.error || "Timetable could not be loaded" };
   }
 };
 
@@ -380,6 +380,7 @@ export const getAIStatus = async () => {
     return {
       status,
       label: aiStatusLabel(status),
+      terminal: Boolean(res.data?.permanentFailure || res.data?.model?.permanentFailure),
       // Progress detail (e.g. "downloading 42%") for the starting state only.
       detail: describeModelProgress(res.data?.model),
     };

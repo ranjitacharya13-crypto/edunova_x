@@ -37,7 +37,8 @@ export default function useAIStatus({ enabled = true } = {}) {
     const tick = async () => {
       const next = await refresh();
       if (cancelled || !mountedRef.current) return;
-      const delay = next.status === AI_STATUS.READY ? READY_POLL_MS : STARTING_POLL_MS;
+      if (next.terminal) return; // A terminal failure needs operator intervention, not endless preparing polls.
+      const delay = [AI_STATUS.READY, AI_STATUS.UNAVAILABLE, AI_STATUS.UNKNOWN].includes(next.status) ? READY_POLL_MS : STARTING_POLL_MS;
       timerRef.current = window.setTimeout(tick, delay);
     };
     tick();

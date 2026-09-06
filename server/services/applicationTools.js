@@ -89,7 +89,7 @@ function preparePendingAction(toolName, args, userId, conversationId) {
       requiresConfirmation: true,
       confirmationToken: token,
       toolName,
-      preview: args,
+      preview: ["create_quiz", "save_quiz"].includes(toolName) ? { ...args, questions: args.questions.map(({ question, options }) => ({ question, options })) } : args,
       message: `Confirm to apply ${toolName.replaceAll("_", " ")} to EduNova.`,
     },
   };
@@ -573,8 +573,9 @@ async function createTimetable(user, args = {}) {
   if (!["admin", "teacher"].includes(user.role)) throw httpError("PERMISSION_DENIED", "Only teachers or admins can change timetables", 403);
   const model = user.role === "teacher" ? TeacherTimetable : Timetable;
   const filter = user.role === "admin" ? legacyShared : { ownerId: user._id };
-  const doc = await model.findOneAndUpdate(filter, { $set: args.schedule }, { upsert: true, new: true, runValidators: true });
-  return { success: true, timetableId: doc._id, message: "Timetable updated successfully." };
+  const schedule = Object.fromEntries(Object.entries(args.schedule).map(([day, periods]) => [day, periods.map((p) => ({ period: p.period, time: p.time, [user.role === "teacher" ? "class" : "subject"]: p.class || p.subject }))]));
+  const doc = await model.findOneAndUpdate(filter, { $set: schedule }, { upsert: true, new: true, runValidators: true });
+  return { success: true, timetableId: doc._id, navigate: { view: "timetable" }, message: "Timetable updated successfully." };
 }
 
 async function updateTimetable(user, args = {}) {

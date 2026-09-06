@@ -130,7 +130,7 @@ def _worker(connection, settings: Settings) -> None:
             version = torch.__version__
         else:
             raise ValueError("Unsupported local runtime")
-        emit("DEPENDENCIES_READY", runtimeVersion=version, runtimeAvailable=True)
+        emit("DEPENDENCIES_READY", runtimeVersion=version, runtimeAvailable=True, resources=resources())
         capacity = resources()
         # Estimates include the API/embedding process as well as native weights.
         required_mb = (settings.local_model_estimated_ram_mb or 700) + 400
@@ -160,7 +160,7 @@ def _worker(connection, settings: Settings) -> None:
         else:
             if not (manager.model_path / "config.json").exists() or not list(manager.model_path.glob("*.safetensors")):
                 raise ValueError("Transformers runtime requires config.json and safetensors weights (pickle checkpoints are not accepted)")
-        emit("MODEL_VALID", fileSizeBytes=getattr(manager, "file_size_bytes", None))
+        emit("MODEL_VALID", fileValid=True, fileSizeBytes=getattr(manager, "file_size_bytes", None))
         emit("MODEL_LOADING")
         started = time.monotonic()
         await manager._load_model()
@@ -227,7 +227,7 @@ def _worker(connection, settings: Settings) -> None:
         }.get(phase, "INFERENCE_FAILED")
         if isinstance(exc, MemoryError):
             failure = "OUT_OF_MEMORY"
-        if isinstance(exc, FileNotFoundError):
+        if isinstance(exc, FileNotFoundError) or getattr(exc, "status", None) == 404:
             failure = "MODEL_NOT_FOUND"
         emit(failure, lastError=safe_error(exc), failureStage=phase)
     finally:
@@ -245,7 +245,6 @@ class ModelManager:
         self.last_error = ""
         self.error_detail = ""
         self.error_report = None
-        self.config_override_rejected = None
         self.last_generation_metrics = None
         self.last_self_test = None
         self.history = []
@@ -261,6 +260,11 @@ class ModelManager:
         self._last_activity = time.monotonic()
         self._phase_entered = self._last_activity
         self._boot_monotonic = self._last_activity
+        self._startup_duration_ms = None
+
+    @property
+    def config_override_rejected(self):
+        return self.facts.get("configOverrideRejected")
 
     @property
     def lifecycle(self):
@@ -284,6 +288,8 @@ class ModelManager:
         if phase in {"WARMUP_RUNNING", "WARMUP_SUCCESS"}:
             self.state = "warming"
         if phase in FAILURES:
+            if self._startup_duration_ms is None:
+                self._startup_duration_ms = round((time.monotonic() - self._boot_monotonic) * 1000)
             self.last_error = self.facts.get("lastError", phase)
             self.error_detail = phase
             self.error_report = {"code": "MODEL_STARTUP_FAILED" if self.ready_at is None else "INFERENCE_FAILED",
@@ -293,12 +299,13 @@ class ModelManager:
             if self.ready_at is None:
                 self.ready_at = time.time()
                 self.facts["coldStartMs"] = round((time.monotonic() - self._boot_monotonic) * 1000)
+                self._startup_duration_ms = self.facts["coldStartMs"]
             self._ready_event.set()
         log.info("MODEL_STATE state=%s diagnostic=%s", phase, self.last_error or "-")
 
     def ensure_loading(self, force=False):
         # force is accepted for compatibility but NEVER restarts a failed/ready model.
-        if self._started:
+        if self._started or self.phase in FAILURES:
             return
         self._started = True
         self.started_at = time.time()
@@ -423,7 +430,7 @@ class ModelManager:
         return {"ok": bool(text.strip()), "answer": text, "generation": self.last_generation_metrics}
 
     async def preflight(self):
-        return {"runtime": self.settings.local_model_runtime, "model": self.settings.local_model_id, "fileExists": self.facts.get("fileExists", False)}
+        return {"success": bool(self.facts.get("fileValid")), "scope": "startup-observation", "runtime": self.settings.local_model_runtime, "model": self.facts.get("effectiveModelId", self.settings.local_model_id), "fileExists": self.facts.get("fileExists", False), "fileValid": bool(self.facts.get("fileValid"))}
 
     def snapshot(self, include_source=False):
         snap = {**self.facts, "state": self.state, "lifecycle": self.phase, "phase": self.phase,
@@ -432,7 +439,7 @@ class ModelManager:
                 "lastError": self.last_error or None, "errorDetail": self.error_detail or None,
                 "lastGeneration": self.last_generation_metrics, "lastSelfTest": self.last_self_test,
                 "contextSize": self.settings.local_model_ctx_size, "threads": self.settings.local_model_threads,
-                "loadedAt": self.ready_at, "startupDurationMs": round((time.monotonic() - self._boot_monotonic) * 1000) if self._started and not self.ready_at else self.facts.get("coldStartMs"),
+                "loadedAt": self.ready_at, "startupDurationMs": self._startup_duration_ms if self._startup_duration_ms is not None else (round((time.monotonic() - self._boot_monotonic) * 1000) if self._started else None),
                 "startupTimeoutSeconds": self.settings.local_model_startup_timeout,
                 "history": list(self.history), "permanentFailure": self.phase in FAILURES,
                 "overrideRejected": bool(self.facts.get("configOverrideRejected"))}

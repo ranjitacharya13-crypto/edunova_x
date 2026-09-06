@@ -89,7 +89,7 @@ if (fs.existsSync(frontendDist)) {
     }
   });
 
-  if (!deploysWithWorkerMain) {
+  {
     // These files are meaningful for Pages/Workers-with-a-script, but are not
     // needed for Cloudflare Workers assets-only. SPA fallback is configured via
     // assets.not_found_handling above, so avoid uploading a Pages-style redirect

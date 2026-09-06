@@ -95,7 +95,7 @@ describe("ApplicationToolRegistry & Internal Tool Execution", () => {
     const result = await executeApplicationTool("create_study_plan", {
       title: "Physics plan",
       subject: "Physics",
-      schedule: [{ day: "Monday", topic: "Waves", task: "Practice", subject: "Physics" }],
+      schedule: [{ day: "Monday", time: "17:00", topic: "Waves", task: "Practice", subject: "Physics" }],
     }, userId);
     assert.strictEqual(result.success, true);
     assert.strictEqual(result.data.requiresConfirmation, true);

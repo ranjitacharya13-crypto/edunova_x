@@ -166,7 +166,7 @@ app.use(express.json());
 // build artifacts. Render can therefore verify the process while dependencies
 // are still connecting.
 app.get("/health", (req, res) => {
-  res.status(200).json({ status: "ok" });
+  res.status(200).json({ status: "ok", service: "edunova-api", version: "5.0.0", database: mongoose.connection.readyState === 1 ? "connected" : "disconnected" });
 });
 
 // ==========================

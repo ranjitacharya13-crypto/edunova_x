@@ -14,6 +14,7 @@ function validateQuiz(input) {
   }
   const seen = new Set();
   const questions = input.questions.map((q) => {
+    if (!q || typeof q !== "object" || Array.isArray(q)) throw httpError("INVALID_QUIZ", "Question must be an object");
     const question = clean(q.question, 1000);
     const options = Array.isArray(q.options) ? q.options.map((o) => clean(o, 500)) : [];
     if (!question || seen.has(question.toLowerCase()) || options.length < 2 || options.length > 6 ||
@@ -30,6 +31,7 @@ function validateQuiz(input) {
 async function createPracticeQuiz(user, args) {
   requireDatabase();
   const quiz = validateQuiz(args);
+  if (args.arLessonId && !await require("../models/ARLesson").exists({ _id: args.arLessonId, published: true })) throw httpError("NOT_FOUND", "AR lesson not found", 404);
   const assignment = await Assignment.create({
     title: quiz.title, subject: quiz.subject, room: "personal-practice", kind: "practice",
     ownerId: identity(user), visibility: "private", fileId: null, filename: "",

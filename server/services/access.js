@@ -4,6 +4,7 @@ const normalizeRoom = (value) => String(value || "").trim().toLowerCase().replac
 const roomsFor = (user) => (user.enrolledClasses || []).map(normalizeRoom).filter(Boolean);
 const identity = (user) => user._id || user.id;
 const isStaff = (user) => ["teacher", "admin"].includes(user.role);
+const publicMaterials = { "metadata.ownerId": null, "metadata.classId": null, "metadata.visibility": { $ne: "private" } };
 const legacyShared = { ownerId: null, classId: null };
 function assignmentAccess(user) {
   const ownerId = identity(user);
@@ -38,4 +39,4 @@ function httpError(code, message, status = 400) {
   return error;
 }
 const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-module.exports = { normalizeRoom, roomsFor, identity, isStaff, legacyShared, assignmentAccess, materialAccess, requireDatabase, httpError, escapeRegex };
+module.exports = { publicMaterials, normalizeRoom, roomsFor, identity, isStaff, legacyShared, assignmentAccess, materialAccess, requireDatabase, httpError, escapeRegex };

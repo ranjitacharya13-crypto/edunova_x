@@ -170,7 +170,7 @@ class ObservationManager:
                         summary = f"Quiz: {data.get('quizTitle', '')} (Score: {data.get('scorePercentage', '')}%)"
                     elif "periods" in data:
                         summary = f"{len(data.get('periods', []))} periods for {data.get('day', 'today')}"
-                source_manager.add_internal(tool=tool, title=f"EduNova {tool[4:].replace('_', ' ').capitalize()}", summary=summary)
+                source_manager.add_internal(tool=tool, title=f"EduNova {tool[4:].replace('_', ' ').capitalize()}" if tool.startswith("get_") else "EduNova material passages", summary=summary)
             elif tool == "open_feature" or tool.startswith(("create_", "save_", "mark_", "update_", "set_")):
                 state.used_internal_db = True
                 if isinstance(data, dict):
@@ -537,15 +537,17 @@ class ResponseGenerator:
         limit_reached: bool,
     ) -> AgentResult:
         answer = source_manager.enforce_integrity(state.final_answer)
+        latest_results = {o.tool: o.success for o in state.observations}
+        complete = not limit_reached and all(latest_results.values())
         return AgentResult(
-            success=True,
+            success=complete,
             message=answer,
             sources=source_manager.public_sources(answer),
             internal_sources=state.internal_sources,
             actions=state.executed_actions,
             used_web=state.used_web,
             used_internal_db=state.used_internal_db,
-            agent_status="completed",
+            agent_status="completed" if complete else "partial",
             conversation_id=conversation_id,
             limit_reached=limit_reached,
         )
@@ -665,14 +667,24 @@ class AgentEngine:
             await events.emit(
                 "agent.tool_started", iteration=state.iteration_count, tool=tool_name
             )
+            from .security import requests_external_data
+            # Do not let document instructions encode private tool results in an
+            # outgoing search query. Personalized queries use the dedicated,
+            # backend-derived research route rather than model-chosen identities.
+            if state.user_id and tool_name == "web_search":
+                arguments = {**arguments, "query": state.goal[:480]}
             started = monotonic()
             tool_context = {
                 "user_id": state.user_id,
+                "request_id": (application_context or {}).get("requestId"),
+                "allow_external": requests_external_data(state.goal) if state.user_id else True,
                 "conversation_id": conversation_id,
                 "user_role": state.user_role,
                 "user_name": state.user_name,
                 "user_email": state.user_email,
             }
+            if state.user_id:
+                tool_context["allowed_urls"] = [s.url for s in state.sources.values()] + [url.rstrip(".,);") for url in re.findall(r"https?://[^\s<>\"\[\]]+", state.goal)]
             observation, record = await self.registry.execute(tool_name, arguments, context=tool_context)
             state.tool_call_count += 1
             if tool_name in {"web_search", "open_url", "extract_webpage"}:

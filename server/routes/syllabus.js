@@ -1,3 +1,4 @@
+const { publicMaterials } = require("../services/access");
 const { prepareMetadata } = require("../services/learningMaterials");
 // server/routes/syllabus.js
 const express = require('express');
@@ -46,14 +47,14 @@ async function streamFile(req, res, { forceDownload = false } = {}) {
   if (!bucket || !db) return res.status(503).json({ error: 'Storage not initialized yet' });
   const id = new ObjectId(req.params.id);
   const filesColl = db.collection('syllabus_files.files');
-  const fileDoc = await filesColl.findOne({ _id: id });
+  const fileDoc = await filesColl.findOne({ _id: id, ...publicMaterials });
   if (!fileDoc) return res.status(404).json({ error: 'File not found' });
 
   const contentType = getContentType(fileDoc.filename, fileDoc.contentType);
   res.setHeader('Content-Type', contentType);
   res.setHeader('Accept-Ranges', 'bytes');
 
-  const name = req.query.name || fileDoc.filename || 'file';
+  const name = String(fileDoc.filename || "file").replace(/[\r\n"\\]/g, "_").slice(0, 180);
   if (forceDownload || req.query.download) {
     res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
   } else {
@@ -76,7 +77,7 @@ async function streamFile(req, res, { forceDownload = false } = {}) {
     if (
       Number.isNaN(start) ||
       Number.isNaN(end) ||
-      start > end ||
+      start < 0 || start > end ||
       end >= fileSize
     ) {
       res.setHeader('Content-Range', `bytes */${fileSize}`);
@@ -202,7 +203,7 @@ router.post('/', auth, teacherOrAdmin, upload.single('file'), async (req, res) =
 router.get('/', async (req, res) => {
   try {
     if (!db) return res.status(503).json({ error: 'Storage not initialized yet' });
-    const files = await db.collection('syllabus_files.files').find({}).sort({ uploadDate: -1 }).toArray();
+    const files = await db.collection('syllabus_files.files').find(publicMaterials).sort({ uploadDate: -1 }).toArray();
     // normalize fields for frontend
     const list = files.map(f => ({
       _id: f._id,

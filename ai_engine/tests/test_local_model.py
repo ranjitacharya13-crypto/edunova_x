@@ -683,3 +683,36 @@ class CompactPlannerTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class IntegratedIntentTests(unittest.IsolatedAsyncioTestCase):
+    async def test_ar_quiz_is_an_action_not_a_generic_ar_navigation_request(self):
+        decision = IntentRouter(local_settings()).classify("Create a practice quiz from this AR lesson's learning objectives.", [])
+        self.assertEqual(decision.intent, "action_create_quiz")
+
+    async def test_ar_discovery_uses_published_ids_and_application_navigation(self):
+        registry = ToolRegistry(allowed_permissions={"READ_INTERNAL"})
+        calls = []
+        async def lessons(args, context=None):
+            self.assertEqual(args, {"topic": "Human Eye"})
+            return {"lessons": [{"_id": "64d000000000000000000001", "title": "Human Eye", "topic": "Human Eye"}]}
+        async def navigate(args, context=None):
+            calls.append(args)
+            return {"navigate": args, "message": "Open lesson"}
+        for name, executor in [("get_ar_lessons", lessons), ("open_feature", navigate)]:
+            registry.register(ToolDefinition(name=name, description=name, input_schema={"type": "object"}, executor=executor, permission="READ_INTERNAL", category="INTERNAL"))
+        settings = local_settings()
+        result = await run_fast_path(settings=settings, llm=_ScriptedLLM(text="Explore the published eye lesson."), registry=registry,
+            decision=IntentRouter(settings).classify("Explain Human Eye in AR", []), goal="Explain Human Eye in AR", conversation=[], conversation_id="ar-contract", user_id="student-42", user_name="Student")
+        self.assertEqual(calls, [{"view": "ar", "id": "64d000000000000000000001"}])
+        self.assertEqual(result["actions"][0]["data"]["navigate"], calls[0])
+
+    async def test_no_recorded_class_cannot_become_a_successful_today_quiz(self):
+        registry = ToolRegistry(allowed_permissions={"READ_INTERNAL"})
+        async def empty(args, context=None): return {"periods": [], "liveSessions": []}
+        registry.register(ToolDefinition(name="get_today_schedule", description="schedule", input_schema={"type": "object"}, executor=empty, permission="READ_INTERNAL", category="INTERNAL"))
+        settings = local_settings(); llm = _ScriptedLLM(text="must not run")
+        with self.assertRaises(LLMResponseError) as failure:
+            await run_fast_path(settings=settings, llm=llm, registry=registry, decision=IntentRouter(settings).classify("Create a quiz from today's class", []),
+                goal="Create a quiz from today's class", conversation=[], conversation_id="no-class", user_id="student-42", user_name="Student")
+        self.assertEqual(failure.exception.error_type, "CLASS_CONTEXT_NOT_FOUND")
+        self.assertEqual(llm.calls, [])

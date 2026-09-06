@@ -34,6 +34,7 @@ def _tiny_settings(**overrides) -> Settings:
         llm_provider="local",
         local_model_runtime="torch",
         local_model_repo=str(_TINY_DIR),
+        local_model_file="",
         local_model_ctx_size=256,
         local_model_dtype="fp32",
         local_model_threads=1,

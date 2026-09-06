@@ -1,5 +1,7 @@
 const express = require("express");
 const router = express.Router();
+const { scopedTimetable } = require("../services/applicationTools");
+const optionalAuth = (req, res, next) => req.headers.authorization ? auth(req, res, next) : next();
 const Timetable = require("../models/Timetable");
 const LiveSession = require("../models/LiveSession");
 const Recording = require("../models/Recording");
@@ -77,7 +79,7 @@ const recordingUpload = multer({
 });
 
 // GET today's timetable
-router.get("/today", async (req, res) => {
+router.get("/today", optionalAuth, async (req, res) => {
   try {
     const days = [
       "Sunday",
@@ -89,8 +91,8 @@ router.get("/today", async (req, res) => {
       "Saturday",
     ];
 
-    const today = days[new Date().getDay()];
-    const timetableDoc = await Timetable.findOne({ ownerId: null, classId: null });
+    const today = new Intl.DateTimeFormat("en-US", { weekday: "long", timeZone: req.user?.timezone || "UTC" }).format(new Date());
+    const timetableDoc = req.user ? (await scopedTimetable({ ...req.user, role: "student" })).doc : await Timetable.findOne({ ownerId: null, classId: null });
 
     if (!timetableDoc || !timetableDoc[today]) {
       return res.json({

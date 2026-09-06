@@ -852,6 +852,8 @@ class TorchModelManager:
 
     # --------------------------------------------------------- generation --
     def _render_prompt(self, system_prompt: str, user_prompt: str) -> tuple[str, list[str]]:
+        from agent.security import escape_chat_controls
+        user_prompt = escape_chat_controls(user_prompt)
         tokenizer = self._tokenizer
         if tokenizer is not None and self._tokenizer_config.get("chat_template"):
             try:

@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 
-export const AR_STATES = Object.freeze({ CHECKING_SUPPORT: "CHECKING_SUPPORT", REQUESTING_CAMERA: "REQUESTING_CAMERA", LOADING_ASSET: "LOADING_ASSET", AR_READY: "AR_READY", FALLBACK_3D: "FALLBACK_3D", ERROR: "ERROR" });
+export const AR_STATES = Object.freeze({ CHECKING_SUPPORT: "CHECKING_SUPPORT", REQUESTING_CAMERA: "REQUESTING_CAMERA", LOADING_ASSET: "LOADING_ASSET", AR_READY: "AR_READY", FALLBACK_3D: "FALLBACK_3D", ERROR: "ERROR", READING_MODE: "READING_MODE" });
 
 export default function ARViewer({ lesson, selected, onSelect }) {
   const host = useRef(null), viewer = useRef(null);
@@ -9,7 +9,7 @@ export default function ARViewer({ lesson, selected, onSelect }) {
   const [error, setError] = useState("");
   // Conservative default on constrained phones: reading mode first, with an
   // explicit optional 3D download. The AI computation never runs on the phone.
-  const [load3D, setLoad3D] = useState(() => !(navigator.deviceMemory && navigator.deviceMemory <= 2) && !navigator.connection?.saveData);
+  const [load3D, setLoad3D] = useState(() => !(navigator.deviceMemory && navigator.deviceMemory <= 2) && !navigator.connection?.saveData && navigator.hardwareConcurrency !== 2);
   useEffect(() => {
     let active = true;
     let timeout;
@@ -23,7 +23,7 @@ export default function ARViewer({ lesson, selected, onSelect }) {
     };
     const setup = async () => {
       const xr = await checkSupport();
-      if (!active || !load3D) { if (active) setState(AR_STATES.FALLBACK_3D); return; }
+      if (!active || !load3D) { if (active) setState(AR_STATES.READING_MODE); return; }
       setState(AR_STATES.LOADING_ASSET);
       timeout = setTimeout(() => { if (active) { setError("The 3D asset did not finish loading. The lesson and hotspots remain available below."); setState(AR_STATES.ERROR); } }, 20000);
       try {

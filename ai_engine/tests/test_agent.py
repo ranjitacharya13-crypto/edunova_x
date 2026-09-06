@@ -155,7 +155,7 @@ class AgentEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.sources[0]["id"], "S1")
         self.assertEqual(result.sources[0]["url"], "https://nodejs.org/en/about/previous-releases")
 
-    async def test_tool_failure_becomes_observation_and_agent_can_refine(self):
+    async def test_tool_failure_can_retry_without_a_private_data_query_side_channel(self):
         attempts = []
 
         async def sometimes_fails(arguments):
@@ -196,7 +196,7 @@ class AgentEngineTests(unittest.IsolatedAsyncioTestCase):
             conversation=[],
             conversation_id="conversation123456",
         )
-        self.assertEqual(attempts, ["broad query", "refined official query"])
+        self.assertEqual(attempts, ["Research a changing detail", "Research a changing detail"])
         self.assertTrue(result.success)
         self.assertEqual(len(result.sources), 1)
 

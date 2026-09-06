@@ -6,6 +6,11 @@ const { executeApplicationTool, confirmApplicationTool } = require("../services/
 const { educationalContext } = require("../services/arLessons");
 const router = express.Router();
 const buckets = new Map();
+router.use((req, res, next) => {
+  req.requestId = crypto.randomUUID();
+  res.setHeader("X-Request-Id", req.requestId);
+  next();
+});
 
 function aiRateLimit(req, res, next) {
   const key = String(req.user.id), now = Date.now();
@@ -13,7 +18,7 @@ function aiRateLimit(req, res, next) {
   const recent = (buckets.get(key) || []).filter((t) => now - t < windowMs);
   if (recent.length >= (Number(process.env.AI_RATE_LIMIT_MAX_REQUESTS) || 20)) {
     res.setHeader("Retry-After", String(Math.max(1, Math.ceil((windowMs - (now - recent[0])) / 1000))));
-    return res.status(429).json({ success: false, error: { code: "RATE_LIMITED", message: "Too many AI requests" } });
+    return res.status(429).json({ success: false, requestId: req.requestId, error: { code: "RATE_LIMITED", message: "Too many AI requests" } });
   }
   buckets.set(key, [...recent, now]);
   if (buckets.size > 1000) for (const [id, times] of buckets) if (now - times.at(-1) > windowMs) buckets.delete(id);
@@ -28,7 +33,7 @@ function internalHeaders(requestId) {
     ...(process.env.AI_INTERNAL_TOKEN ? { "X-AI-Internal-Token": process.env.AI_INTERNAL_TOKEN } : {}) };
 }
 function fail(res, status, code, message, requestId) {
-  return res.status(status).json({ success: false, error: { code, message }, message, requestId, agentStatus: "failed" });
+  return res.status(status).json({ success: false, error: { code, message }, message, requestId: requestId || res.getHeader("X-Request-Id"), agentStatus: "failed" });
 }
 function networkCode(error) {
   return ["ETIMEDOUT", "ECONNABORTED"].includes(error.code) ? "UPSTREAM_TIMEOUT" : "AI_SERVICE_UNREACHABLE";
@@ -57,7 +62,7 @@ async function readLimited(stream, max = 2 * 1024 * 1024) {
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 async function handleAgentChat(req, res) {
-  const requestId = crypto.randomUUID();
+  const requestId = req.requestId;
   res.setHeader("X-Request-Id", requestId);
   const message = req.body?.message;
   const conversationId = req.body?.conversationId;

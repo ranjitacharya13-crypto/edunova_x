@@ -260,7 +260,7 @@ llm, model_manager = create_llm(settings)
 agent = AgentEngine(settings, llm, registry)
 intent_router = IntentRouter(settings)
 provider_runtime = {
-    "state": "ready" if settings.llm_configured else "missing_config",
+    "state": "model_loading",
     "lastCheckedAt": None,
     "lastHttpStatus": None,
     "lastErrorType": None,
@@ -276,7 +276,7 @@ def _provider_log_host(settings) -> str:
     external-API setting) would name a host that was never contacted.
     """
     if settings.is_local_llm:
-        return "in-process:llama.cpp"
+        return "resident-worker:" + settings.local_model_runtime
     try:
         return urlsplit(settings.llm_base_url).hostname or "none" if settings.llm_base_url else "none"
     except Exception:
@@ -333,8 +333,7 @@ async def lifespan(app: FastAPI):
     # downloaded (once, into the persistent cache), loaded and warmed to READY
     # in the background while the port is already bound. A normal user request
     # therefore never triggers a download/load — if it arrives during this
-    # boot window it is queued (with an honest "preparing" status) until the
-    # model becomes READY, then processed. See /api/ai/ready + /health.
+    # boot window it fails fast with its actual startup state. See /api/ai/ready + /health.
     if model_manager is not None:
         model_manager.ensure_loading()
     async def prepare_embeddings():
@@ -359,16 +358,16 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="EduNova AI Agent",
-    version="4.0.0",
+    version="5.0.0",
     description=(
         "Self-hosted unified data-aware learning and research agent. Runs a "
-        "quantized open-source model in-process with the runtime matched to the "
+        "quantized open-source model in a persistent worker with the runtime matched to the "
         "model format: llama.cpp/GGUF (LOCAL_MODEL_RUNTIME=llama_cpp, the "
         "production runtime) or PyTorch + transformers for safetensors "
         "(LOCAL_MODEL_RUNTIME=torch). Reasons over the EduNova database, web "
         "research, RAG retrieval and conversation memory. The model is "
         "downloaded and warmed to READY at service startup; user requests are "
-        "queued during warm-up and never trigger a model download."
+        "rejected with the actual startup state during warm-up, and never trigger a model download."
     ),
     lifespan=lifespan,
 )
@@ -402,7 +401,7 @@ async def root() -> dict[str, Any]:
     return {
         "success": True,
         "service": "edunova-agent",
-        "version": "4.0.0",
+        "version": "5.0.0",
         "architecture": (
             "self-hosted unified data-aware agent "
             f"(runtime={settings.local_model_runtime} + IntentRouter + ToolRegistry + web research + RAG)"
@@ -419,14 +418,14 @@ def _model_health_block(include_source: bool = False) -> dict[str, Any]:
 
 def _model_state_value() -> str:
     """Legacy lowercase model state (the value existing health UIs key off)."""
-    if settings.is_local_llm and model_manager is not None:
+    if model_manager is not None:
         return str(getattr(model_manager, "state", "unknown") or "unknown")
     return str(provider_runtime.get("state") or "unknown")
 
 
 def _model_lifecycle_value() -> str:
     """Canonical lifecycle name when the runtime exposes one."""
-    if settings.is_local_llm and model_manager is not None:
+    if model_manager is not None:
         lifecycle = getattr(model_manager, "lifecycle", None)
         if lifecycle is not None:
             return str(getattr(lifecycle, "state", "UNKNOWN"))
@@ -443,7 +442,7 @@ def _model_is_ready() -> bool:
     is precisely how /api/ai/ready returned 200 for a model that could not
     answer, and why the gateway forwarded requests that then timed out.
     """
-    if not settings.is_local_llm or model_manager is None:
+    if model_manager is None:
         return provider_runtime["state"] == "ready"
     is_ready = getattr(model_manager, "is_ready", None)
     if callable(is_ready):
@@ -495,7 +494,7 @@ def _runtime_resources() -> dict[str, Any]:
 
 def _readiness() -> dict[str, Any]:
     """The four facts requirement 11 asks a health check to confirm."""
-    if not settings.is_local_llm or model_manager is None:
+    if model_manager is None:
         return {
             "modelFileExists": None,
             "runtimeAvailable": None,
@@ -531,7 +530,7 @@ async def health() -> dict[str, Any]:
     payload = {
         "status": "live",
         "service": "edunova-agent",
-        "version": "4.0.0",
+        "version": "5.0.0",
         # For the self-hosted provider the live state is the model manager's
         # state machine (downloading/loading/warming/ready/error), not a cached
         # probe. "live" (port bound) is intentionally different from "ready".
@@ -586,7 +585,7 @@ async def ready() -> Any:
 @app.get("/model/status")
 async def model_status() -> dict[str, Any]:
     """Detailed, honest model lifecycle status (safe for operators/UI)."""
-    if not settings.is_local_llm or model_manager is None:
+    if model_manager is None:
         return {
             "status": "external_provider",
             "model_loaded": provider_runtime["state"] == "ready",
@@ -650,7 +649,7 @@ async def ai_health(
     probe_detail: dict[str, Any] | None = None
     if deep or not settings.is_local_llm:
         try:
-            if settings.is_local_llm and model_manager is not None:
+            if model_manager is not None:
                 await llm.probe(deep=True)
                 probe_detail = {"inference": "verified"}
             else:
@@ -718,14 +717,9 @@ async def ai_health(
 async def model_source_check(
     x_ai_internal_token: str | None = Header(default=None),
 ) -> dict[str, Any]:
-    """Verify the configured model URL is really downloadable (HEAD only).
-
-    This is the operator tool for the failure that caused this incident: it
-    answers "does LOCAL_MODEL_FILE actually exist?" without downloading 380MB
-    and without restarting the service.
-    """
+    """Observe startup source/integrity facts without restarting or downloading."""
     _authorize_internal_request(x_ai_internal_token)
-    if not settings.is_local_llm or model_manager is None:
+    if model_manager is None:
         return {"success": False, "reason": "not_local_provider", "provider": settings.llm_provider}
     try:
         check = await model_manager.preflight()
@@ -784,19 +778,19 @@ async def ai_ready(
     # Readiness is observational. Starting/retrying here caused the production
     # reload loop and negative startup durations. Only lifespan starts the model.
     ready = _model_is_ready()
-    snap = model_manager.snapshot() if (settings.is_local_llm and model_manager) else {}
+    snap = model_manager.snapshot() if model_manager is not None else {}
     payload: dict[str, Any] = {
         "success": ready,
         "modelReady": ready,
         "modelState": _model_state_value(),
         "lifecycle": _model_lifecycle_value(),
         "runtime": settings.local_model_runtime,
-        "model": settings.local_model_id if settings.is_local_llm else "external",
+        "model": snap.get("modelId"),
         "readySince": snap.get("loadedAt"),
         "coldStartMs": snap.get("coldStartMs"),
         "lastSelfTest": snap.get("lastSelfTest"),
         "lastError": snap.get("lastError") if not ready else None,
-        # Lets the gateway distinguish "still warming, keep queueing" from
+        # Lets the gateway distinguish bounded startup from
         # "startup failed, stop pretending" instead of polling for 10 minutes.
         "errorStage": snap.get("errorDetail") if not ready else None,
         "retryInSeconds": snap.get("retryInSeconds") if not ready else None,
@@ -821,7 +815,7 @@ async def ai_metrics(
     """Production metrics snapshot (never logs or returns secrets)."""
     _authorize_internal_request(x_ai_internal_token)
     resources = _process_resources()
-    snap = model_manager.snapshot() if (settings.is_local_llm and model_manager) else {}
+    snap = model_manager.snapshot() if model_manager is not None else {}
     generation = snap.get("lastGeneration") or {}
     metrics: dict[str, Any] = dict(_METRICS)
     metrics["model_load_time_ms"] = snap.get("modelLoadMs")
@@ -966,7 +960,7 @@ async def diagnose(
     # --- 2. Wait for model if not ready ---
     load_wait_ms = 0
     if model_manager is not None and model_manager.state != "ready":
-        results["loadAttempted"] = True
+        results["loadAttempted"] = False
         load_started = time.monotonic()
         try:
             await model_manager.wait_ready(timeout=min(60, settings.local_chat_wait_seconds))
@@ -1049,7 +1043,10 @@ def _ms(since: float) -> int:
 
 
 def _owner(request: ChatRequest) -> str:
-    return str(request.owner_id or request.email or "anonymous")[:200]
+    if not request.owner_id:
+        raise HTTPException(status_code=401, detail={"code": "AUTH_FAILED", "message": "Authenticated owner is required"})
+    return request.owner_id
+
 
 
 def _sanitize_provider_message_for_user(text: str, limit: int = 180) -> str:
