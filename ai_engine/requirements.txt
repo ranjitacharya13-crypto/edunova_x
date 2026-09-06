@@ -1,7 +1,16 @@
 # EduNova AI INFERENCE SERVICE (Layer B) — the ONLY container that runs the model.
 #
-#   llama-cpp-python  -> self-hosted GGUF LLM (Qwen2.5-0.5B-Instruct Q4_K_M)
-#   torch (CPU)       -> sentence embeddings for RAG + ML utilities
+#   llama-cpp-python  -> self-hosted GGUF LLM (default: SmolLM2-135M-Instruct
+#                        Q4_K_M — fits the Render FREE 512 MiB plan; upgrade
+#                        path: Qwen2.5-0.5B-Instruct on >=2 GB instances)
+#   torch (CPU)       -> sentence embeddings for RAG + ML utilities (ONLY for
+#                        RAG_ENABLED instances; the free-tier profile below
+#                        never imports it)
+#
+# On Render FREE (512 MB) use requirements-inference-free.txt instead: it skips
+# the entire torch/transformers install, so no PyTorch memory footprint exists
+# in the image at all. This file remains correct for a >= 1-2 GB instance with
+# RAG_ENABLED=true.
 #
 # Self-contained runtime matrix: even a provider that only runs `pip -r` must
 # select CPU torch, never pull CUDA transitively through accelerate.

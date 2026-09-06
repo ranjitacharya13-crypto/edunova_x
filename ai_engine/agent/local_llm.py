@@ -867,6 +867,14 @@ class LocalModelManager:
             # Output request alone is too large for the window: shrink it.
             max_tokens = max(32, n_ctx // 3)
             budget = n_ctx - max_tokens - reserve
+        if max_tokens > budget // 2:
+            # An answer budget that claims more than half of what the prompt
+            # leaves is never satisfiable: cap it so a natural stop (or a
+            # stop-string hit) finishes with "stop" instead of guaranteeing
+            # "length" — on the small free-tier window that would falsely
+            # raise OUTPUT_LIMIT_REACHED for every short reply.
+            max_tokens = max(32, budget // 2)
+            budget = n_ctx - max_tokens - reserve
 
         used = _count(prompt)
         if used <= budget:

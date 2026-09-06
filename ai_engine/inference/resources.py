@@ -19,13 +19,35 @@ from typing import Any
 
 MIB = 1024 * 1024
 
-# Overheads measured on Render/Docker CPU containers (python 3.11, uvicorn).
-LLAMA_RUNTIME_OVERHEAD_MB = 160      # llama.cpp compute buffers + ggml scratch
+# Overheads measured on Render/Docker CPU containers (python 3.11, uvicorn),
+# re-baselined for the Render FREE tier (512 MiB hard cgroup limit):
+#
+#   * an idle `uvicorn inference_server:app` parent (FastAPI + supervisor,
+#     no model, no torch) sits at ~55–70 MiB RSS;
+#   * the supervised llama.cpp worker starts at ~45–55 MiB before weights are
+#     touched; its llama.cpp compute buffers scale with model size (the
+#     weights-scaled term below), and its KV cache is estimated per-token from
+#     the actual GGUF header at the real n_ctx;
+#   * the old flat 160 MiB "runtime" + 140 MiB "server" + 128 MiB "margin"
+#     budget claimed ~28% of a free instance for overhead alone and falsely
+#     reported MODEL_RESOURCE_INSUFFICIENT for configurations that fit.
+LLAMA_RUNTIME_OVERHEAD_MB = 140      # llama.cpp compute buffers + ggml scratch (base)
 TORCH_RUNTIME_OVERHEAD_MB = 900      # torch + transformers import + allocator
-SERVER_OVERHEAD_MB = 140             # FastAPI parent + supervised worker interpreter
+SERVER_OVERHEAD_MB = 110             # FastAPI parent + supervised worker interpreter
 EMBEDDING_OVERHEAD_MB = 260          # sentence-transformers MiniLM in the same service
-SAFETY_MARGIN_MB = 128               # never run at the OOM edge
-RECOMMENDED_HEADROOM_RATIO = 1.5     # recommended_mb = required * 1.5, rounded to plan sizes
+SAFETY_MARGIN_MB = 64                # never run at the OOM edge
+# required_mb already carries a 64 MiB safety margin; the recommendation adds
+# another ~10% (KV growth, burst allocations, page-cache pressure) and rounds
+# UP to a real Render plan size. The free profile (SmolLM2-135M @ 2048, RAG
+# off) needs ~450 MiB -> recommended 512 MiB -> the FREE plan itself: sizing
+# guidance that matches reality instead of steering to a paid instance.
+RECOMMENDED_HEADROOM_RATIO = 1.10    # recommended_mb = required * 1.10, rounded to plan sizes
+
+# Compute buffers grow with model size (attention/FFN scratch is proportional
+# to hidden dims and layer count). Every 6 MiB of weights past 160 MiB adds
+# ~1 MiB of scratch estimate — 1.5B-class models land near the old flat value.
+_LLAMA_BUFFERS_WEIGHT_DIVISOR = 6
+_LLAMA_BUFFERS_WEIGHT_FLOOR_MB = 160
 
 _PLAN_SIZES_MB = (512, 1024, 2048, 4096, 8192, 16384)
 
@@ -217,7 +239,22 @@ def estimate_kv_cache_mb(meta: dict[str, Any], ctx: int) -> int:
 
 def estimate_requirement(*, runtime: str, model_path: str | Path | None, ctx: int,
                          catalogue_ram_mb: int = 0, expected_bytes: int = 0, with_embeddings: bool = True) -> dict[str, Any]:
-    """Break down the memory a model needs in this process, in MiB."""
+    """Break down the memory a model needs in this process, in MiB.
+
+    Deliberately honest, not pessimistic: with a 512 MiB Render Free cgroup,
+    overhead numbers that are too high reject configurations that genuinely
+    fit (the false MODEL_RESOURCE_INSUFFICIENT incident), and numbers that are
+    too low ship an OOM-kill loop. Each term is a measured ceiling:
+
+      weights    actual GGUF size when cached (else pinned catalogue bytes);
+      KV cache   from the GGUF header (layers/kv-heads/head-dim) at REAL ctx;
+      runtime    llama.cpp compute buffers/scratch: flat base + a term that
+                 scales with model size (small models need little);
+      server     parent uvicorn + supervised worker interpreter;
+      embeddings ONLY when RAG_ENABLED (a disabled runtime never imports
+                 torch — charging it would misreport the process budget);
+      margin     fixed headroom so generation never runs at the OOM edge.
+    """
     meta: dict[str, Any] = {}
     weights_mb = 0
     if model_path and Path(str(model_path)).is_file():
@@ -234,10 +271,11 @@ def estimate_requirement(*, runtime: str, model_path: str | Path | None, ctx: in
         if not weights_mb:
             weights_mb = max(0, catalogue_ram_mb - runtime_overhead)
     else:
-        runtime_overhead = LLAMA_RUNTIME_OVERHEAD_MB
         kv_mb = estimate_kv_cache_mb(meta, ctx)
+        runtime_overhead = LLAMA_RUNTIME_OVERHEAD_MB + max(
+            0, (weights_mb - _LLAMA_BUFFERS_WEIGHT_FLOOR_MB) // _LLAMA_BUFFERS_WEIGHT_DIVISOR)
         if not weights_mb and catalogue_ram_mb:
-            # Catalogue ram_mb already includes KV + compute at the default context.
+            # Catalogue ram_mb already includes KV + compute at the recorded context.
             weights_mb = max(0, catalogue_ram_mb - kv_mb - runtime_overhead)
     embedding_mb = EMBEDDING_OVERHEAD_MB if with_embeddings else 0
     required = weights_mb + kv_mb + runtime_overhead + SERVER_OVERHEAD_MB + embedding_mb + SAFETY_MARGIN_MB

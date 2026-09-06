@@ -106,41 +106,52 @@ The AI layer is split so that **the model never runs in a 512 MiB container**:
 |---|---|---|---|---|
 | `edunova-api` (Node/Express) | REST API, auth, MongoDB, AI **gateway** (`/api/ai/*`) | **No** | ~150 MiB | Free/Starter 512 MB |
 | `edunova-ai` (FastAPI, `main:app`) | AI **orchestrator**: IntentRouter, authenticated ToolRegistry, RAG orchestration, web search, memory, SSE relay | **No** (never imports `llama_cpp`/`torch`) | ~150 MiB | Free/Starter 512 MB |
-| `edunova-inference` (FastAPI, `inference_server:app`) | **Persistent inference service**: llama.cpp GGUF LLM + PyTorch embeddings | **Yes — the only one** | ~1.2 GiB | **Standard 2 GB / 1 CPU** |
+| `edunova-inference` (FastAPI, `inference_server:app`) | **Persistent inference service**: llama.cpp GGUF LLM (RAG/PyTorch embeddings OFF on free) | **Yes — the only one** | ~300–450 MiB | **Free 512 MB / 0.1 CPU** |
 
 Request path: browser → `edunova-api` `POST /api/ai/chat|stream` (JWT) →
 `edunova-ai` `POST /api/ai/chat` (`X-AI-Internal-Token`) → `edunova-inference`
 `POST /generate/stream` (`X-AI-Internal-Token`) → real tokens streamed back as
 SSE through every hop. No OpenAI/Groq/Gemini/Anthropic/OpenRouter anywhere.
 
-### Root cause of "Model + server ML need at least 1100 MiB; container has 512 MiB"
+### Root cause history — and how the FREE plan is served today
 
-The model was loaded **inside** the orchestrator process and that process was
-deployed on a 512 MiB instance. Qwen2.5-0.5B Q4_K_M + llama.cpp + FastAPI +
-PyTorch embeddings genuinely need more than 512 MiB, so the memory gate failed
-(correctly). Reducing context/timeouts cannot fix physics; the fix is to run
-the model in its own adequately sized service, which is what the blueprint now
-does.
+The "Model + server ML need at least 1100 MiB; container has 512 MiB" incident
+came from loading the model **inside** the 512 MiB orchestrator process. The
+first fix (split architecture) moved the model into its own service — but on a
+**2 GB Standard** instance, because Qwen2.5-0.5B Q4_K_M + llama.cpp + FastAPI +
+PyTorch embeddings genuinely need more than 512 MiB. Reducing context/timeouts
+cannot fix physics; the model itself had to shrink. The blueprint now runs the
+verified **SmolLM2-135M-Instruct Q4_K_M** (≈105 MB file, ChatML, Apache-2.0)
+on **Render Free (512 MB)** with `LOCAL_MODEL_CTX=2048`,
+`LOCAL_MODEL_THREADS=1` and `RAG_ENABLED=false` — no paid plan, no external
+LLM API, no template fallbacks.
 
 ### Memory requirement (documented and enforced at boot)
 
 `ai_engine/inference/resources.py` computes the requirement from the real GGUF
 header and refuses to start a model that cannot fit
-(`MODEL_RESOURCE_INSUFFICIENT {required_mb, available_mb, recommended_mb}`).
-For the blueprint model at `LOCAL_MODEL_CTX=6144`:
+(`MODEL_RESOURCE_INSUFFICIENT {required_mb, available_mb, recommended_mb}`). It
+also refuses to report that failure when the configuration **does** fit — the
+overhead terms are measured ceilings, not blanket pessimism. For the blueprint
+model at `LOCAL_MODEL_CTX=2048`, `RAG_ENABLED=false`:
 
 | Component | MiB |
 |---|---|
-| Model weights (Qwen2.5-0.5B-Instruct Q4_K_M GGUF, 397 MB file) | 398 |
-| KV cache @ 6144 context | 80 |
-| llama.cpp runtime buffers | 160 |
-| FastAPI/uvicorn + Python | 140 |
-| PyTorch embeddings (all-MiniLM-L6-v2) for RAG | 260 |
-| Safety margin | 128 |
-| **Required** | **1166** |
-| Required with `RAG_ENABLED=false` | 906 |
-| **Recommended** | **2048** |
-| CPU | 1 dedicated core, `LOCAL_MODEL_THREADS=2` |
+| Model weights (SmolLM2-135M-Instruct Q4_K_M GGUF, 105 MB file) | 101 |
+| KV cache @ 2048 context (30 layers × 3 KV heads × 64 dim) | 53 |
+| llama.cpp runtime buffers (1 thread, batch 256) | 140 |
+| FastAPI/uvicorn parent + supervised worker | 110 |
+| PyTorch embeddings | **0 — not loaded (`RAG_ENABLED=false`)** |
+| Safety margin | 64 |
+| **Required** | **≈ 468** |
+| **Recommended** | **512 — the Render FREE plan** |
+| CPU | Render Free 0.1 core, `LOCAL_MODEL_THREADS=1` |
+
+Same table with the RAG embedding model enabled adds 260 MiB (≈ 728) — i.e.
+semantic embeddings are deliberately reserved for a future ≥ 1 GB instance.
+For scale: the previous Qwen2.5-0.5B Q4_K_M config required ~906–1166 MiB and
+is rejected on a 512 MiB box by design (it does not fit; upgrade the *model
+selection*, not by hiding the error).
 
 `GET /system/resources` on either Python service prints the live numbers.
 
@@ -150,14 +161,16 @@ For the blueprint model at `LOCAL_MODEL_CTX=6144`:
 |---|---|
 | Type / Runtime | Web Service / Python |
 | **Root Directory** | **`ai_engine`** |
-| Plan | **Standard (2 GB)** or larger — 512 MB plans fail the resource check by design |
-| Build Command | `pip install "torch==2.8.0" --index-url https://download.pytorch.org/whl/cpu && pip install -r requirements.txt && python verify_runtime.py` |
+| Plan | **Free (512 MB)** — do not upgrade; the sizing above is the free profile |
+| Build Command | `pip install -r requirements-inference-free.txt && python verify_runtime.py` |
 | Start Command | `python verify_runtime.py && uvicorn inference_server:app --host 0.0.0.0 --port $PORT --workers 1` |
 | Health Check Path | `/health` |
-| Disk | 4 GB at `/var/data/models` (weights downloaded once) |
+| Disk | none (Free has no persistent disks) — the ~100 MB weights download once per cold boot into `LOCAL_MODEL_DIR` |
 
-`verify_runtime.py` imports `llama_cpp` and `torch` at build **and** start, so a
-broken dependency fails the deploy instead of surfacing as `DEPENDENCY_FAILED`.
+`verify_runtime.py` imports `llama_cpp` at build **and** start, so a broken
+dependency fails the deploy instead of surfacing as `DEPENDENCY_FAILED`. It
+imports `torch` **only when `RAG_ENABLED=true`** — on the free runtime the
+process is proven torch-free (asserted by `tests/test_free_tier_startup.py`).
 
 Startup lifecycle (once per process, never per request):
 `resource check → runtime check → GGUF validation → load → warmup ("What is
@@ -173,12 +186,12 @@ Endpoints (all but `/health` and `/ready` require `X-AI-Internal-Token`):
 |---|---|
 | `LLM_PROVIDER` | `local` |
 | `LOCAL_MODEL_RUNTIME` | `llama_cpp` (GGUF). PyTorch is used for embeddings only. |
-| `LOCAL_MODEL_REPO` / `LOCAL_MODEL_FILE` | Verified catalogue entry (`config.py -> KNOWN_MODELS`, size + sha256 pinned) |
-| `LOCAL_MODEL_DIR` | Persistent disk path (`/var/data/models`) |
-| `LOCAL_MODEL_CTX` | Context tokens (`6144`). **No silent downgrade**: if it does not fit, startup fails with the numbers. |
-| `LOCAL_MODEL_THREADS` | `2` |
-| `MODEL_STARTUP_TIMEOUT` | Hard deadline per lifecycle stage (`300`) |
-| `RAG_ENABLED` / `RAG_EMBEDDING_MODEL` | PyTorch embeddings served on `/embeddings` |
+| `LOCAL_MODEL_REPO` / `LOCAL_MODEL_FILE` | Verified catalogue entry (`config.py -> KNOWN_MODELS`, size + sha256 pinned). Default: `bartowski/SmolLM2-135M-Instruct-GGUF` / `SmolLM2-135M-Instruct-Q4_K_M.gguf` — the model that fits Render Free |
+| `LOCAL_MODEL_DIR` | Weight cache dir (`/var/data/models`; instance-local on Free, mount a disk on paid plans) |
+| `LOCAL_MODEL_CTX` | Context tokens (`2048` on the free plan). **No silent downgrade**: if it does not fit, startup fails with the numbers. |
+| `LOCAL_MODEL_THREADS` | `1` (free plan shares ~0.1 CPU; raise on bigger instances) |
+| `MODEL_STARTUP_TIMEOUT` | Hard startup deadline incl. cold-boot download (`900` on free) |
+| `RAG_ENABLED` / `RAG_EMBEDDING_MODEL` | `false` on the 512 MB free runtime — the PyTorch embedding model is NOT loaded (`/embeddings` answers `EMBEDDINGS_UNAVAILABLE`). Enable both on a >= 1 GB instance (architecture unchanged) |
 | `AI_INTERNAL_TOKEN` / `AI_REQUIRE_INTERNAL_TOKEN` | Same token on all three services / `true` |
 | `AI_MEMORY_LIMIT_MB` | Optional override of the detected container limit (testing only) |
 
@@ -199,10 +212,10 @@ Endpoints (all but `/health` and `/ready` require `X-AI-Internal-Token`):
 | `AI_INFERENCE_REQUEST_TIMEOUT` | Network safety net per inference call (`600` s); never shortens an answer |
 | `APP_BACKEND_URL` | Public HTTPS URL of `edunova-api` (authenticated tools) |
 | `AI_INTERNAL_TOKEN` / `AI_REQUIRE_INTERNAL_TOKEN` | Same token as the other services / `true` |
-| `RAG_ENABLED` / `RAG_EMBEDDING_MODEL` | Orchestrates the user-scoped index; vectors come from the inference service (`lexical` = offline dev only) |
+| `RAG_ENABLED` / `RAG_EMBEDDING_MODEL` | `false` on the free architecture (the inference service does not expose vectors); set `true` on both services together for a >= 1 GB inference instance. `lexical` = offline dev only |
 | `WEB_SEARCH_API_KEY` / `WEB_SEARCH_PROVIDER` | Brave/Tavily/Serper web data source |
-| `LLM_MAX_OUTPUT_TOKENS` / `LLM_TEMPERATURE` | `2048` / `0.2` — no elapsed-time output reduction |
-| `AGENT_MAX_CONTEXT_CHARS` / `LOCAL_MODEL_CTX` | Must fit the inference service's context (`12000` / `6144`) |
+| `LLM_MAX_OUTPUT_TOKENS` / `LLM_TEMPERATURE` | `1024` / `0.2` — no elapsed-time output reduction; the budget is additionally capped to the model window |
+| `AGENT_MAX_CONTEXT_CHARS` / `LOCAL_MODEL_CTX` | Must fit the inference service's context (`6000` / `2048`) |
 | `MAX_AGENT_ITERATIONS` / `MAX_TOOL_CALLS` / `MAX_AGENT_RUNTIME_SECONDS` | `3` / `8` / `300` |
 
 Endpoints: `GET /health`, `GET /ready`, `GET /model/status`,
@@ -496,10 +509,10 @@ frontend bundle predated the real-health-status fix.
 
    | Key | Value | Why |
    |---|---|---|
-   | `LOCAL_MODEL_FILE` | `Qwen2.5-0.5B-Instruct-Q4_K_M.gguf` | the verified default (the self-heal also applies it, but fix the source) |
-   | `LOCAL_MODEL_REPO` | `bartowski/Qwen2.5-0.5B-Instruct-GGUF` | the verified repo |
-   | `LOCAL_MODEL_CTX` | `6144` | replaces the stale `3072` |
-   | `LOCAL_MODEL_DIR` | `/var/data/models` | persistent-disk cache (disk `edunova-model-cache`, 2 GB) |
+   | `LOCAL_MODEL_FILE` | `SmolLM2-135M-Instruct-Q4_K_M.gguf` | the verified default for the Render-Free plan (the self-heal also applies the repo default, but fix the source) |
+   | `LOCAL_MODEL_REPO` | `bartowski/SmolLM2-135M-Instruct-GGUF` | the verified free-plan repo (~105 MB weights, fits 512 MiB) |
+   | `LOCAL_MODEL_CTX` | `2048` | replaces the stale `3072`/`6144`; the free-plan window |
+   | `LOCAL_MODEL_DIR` | `/var/data/models` | instance-local cache on Free; mount a persistent disk on paid plans |
    | `LLM_PROVIDER` | `local` | self-hosted only |
    | `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` (Groq/OpenAI leftovers) | **delete** | unused since `LLM_PROVIDER=local`; removes stale credentials from the service |
 

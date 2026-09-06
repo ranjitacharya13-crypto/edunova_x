@@ -159,7 +159,12 @@ def _worker(connection, settings: Settings) -> None:
             await manager._download_if_needed()
             state["configOverrideRejected"] = manager.config_override_rejected
             state["effectiveModelId"] = manager.settings.local_model_id
-        emit("RUNTIME_READY")
+        # Download bookkeeping surfaces in the parent snapshot so /model/status
+        # and the startup tests can prove a real transfer happened (or prove
+        # the cache was reused) without trusting any client-side claim.
+        emit("RUNTIME_READY", downloadAttempts=manager.download_attempts,
+             downloadedBytes=manager.downloaded_bytes or None,
+             fileSizeBytes=manager.file_size_bytes or None)
         emit("MODEL_LOCATED", fileExists=manager.model_path.exists(), fileName=manager.model_path.name)
         if not await asyncio.to_thread(manager._validate_cached_file, manager.model_path):
             raise ValueError("GGUF integrity validation failed (size/sha256/magic)")

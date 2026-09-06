@@ -85,8 +85,14 @@ def test_coding_and_simple_questions_can_run_to_eos_with_full_capacity():
     settings = load_settings()
     simple = _answer_token_budget(settings, "what is ML?", base=640)
     coding = _answer_token_budget(settings, "write a Python program for binary search", base=640)
-    assert coding >= 1500
+    # Full capacity for every task. Stale per-task caps are impossible:
+    # config.py floors local mode at 1024 output tokens, and the only thing
+    # that can shrink a budget below the ceiling is the physical model window
+    # (Render Free ctx 2048 keeps 1024 comfortably; coding answers on a
+    # 0.1-CPU free instance are also grammar/step-bounded by that window).
+    assert coding >= 1024
     assert coding == simple == settings.llm_max_output_tokens
+    assert coding == min(settings.llm_max_output_tokens, settings.local_model_ctx_size * 3 // 4)
 
 
 def test_output_capacity_does_not_force_a_greeting_to_hit_an_artificial_cap():
@@ -94,7 +100,7 @@ def test_output_capacity_does_not_force_a_greeting_to_hit_an_artificial_cap():
     greeting = _answer_token_budget(settings, "hello", base=0)
     explanation = _answer_token_budget(settings, "explain recursion in detail", base=0)
     assert greeting == settings.llm_max_output_tokens
-    assert explanation >= 1500
+    assert explanation >= 1024
 
 
 def test_budget_never_exceeds_configured_model_ceiling():

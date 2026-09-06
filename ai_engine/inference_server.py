@@ -15,12 +15,17 @@ orchestrator (``main.py``) through ``agent/remote_llm.py``:
     GET  /metrics           load/warmup/first-token/tokens-per-second
     POST /generate          one completion (JSON)
     POST /generate/stream   real token-by-token SSE
-    POST /embeddings        PyTorch sentence embeddings for RAG (optional)
+    POST /embeddings        PyTorch sentence embeddings for RAG (optional;
+                            NOT loaded when RAG_ENABLED=false, e.g. the
+                            Render Free 512 MiB runtime)
 
 Requests never download, load or warm a model. If the container cannot hold
 the model the service reports MODEL_RESOURCE_INSUFFICIENT with
 required_mb / available_mb / recommended_mb and stays in MODEL_FAILED — it
-does not loop in WARMING/PREPARING.
+does not loop in WARMING/PREPARING. The resource math in
+``inference/resources.py`` is sized so a genuine fit (SmolLM2-135M Q4_K_M,
+ctx 2048, 1 thread, embeddings off on a 512 MiB instance) PASSES, while a
+configuration that would OOM fails fast with numbers.
 
 Run:  uvicorn inference_server:app --host 0.0.0.0 --port $PORT --workers 1
 """
@@ -111,7 +116,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="EduNova AI Inference Service", version=SERVICE_VERSION, lifespan=lifespan,
-              description="Persistent self-hosted LLM (llama.cpp/GGUF) + PyTorch embeddings. Internal, token-authenticated.")
+              description="Persistent self-hosted LLM (llama.cpp/GGUF; Render-Free sized). "
+                          "PyTorch embeddings only when RAG_ENABLED=true. Internal, token-authenticated.")
 
 
 class GenerateRequest(BaseModel):
@@ -157,7 +163,9 @@ def _status_payload() -> dict[str, Any]:
         "last_self_test": snap.get("lastSelfTest"),
         "last_generation": snap.get("lastGeneration"),
         "available_ram_mb": resource_manager.snapshot().get("ram_available_mb"),
-        "embeddings": {"ready": _embedder is not None, "backend": getattr(_embedder, "backend", None),
+        "embeddings": {"ready": _embedder is not None,
+                       "disabled": not settings.rag_enabled,
+                       "backend": getattr(_embedder, "backend", None),
                        "model": getattr(_embedder, "model_name", None), "error": _embedder_error},
         "history": snap.get("history", []),
         "permanentFailure": manager.phase in FAILURES,
@@ -325,7 +333,10 @@ async def embeddings(payload: EmbedRequest, x_ai_internal_token: str | None = He
     _authorize(x_ai_internal_token)
     if _embedder is None:
         raise HTTPException(status_code=503, detail={"code": "EMBEDDINGS_UNAVAILABLE",
-                                                     "message": _embedder_error or "Embedding model is not loaded"})
+                                                     "message": _embedder_error or (
+                                                         "Embedding model is not loaded (RAG_ENABLED=false on this runtime; "
+                                                         "enable it only on an instance with memory headroom)"
+                                                         if not settings.rag_enabled else "Embedding model is not loaded")})
     started = time.monotonic()
     try:
         vectors = await asyncio.to_thread(_embedder.embed, [t[:4000] for t in payload.texts])

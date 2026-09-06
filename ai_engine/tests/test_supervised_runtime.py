@@ -138,11 +138,21 @@ async def test_actual_llama_cpp_inference_uses_supervisor_and_cancellation_retai
         await manager.close()
 
 
+def _oversized_for_512_settings(**overrides):
+    """The ORIGINAL production incident configuration: Qwen2.5-0.5B Q4_K_M at
+    ctx 2048 genuinely needs > 700 MiB with the runtime — verified, not
+    guessed. (RAG would push it to ~1000 MiB.)"""
+    return replace(Settings(),
+                   local_model_repo="bartowski/Qwen2.5-0.5B-Instruct-GGUF",
+                   local_model_file="Qwen2.5-0.5B-Instruct-Q4_K_M.gguf",
+                   **overrides)
+
+
 @pytest.mark.asyncio
 async def test_resource_insufficient_fails_fast_with_numbers(monkeypatch):
     # The production incident: model + server need > container memory.
     monkeypatch.setenv("AI_MEMORY_LIMIT_MB", "512")
-    manager = ModelManager(Settings())
+    manager = ModelManager(_oversized_for_512_settings())
     manager.ensure_loading()
     try:
         await asyncio.wait_for(manager._ready_event.wait(), 10)
@@ -161,6 +171,42 @@ async def test_resource_insufficient_fails_fast_with_numbers(monkeypatch):
         # Stays terminal: readiness reads never restart it.
         manager.ensure_loading()
         assert manager._process is None
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_free_tier_default_fits_512mib_without_failing(monkeypatch, tmp_path):
+    """No FALSE MODEL_RESOURCE_INSUFFICIENT for a configuration that fits.
+
+    The shipped default (SmolLM2-135M Q4_K_M, ctx 2048, 1 thread, RAG off)
+    must pass the pre-spawn resource check on a 512 MiB cgroup — the previous
+    over-conservative overhead made the service report MODEL_FAILED for
+    configurations that genuinely fit. Deterministic: uses the pinned
+    catalogue size (no download) and closes the worker before it can do any
+    network I/O.
+    """
+    from inference.manager import FAILURES as MANAGER_FAILURES, model_requirement, preflight_resources
+    from agent.local_llm import LocalModelManager
+
+    monkeypatch.setenv("AI_MEMORY_LIMIT_MB", "512")
+    settings = replace(Settings(), local_model_dir=str(tmp_path))
+    assert settings.rag_enabled is False
+    assert settings.local_model_ctx_size == 2048
+    assert settings.local_model_threads == 1
+
+    requirement = model_requirement(settings, LocalModelManager(settings).model_path)
+    assert requirement["embedding_overhead_mb"] == 0, "RAG disabled => the process never charges for torch"
+    assert requirement["required_mb"] <= 512, f"free profile must fit 512 MiB, got {requirement['required_mb']}"
+
+    check = preflight_resources(settings, None)  # raises ResourceInsufficient on false negatives
+    assert check["fits"] is True
+
+    manager = ModelManager(settings)
+    try:
+        manager.ensure_loading()  # pre-spawn gate + worker start
+        assert manager.phase not in MANAGER_FAILURES, manager.error_report
+        assert manager._process is not None, "a fitting configuration must spawn a worker, not fail fast"
     finally:
         await manager.close()
 

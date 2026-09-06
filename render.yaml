@@ -22,12 +22,17 @@
 #                                        |  HTTPS + X-AI-Internal-Token
 #                                        v  (AI_INFERENCE_URL)
 #                           Persistent AI inference service [Render: edunova-inference]
-#                             llama.cpp GGUF LLM + PyTorch embeddings, 2 GB RAM
+#                             llama.cpp GGUF LLM (SmolLM2-135M Q4_K_M), 512 MB RAM
 #
-# RAM BUDGET (see each service block for the derivation)
+# RAM BUDGET — RENDER FREE (512 MiB) ONLY; see each service block for derivation
 #   edunova-api        Node/Express, no LLM            ~150 MiB  -> 512 MiB plan OK
 #   edunova-ai         FastAPI orchestrator, no LLM    ~150 MiB  -> 512 MiB plan OK
-#   edunova-inference  model 397 MB + runtime          ~1.3 GiB  -> 2 GB plan REQUIRED
+#   edunova-inference  model 101 MiB + KV 46 + llama +
+#                      FastAPI parents + margin        ~460 MiB  -> 512 MiB plan OK
+#
+# DO NOT "upgrade" anything here: the whole stack is sized for the FREE plan.
+# No external LLM APIs (no OpenAI/Groq/Gemini/Anthropic/OpenRouter) anywhere —
+# inference is 100% self-hosted llama.cpp/GGUF behind AI_INTERNAL_TOKEN auth.
 #
 # NOTES
 #   - Blueprint auto-syncs from the main branch of this GitHub repository.
@@ -134,7 +139,7 @@ services:
   - type: web
     name: edunova-ai
     runtime: python
-    plan: starter
+    plan: free
     branch: main
     rootDir: ai_engine
     buildCommand: pip install -r requirements-orchestrator.txt && python verify_runtime.py --orchestrator
@@ -169,13 +174,15 @@ services:
       # generation is never cut by this — see inference service).
       - key: AI_INFERENCE_REQUEST_TIMEOUT
         value: "600"
-      # RAG orchestration: embeddings are computed by the inference service.
+      # RAG is DISABLED on the Free architecture: the inference service does
+      # not load a PyTorch embedding model, so there are no /embeddings
+      # vectors to orchestrate. The RAG architecture is intact — on a >= 1 GB
+      # inference instance set RAG_ENABLED=true here AND on edunova-inference
+      # (with RAG_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2).
       - key: RAG_ENABLED
-        value: "true"
-      - key: RAG_EMBEDDING_MODEL
-        value: sentence-transformers/all-MiniLM-L6-v2
+        value: "false"
       - key: LLM_MAX_OUTPUT_TOKENS
-        value: "2048"
+        value: "1024"
       - key: LLM_TEMPERATURE
         value: "0.2"
       - key: WEB_SEARCH_API_KEY
@@ -212,10 +219,13 @@ services:
         value: "45000"
       # Must fit inside LOCAL_MODEL_CTX (~3 chars/token) with system prompt +
       # LLM_MAX_OUTPUT_TOKENS (mirror the value on edunova-inference).
+      # At ctx 2048: ~1024 tokens of prompt (~6000 chars) + 1024 answer tokens
+      # + guard reserve = the full window. Bigger values are only for a larger
+      # inference instance with a larger LOCAL_MODEL_CTX.
       - key: AGENT_MAX_CONTEXT_CHARS
-        value: "12000"
+        value: "6000"
       - key: LOCAL_MODEL_CTX
-        value: "6144"
+        value: "2048"
 
   # ---------------------------------------------------------------------------
   # 3) edunova-inference — PERSISTENT SELF-HOSTED AI INFERENCE SERVICE (Layer B)
@@ -228,42 +238,52 @@ services:
   #    MODEL_RESOURCE_INSUFFICIENT {required_mb, available_mb, recommended_mb}
   #    and stays MODEL_FAILED (never an infinite "preparing").
   #
-  #    ---- SIZING (documented numbers; the service verifies them at boot) ----
-  #    Model file:      Qwen2.5-0.5B-Instruct GGUF Q4_K_M  ≈ 397 MB (Apache-2.0)
+  #    ---- SIZING: RENDER FREE (512 MiB) — the target this block is built for ----
+  #    Model file:      SmolLM2-135M-Instruct GGUF Q4_K_M ≈ 105.5 MB file
+  #                     (Apache-2.0, ChatML, 135M params; verified against the
+  #                     HuggingFace LFS metadata in ai_engine/config.py)
   #    Runtime:         llama.cpp CPU (mmap) via llama-cpp-python 0.3.35
-  #    Requirement at LOCAL_MODEL_CTX=6144 (inference/resources.py):
-  #        weights 398 MiB + KV cache 80 MiB + llama runtime 160 MiB
-  #        + FastAPI/uvicorn 140 MiB + PyTorch embeddings 260 MiB
-  #        + safety margin 128 MiB  = 1166 MiB REQUIRED
-  #        (906 MiB with RAG_ENABLED=false / lexical embeddings)
-  #    Recommended RAM: 2048 MiB  •  CPU: 1 dedicated core (2 threads)
-  #    Render:  Free/Starter 512 MB (WILL FAIL the resource check)
-  #             Standard 2 GB / 1 CPU  <= minimum that fits  •  Pro 4 GB / 2 CPU
-  #    Model RAM 512 MiB plan: NOT SUPPORTED. That is the incident.
+  #    Requirement at LOCAL_MODEL_CTX=2048, LOCAL_MODEL_THREADS=1,
+  #    RAG_ENABLED=false (inference/resources.py, verified at boot):
+  #        weights 101 MiB + KV cache 53 MiB + llama.cpp runtime 140 MiB
+  #        + FastAPI parent + supervised worker 110 MiB + safety margin 64 MiB
+  #        + PyTorch embeddings 0 MiB (NOT loaded)     = ~468 MiB REQUIRED
+  #    -> FITS the 512 MiB FREE plan with honest headroom. No paid plan,
+  #       no external LLM API, no template/mock fallbacks.
+  #    Why so small: Qwen2.5-0.5B Q4_K_M (397 MB weights, ~740-1148 MiB with
+  #    runtime) does NOT fit 512 MiB — that was the MODEL_RESOURCE_INSUFFICIENT
+  #    incident. The 135M-class model is the strongest that fits. The verified
+  #    0.5B/360M catalogue entries stay in config.py for a future >= 1-2 GB
+  #    instance (flip LOCAL_MODEL_REPO/FILE + plan only).
   #
-  #    PERSISTENT DISK: weights are cached at /var/data/models, downloaded once.
+  #    FREE PLAN NOTES:
+  #      * No persistent disk (disks are a paid feature): weights (~100 MB)
+  #        are downloaded once into the instance cache dir on cold boot.
+  #      * Render free spins the instance down after inactivity; the first
+  #        request after spin-up pays model load + warmup (~20-90 s on
+  #        0.1 CPU). The generous MODEL_STARTUP_TIMEOUT below keeps that
+  #        honest cold start from being killed mid-load.
   # ---------------------------------------------------------------------------
   - type: web
     name: edunova-inference
     runtime: python
-    plan: standard
+    plan: free
     branch: main
     rootDir: ai_engine
-    # CPU torch first so pip never resolves the CUDA wheel; requirements.txt
-    # then installs llama-cpp-python (prebuilt CPU wheel) + the embedding
-    # stack. verify_runtime.py fails the BUILD if `import llama_cpp` or
-    # `import torch` is broken.
-    buildCommand: pip install "torch==2.8.0" --index-url https://download.pytorch.org/whl/cpu && pip install -r requirements.txt && python verify_runtime.py
+    # FREE profile: requirements-inference-free.txt installs llama-cpp-python
+    # (CPU wheel) + the FastAPI stack and NOTHING ELSE — no torch, no
+    # transformers, no sentence-transformers. The inference process therefore
+    # cannot import PyTorch even by accident; RAG_ENABLED=false keeps the
+    # embedding path switched off at the application layer too.
+    # verify_runtime.py fails the BUILD if `import llama_cpp` is broken (it
+    # checks torch only when RAG_ENABLED is true).
+    buildCommand: pip install -r requirements-inference-free.txt && python verify_runtime.py
     # Exactly ONE uvicorn worker: the model lives in this process (supervised
     # native worker) and generation is single-flight. The runtime is
-    # re-verified before the port binds.
+    # re-verified before the port binds (torch import NOT performed: RAG is off).
     startCommand: python verify_runtime.py && uvicorn inference_server:app --host 0.0.0.0 --port $PORT --workers 1
     healthCheckPath: /health
     autoDeploy: true
-    disk:
-      name: edunova-model-cache
-      mountPath: /var/data/models
-      sizeGB: 4
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.9"
@@ -272,31 +292,34 @@ services:
       - key: LOCAL_MODEL_RUNTIME
         value: llama_cpp
       # VERIFIED catalogue entry (ai_engine/config.py -> KNOWN_MODELS): size +
-      # sha256 integrity-pinned, ChatML. Downloaded once to the persistent disk.
+      # sha256 integrity-pinned, ChatML. Downloaded to the cache dir below.
       - key: LOCAL_MODEL_REPO
-        value: bartowski/Qwen2.5-0.5B-Instruct-GGUF
+        value: bartowski/SmolLM2-135M-Instruct-GGUF
       - key: LOCAL_MODEL_FILE
-        value: Qwen2.5-0.5B-Instruct-Q4_K_M.gguf
+        value: SmolLM2-135M-Instruct-Q4_K_M.gguf
+      # Render Free has no persistent disk; this is the instance-local cache
+      # dir (writable, downloaded once per cold boot). On a paid instance with
+      # a disk, mount the disk here to make the download truly once-per-image.
       - key: LOCAL_MODEL_DIR
         value: /var/data/models
       - key: LOCAL_MODEL_CTX
-        value: "6144"
+        value: "2048"
       - key: LOCAL_MODEL_THREADS
-        value: "2"
+        value: "1"
+      # 0.1 shared vCPU + a ~100 MB cold-boot download: give startup room.
       - key: MODEL_STARTUP_TIMEOUT
-        value: "300"
+        value: "900"
       - key: MODEL_INFERENCE_IDLE_TIMEOUT
-        value: "90"
+        value: "120"
       - key: LOCAL_MODEL_DOWNLOAD_TIMEOUT
         value: "1800"
-      # PyTorch sentence embeddings served on POST /embeddings for the
-      # orchestrator's RAG index (loaded after the LLM is READY).
+      # RAG embeddings are OFF for the 512 MiB free runtime: no PyTorch
+      # embedding model is loaded (the architecture stays in the repo for a
+      # future >= 1 GB instance — flip this AND the edunova-ai value together).
       - key: RAG_ENABLED
-        value: "true"
-      - key: RAG_EMBEDDING_MODEL
-        value: sentence-transformers/all-MiniLM-L6-v2
+        value: "false"
       - key: LLM_MAX_OUTPUT_TOKENS
-        value: "2048"
+        value: "1024"
       - key: LLM_TEMPERATURE
         value: "0.2"
       # Required: same random value as on edunova-api and edunova-ai.

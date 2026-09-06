@@ -6,16 +6,25 @@ EduNova AI operates as a **UNIFIED DATA-AWARE AGENT** capable of intelligently c
 3. **CONVERSATION CONTEXT** (Multi-turn topic resolution & memory)
 4. **MODEL KNOWLEDGE** (General educational & scientific concepts)
 
-> **Self-hosted, two-process since v6.0.** The AI brain is an open-source
-> model — **Qwen2.5-0.5B-Instruct GGUF Q4_K_M** (`bartowski/…`, integrity-pinned
-> in `config.py`) — running through **llama.cpp** inside the dedicated
-> **persistent inference service** (`ai_engine/inference_server.py`, ≥ 2 GB
-> RAM). The **orchestrator** (`ai_engine/main.py`) never loads weights and never
-> imports `llama_cpp`/`torch`; it reaches the model over an authenticated
-> HTTP/SSE client (`agent/remote_llm.py`). PyTorch is used only for RAG
-> embeddings (served by the inference service on `/embeddings`). No
+> **Self-hosted, two-process since v6.0; sized for Render FREE (512 MiB).**
+> The AI brain is an open-source model — **SmolLM2-135M-Instruct GGUF
+> Q4_K_M** (`bartowski/…`, ~101 MB weights, integrity-pinned in `config.py`) —
+> running through **llama.cpp** inside the dedicated **persistent inference
+> service** (`ai_engine/inference_server.py`) on the **Render Free plan
+> (512 MiB RAM, no upgrade)**. Settings: `LOCAL_MODEL_CTX=2048`,
+> `LOCAL_MODEL_THREADS=1`, `RAG_ENABLED=false`. The heavier
+> Qwen2.5-0.5B-Instruct stays in the verified catalogue for a future ≥ 1-2 GB
+> instance but does NOT fit the free plan — it caused the
+> `MODEL_RESOURCE_INSUFFICIENT` incident. The **orchestrator**
+> (`ai_engine/main.py`) never loads weights and never imports
+> `llama_cpp`/`torch`; it reaches the model over an authenticated HTTP/SSE
+> client (`agent/remote_llm.py`). PyTorch would be used ONLY for RAG
+> embeddings (served by the inference service on `/embeddings`) — that
+> embedding model is not loaded on the 512 MiB free runtime; the RAG
+> architecture remains intact for a larger instance. No
 > OpenAI/Groq/Gemini/Anthropic/OpenRouter calls are made anywhere. See
-> `docs/FINAL_ROOT_CAUSE_REPORT.md` for the memory root cause and measurements.
+> `docs/FINAL_ROOT_CAUSE_REPORT.md` for the memory root cause and
+> measurements.
 
 ```text
                                 USER
@@ -223,9 +232,13 @@ and failure honesty (loading/unavailable states never fake an answer).
 ## 7. Local model operations
 
 - **Model choice & size** — `LOCAL_MODEL_REPO` + `LOCAL_MODEL_FILE` (or a
-  direct `LOCAL_MODEL_URL`). The default 0.5B Q4_K_M needs a **2GB Standard**
-  instance (~700MB RSS); see the DEPLOYMENT.md sizing table for the 512MB
-  (SmolLM2-360M) and 4GB (1.5B) alternatives. Filenames must be verified with
+  direct `LOCAL_MODEL_URL`). The default SmolLM2-135M-Instruct Q4_K_M fits
+  the **Render Free plan (512 MiB)** at ctx 2048 / 1 thread / RAG off
+  (~460 MiB required per `inference/resources.py`, re-verified at boot).
+  The DEPLOYMENT.md sizing table lists the upgrade ladder inside the verified
+  catalogue: same-file Q8_0 (max quality still fitting 512 MiB), SmolLM2-360M
+  (≥ 1 GB), Qwen2.5-0.5B (≥ 2 GB), Qwen2.5-1.5B (4 GB). No plan upgrade is
+  needed or allowed for the default. Filenames must be verified with
   `GET /api/ai/model/source-check` before being deployed — an unpublished
   quant name is what produced the original startup HTTP 404.
 - **Download integrity** — size (`LOCAL_MODEL_BYTES`), floor
@@ -233,16 +246,19 @@ and failure honesty (loading/unavailable states never fake an answer).
   are all checked; transient failures retry `LOCAL_MODEL_DOWNLOAD_RETRIES`
   times with backoff, permanent HTTP statuses (400/401/403/404/405/410/451)
   fail fast with a `MODEL_STARTUP_ERROR` block naming the URL and the fix.
-- **Context budget** — `AGENT_MAX_CONTEXT_CHARS` (12000) must fit inside
-  `LOCAL_MODEL_CTX` (6144). Overflowing turns are trimmed in the middle and
-  logged as `LOCAL_MODEL_PROMPT_TRUNCATED` rather than erroring.
+- **Context budget** — `AGENT_MAX_CONTEXT_CHARS` (6000 on the free tier)
+  must fit inside `LOCAL_MODEL_CTX` (2048; ~3 chars/token). Overflowing turns
+  are trimmed in the middle and logged as `LOCAL_MODEL_PROMPT_TRUNCATED`
+  rather than erroring; the answer budget is bounded to `LLM_MAX_OUTPUT_TOKENS`
+  (1024) so prompt + completion physically fit the window.
 - **Health** — `GET /health` (liveness, includes `model.state`),
   `GET /api/ai/health` (readiness: `ready` only when weights are loaded),
   `GET /api/ai/health?deep=true` (active probe).
-- **Cold starts** — the blueprint mounts a 2GB persistent disk at
-  `/var/data/models`, so weights download once and warm boots log
-  `LOCAL_MODEL_CACHE_HIT ... (no download)`. Without a disk (Free plan) every
-  cold start re-downloads ~380MB (~30-90s); `edunova-api` absorbs that with its
+- **Cold starts** — Render Free has no persistent disk, so the ~100MB of
+  weights are downloaded once into `LOCAL_MODEL_DIR` per cold boot (paid
+  instances may mount a disk to make it once-per-image); warm boots log
+  `LOCAL_MODEL_CACHE_HIT ... (no download)`. At ~100MB the free-plan cold
+  download takes seconds-to-a-minute and `edunova-api` absorbs it with its
   upstream retry window (`AI_UPSTREAM_RETRY_WINDOW_MS=240000`).
 - **Legacy rollback** — setting `LLM_PROVIDER=openai_compatible` with
   `LLM_API_KEY/LLM_MODEL/LLM_BASE_URL` temporarily restores an external

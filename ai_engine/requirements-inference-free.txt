@@ -1,0 +1,27 @@
+# EduNova AI INFERENCE SERVICE (Layer B) — RENDER FREE profile (512 MB RAM).
+#
+# Same llama.cpp LLM stack as requirements.txt, WITHOUT the PyTorch embedding
+# stack: on the free plan RAG_ENABLED=false, the process must never import or
+# install torch/transformers, and every MB of image + runtime matters.
+#
+#   llama-cpp-python -> self-hosted GGUF LLM (SmolLM2-135M-Instruct Q4_K_M,
+#                      ~101 MiB weights, ctx 2048, 1 thread)
+#
+# The index URLs are load-bearing (and were verified reachable for this
+# project on 2026-09-06): PyPI only ships llama-cpp-python as an sdist that
+# needs a full cmake build, and PyPI also has no CPU-only torch wheel. If
+# Render ever reports these indexes unreachable, remove the two
+# --extra-index-url lines and keep requirements.txt as the fallback.
+#
+# Upgrading to a >= 1 GB inference instance? Install the full requirements.txt
+# instead and enable RAG there (semantic embeddings need their own headroom).
+--extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+--prefer-binary
+llama-cpp-python==0.3.35
+fastapi>=0.115.0,<1.0.0
+uvicorn[standard]>=0.30.0,<1.0.0
+pydantic>=2.8.0,<3.0.0
+python-dotenv>=1.0.0,<2.0.0
+httpx>=0.27.0,<1.0.0
+beautifulsoup4>=4.12.0,<5.0.0
+jsonschema>=4.23.0,<5.0.0

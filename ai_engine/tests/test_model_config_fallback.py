@@ -94,7 +94,7 @@ class OverrideFallbackTests(unittest.TestCase):
         # The production incident: a file that never existed in the repo.
         settings = Settings(
             local_model_repo=DEFAULT_LOCAL_MODEL_REPO,
-            local_model_file="Qwen2.5-0.5B-Instruct-IQ3_XXS.gguf",
+            local_model_file="SmolLM2-135M-Instruct-Q3_XXS.gguf",
         )
         manager = _RecordingManager(settings)
         asyncio.run(_worker_download_step(manager))
@@ -105,7 +105,7 @@ class OverrideFallbackTests(unittest.TestCase):
         # The rejection is recorded and never hidden.
         rejected = manager.config_override_rejected
         self.assertIsNotNone(rejected)
-        self.assertEqual(rejected["configuredFile"], "Qwen2.5-0.5B-Instruct-IQ3_XXS.gguf")
+        self.assertEqual(rejected["configuredFile"], "SmolLM2-135M-Instruct-Q3_XXS.gguf")
         self.assertEqual(rejected["status"], 404)
         self.assertEqual(rejected["fallbackFile"], DEFAULT_LOCAL_MODEL_FILE)
         # Integrity pinning from the catalogue now applies.
@@ -138,7 +138,7 @@ class OverrideFallbackTests(unittest.TestCase):
     def test_fallback_runs_only_once(self):
         settings = Settings(
             local_model_repo=DEFAULT_LOCAL_MODEL_REPO,
-            local_model_file="Qwen2.5-0.5B-Instruct-IQ3_XXS.gguf",
+            local_model_file="SmolLM2-135M-Instruct-Q3_XXS.gguf",
         )
         manager = _RecordingManager(settings, fail_first_download=False)
 
@@ -157,7 +157,7 @@ class OverrideFallbackTests(unittest.TestCase):
     def test_snapshot_exposes_override_state(self):
         settings = Settings(
             local_model_repo=DEFAULT_LOCAL_MODEL_REPO,
-            local_model_file="Qwen2.5-0.5B-Instruct-IQ3_XXS.gguf",
+            local_model_file="SmolLM2-135M-Instruct-Q3_XXS.gguf",
         )
         manager = _RecordingManager(settings)
         asyncio.run(_worker_download_step(manager))
