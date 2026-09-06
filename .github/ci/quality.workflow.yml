@@ -50,10 +50,13 @@ jobs:
       CMAKE_ARGS: '-DGGML_NATIVE=OFF'
       LLM_PROVIDER: local
       LOCAL_MODEL_RUNTIME: llama_cpp
-      LOCAL_MODEL_REPO: bartowski/Qwen2.5-0.5B-Instruct-GGUF
-      LOCAL_MODEL_FILE: Qwen2.5-0.5B-Instruct-Q4_K_M.gguf
-      LOCAL_MODEL_CTX_SIZE: '8192'
-      LOCAL_MODEL_THREADS: '2'
+      # Same free-plan default model (verified catalogue, ~105 MB). The CI
+      # runner (7 GB) additionally verifies the RAG/embedding architecture
+      # that is switched off on the 512 MB Render Free runtime.
+      LOCAL_MODEL_REPO: bartowski/SmolLM2-135M-Instruct-GGUF
+      LOCAL_MODEL_FILE: SmolLM2-135M-Instruct-Q4_K_M.gguf
+      LOCAL_MODEL_CTX: '2048'
+      LOCAL_MODEL_THREADS: '1'
       MODEL_STARTUP_TIMEOUT: '300'
       RAG_ENABLED: 'true'
     steps:

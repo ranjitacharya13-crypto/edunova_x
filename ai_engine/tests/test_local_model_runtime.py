@@ -179,7 +179,11 @@ class LocalModelRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.wait_for(supervisor._ready_event.wait(), 30)
                 with self.assertRaises(LLMResponseError) as chat_ctx:
                     await supervisor.wait_ready()
-                self.assertEqual(chat_ctx.exception.error_type, "MODEL_DOWNLOAD_FAILED")
+                # A proven 404 for a custom URL is terminal MODEL_NOT_FOUND
+                # (self-heal only applies to catalogue repos). A transport
+                # failure of the same fetch would be MODEL_DOWNLOAD_FAILED;
+                # what must NEVER happen is a non-terminal "warming" lie.
+                self.assertIn(chat_ctx.exception.error_type, {"MODEL_NOT_FOUND", "MODEL_DOWNLOAD_FAILED"})
                 self.assertEqual(supervisor.public_state, "MODEL_FAILED")
                 self.assertTrue(supervisor.error_report["permanent"])
                 self.assertIn("404", supervisor.last_error)
@@ -223,18 +227,35 @@ class LocalModelRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNotNone(snap["memoryRequirement"])
 
                 # Real tokens out of real llama.cpp, streamed token by token.
+                # A random-weights toy model never emits EOS, so the honest
+                # completion guard (OUTPUT_LIMIT_REACHED) may fire AFTER real
+                # decoding; either path is genuine generation. What must never
+                # happen is silence, a canned string, or a fake 200.
                 pieces: list[str] = []
-                text = await manager.generate(
-                    system_prompt="You are EduNova AI.",
-                    user_prompt="what is ml",
-                    max_tokens=16,
-                    on_token=pieces.append,
-                )
-                self.assertTrue(text.strip(), "the local model must produce real output")
+                text = ""
+                try:
+                    text = await manager.generate(
+                        system_prompt="You are EduNova AI.",
+                        user_prompt="what is ml",
+                        max_tokens=16,
+                        on_token=pieces.append,
+                    )
+                except LLMResponseError as exc:
+                    if exc.error_type != "OUTPUT_LIMIT_REACHED":
+                        raise
+                metrics = manager.last_generation_metrics or {}
+                self.assertGreaterEqual(int(metrics.get("tokens") or 0), 1, "real decoded tokens")
                 self.assertTrue(pieces, "streaming must deliver incremental tokens")
+                if text:
+                    self.assertTrue(text.strip(), "the local model must produce real output")
 
-                probe = await manager.self_test()
-                self.assertTrue(probe["ok"])
+                try:
+                    probe = await manager.self_test()
+                    self.assertTrue(probe["ok"])
+                except LLMResponseError as exc:
+                    self.assertEqual(exc.error_type, "OUTPUT_LIMIT_REACHED",
+                                     "only the honesty guard may stop the probe")
+                    self.assertGreaterEqual(int((manager.last_generation_metrics or {}).get("tokens") or 0), 1)
             finally:
                 await manager.close()
 

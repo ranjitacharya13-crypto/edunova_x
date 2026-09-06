@@ -1,10 +1,14 @@
 # EduNova AI — Python image for BOTH AI services (select with SERVICE_ROLE).
 #
-#   SERVICE_ROLE=inference  (default)  -> inference_server:app  (THE model; >= 2 GB RAM)
-#   SERVICE_ROLE=orchestrator          -> main:app              (no model; 512 MiB is enough)
+#   SERVICE_ROLE=inference  (default)  -> inference_server:app  (THE model)
+#   SERVICE_ROLE=orchestrator          -> main:app              (no model)
 #
-# The inference image installs llama-cpp-python (GGUF LLM) + CPU PyTorch
-# (embeddings). verify_runtime.py fails the build if either import is broken.
+# The inference role runs llama.cpp with SmolLM2-135M-Instruct Q4_K_M and fits
+# Render's FREE 512 MiB plan (RAG disabled => torch is installed for RAG
+# instances but NEVER imported at startup). For a free-tier image with zero
+# torch footprint, swap the full requirements install for
+# requirements-inference-free.txt. verify_runtime.py fails the build if a
+# required import is broken (torch is only required when RAG_ENABLED=true).
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \

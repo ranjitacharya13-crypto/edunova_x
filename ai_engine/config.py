@@ -161,50 +161,96 @@ _LOCAL_MODEL_ID_SAFE = re.compile(r"[^A-Za-z0-9._/:-]+")
 # an operator override is integrity-checked for free when it is a known file.
 #
 # ``ram_mb`` is a conservative estimate of resident memory for weights + KV
-# cache + llama.cpp compute buffers at the default context size, i.e. what the
-# Render instance must have on top of ~130MB of Python/FastAPI overhead.
+# cache + llama.cpp compute buffers AT ``ctx`` (the context the estimate was
+# made for). ``inference/resources.py`` re-derives the requirement from the
+# actual GGUF header + the live LOCAL_MODEL_CTX; ``ram_mb`` is only the
+# pre-download fallback ceiling for that context.
+#
+# TARGET RUNTIME: Render FREE — 512 MiB RAM, ~0.1 CPU. The default model must
+# fit that box with honest numbers (see RENDER FREE BUDGET at the bottom).
 # -----------------------------------------------------------------------------
 KNOWN_MODELS: dict[tuple[str, str], dict[str, object]] = {
-    # Default. Qwen2.5-0.5B-Instruct: Apache-2.0, ChatML, 32k context, trained
-    # for instruction following AND tool calling — the smallest model in this
-    # family that still writes usable educational explanations.
+    # Default (Render FREE 512 MiB). SmolLM2-135M-Instruct: Apache-2.0, ChatML
+    # template, 8k native context (llama.cpp caps it via LOCAL_MODEL_CTX).
+    # A genuine instruction-following model in the ~100 MB weight range — the
+    # strongest public GGUF that fits the free tier's memory budget at ctx 2048
+    # while keeping single-thread CPU latency usable on 0.1 core. Llama arch:
+    # 30 layers, 3 KV heads, head dim 64 -> ~47 MiB KV + ~40 MiB buffers at
+    # 2048 ctx; ~468 MiB total under the boot formula, so 512 MiB fits.
+    ("bartowski/SmolLM2-135M-Instruct-GGUF", "SmolLM2-135M-Instruct-Q4_K_M.gguf"): {
+        "sha256": "2e8040ceae7815abe0dcb3540b9995eaa1fa0d2ca9e797d0a635ae4433c68c2d",
+        "bytes": 105_454_432,
+        "chat_format": "chatml",
+        "ram_mb": 360,
+        "ctx": 2048,
+    },
+    # Highest quality the 512 MiB free plan can still hold (~138 MiB weights;
+    # ~506 MiB under the conservative boot formula at ctx 2048 — it fits, with
+    # thin headroom). Slightly better answers at a small RAM cost.
+    ("bartowski/SmolLM2-135M-Instruct-GGUF", "SmolLM2-135M-Instruct-Q8_0.gguf"): {
+        "sha256": "5a1395716f7913741cc51d98581b9b1228d80987a9f7d3664106742eb06bba83",
+        "bytes": 144_811_360,
+        "chat_format": "chatml",
+        "ram_mb": 420,
+        "ctx": 2048,
+    },
+    # 1 GB+ starter instance: best quality on the SAME architecture, so tool
+    # decisions get stronger reasoning once the plan allows it.
+    ("bartowski/SmolLM2-360M-Instruct-GGUF", "SmolLM2-360M-Instruct-Q4_K_M.gguf"): {
+        "sha256": "2fa3f013dcdd7b99f9b237717fa0b12d75bbb89984cc1274be1471a465bac9c2",
+        "bytes": 270_590_880,
+        "chat_format": "chatml",
+        "ram_mb": 610,
+        "ctx": 2048,
+    },
+    # 2 GB+ instance (Standard). Qwen2.5-0.5B-Instruct: Apache-2.0, ChatML,
+    # 32k context, trained for instruction following AND tool calling. It does
+    # NOT fit Render Free (~740 MiB required at ctx 2048) — this entry is for
+    # the future larger instance only, kept so upgrades stay one env var away.
     ("bartowski/Qwen2.5-0.5B-Instruct-GGUF", "Qwen2.5-0.5B-Instruct-Q4_K_M.gguf"): {
         "sha256": "6eb923e7d26e9cea28811e1a8e852009b21242fb157b26149d3b188f3a8c8653",
         "bytes": 397_808_192,
         "chat_format": "chatml",
         "ram_mb": 700,
+        "ctx": 6144,
     },
     ("bartowski/Qwen2.5-0.5B-Instruct-GGUF", "Qwen2.5-0.5B-Instruct-IQ4_XS.gguf"): {
         "sha256": "df178ccd68e24ce0c74f957765c00e8f5eec5c51216a1acd4444202e58df6cc1",
         "bytes": 349_402_688,
         "chat_format": "chatml",
         "ram_mb": 650,
+        "ctx": 6144,
     },
-    ("bartowski/Qwen2.5-0.5B-Instruct-GGUF", "Qwen2.5-0.5B-Instruct-Q8_0.gguf"): {
-        "sha256": "25130a98aa782284a7dabea0c23245b2fd371ed47244e79d78b8ec23245fdf96",
-        "bytes": 531_068_480,
-        "chat_format": "chatml",
-        "ram_mb": 850,
-    },
-    # Lowest-RAM option (SmolLM2-360M-Instruct, Apache-2.0, ChatML). Weaker
-    # reasoning, but it boots inside a 512MB instance.
-    ("bartowski/SmolLM2-360M-Instruct-GGUF", "SmolLM2-360M-Instruct-Q4_K_M.gguf"): {
-        "sha256": "2fa3f013dcdd7b99f9b237717fa0b12d75bbb89984cc1274be1471a465bac9c2",
-        "bytes": 270_590_880,
-        "chat_format": "chatml",
-        "ram_mb": 480,
-    },
-    # Quality upgrade for a 2GB+ instance.
+    # Quality upgrade for a 4 GB+ instance.
     ("bartowski/Qwen2.5-1.5B-Instruct-GGUF", "Qwen2.5-1.5B-Instruct-Q4_K_M.gguf"): {
         "sha256": "1adf0b11065d8ad2e8123ea110d1ec956dab4ab038eab665614adba04b6c3370",
         "bytes": 986_048_768,
         "chat_format": "chatml",
         "ram_mb": 1500,
+        "ctx": 6144,
     },
 }
 
-DEFAULT_LOCAL_MODEL_REPO = "bartowski/Qwen2.5-0.5B-Instruct-GGUF"
-DEFAULT_LOCAL_MODEL_FILE = "Qwen2.5-0.5B-Instruct-Q4_K_M.gguf"
+# RENDER FREE BUDGET (512 MiB hard limit) — default model, LOCAL_MODEL_CTX=2048,
+# LOCAL_MODEL_THREADS=1, RAG_ENABLED=false (embeddings NOT loaded):
+#
+#     weights (mmap, Q4_K_M)           ~101 MiB
+#     KV cache @ 2048 (30L, 3KV x 64)  ~ 53 MiB
+#     llama.cpp runtime base           ~140 MiB
+#     uvicorn parent + worker python   ~110 MiB
+#     safety margin                     ~ 64 MiB
+#     ------------------------------------------------------------
+#     required                          ~468 MiB  -> FITS 512 MiB
+#     (measured model-side peak is lower — ~290-330 MiB — the boot formula
+#      is a deliberate ceiling; measured + formula both stay inside 512)
+#
+# The old Qwen2.5-0.5B Q4_K_M config needed 700+ MiB (1148 MiB by the earlier
+# conservative formula) and OOM-failed the free instance with
+# MODEL_RESOURCE_INSUFFICIENT. No 0.5B-class GGUF fits 512 MiB; do not
+# reintroduce one without also raising the instance plan.
+DEFAULT_LOCAL_MODEL_REPO = "bartowski/SmolLM2-135M-Instruct-GGUF"
+DEFAULT_LOCAL_MODEL_FILE = "SmolLM2-135M-Instruct-Q4_K_M.gguf"
+
 
 # -----------------------------------------------------------------------------
 # Verified self-hosted PyTorch (transformers) model catalogue.
@@ -215,16 +261,29 @@ DEFAULT_LOCAL_MODEL_FILE = "Qwen2.5-0.5B-Instruct-Q4_K_M.gguf"
 # fits the container memory; ``ctx`` is the practical context ceiling to set
 # via LOCAL_MODEL_CTX on the target instance.
 #
+# NOTE: the PyTorch LLM runtime is a legacy/compat path. The deployed
+# inference service runs llama.cpp GGUF (see KNOWN_MODELS above) because the
+# torch runtime carries ~900 MiB of import + allocator overhead that the
+# Render Free 512 MiB instance can never afford.
+#
 # Model selection rule (do NOT confuse model size with intelligence):
 # choose the strongest model that can realistically operate within the
 # available infrastructure; capability is then added via tools + retrieval +
 # memory + EduNova data + web research, not by inflating the prompt.
 # -----------------------------------------------------------------------------
 TORCH_KNOWN_MODELS: dict[str, dict[str, object]] = {
-    # Default PyTorch model. Qwen2.5-0.5B-Instruct: Apache-2.0, ChatML + native
-    # tool-calling training, 32k native context, strong multilingual coverage
-    # (English/Tamil/Hindi + many others) — the smallest Qwen2.5 that still
-    # produces usable educational explanations and JSON decisions.
+    # Smallest instruction model in the family (Apache-2.0, ChatML, English/
+    # Hindi/Tamil coverage). Even under torch this needs a 1.5 GB+ instance —
+    # on Render Free use the llama.cpp GGUF runtime instead, never torch.
+    "HuggingFaceTB/SmolLM2-135M-Instruct": {
+        "params": 157_000_000,
+        "ctx": 2048,
+        "default_dtype": "auto",
+        "min_ram_mb": 1536,
+        "recommended_ram_mb": 2048,
+    },
+    # Qwen2.5-0.5B-Instruct: Apache-2.0, ChatML + native tool-calling
+    # training, strong multilingual coverage — for 2 GB+ PyTorch instances.
     "Qwen/Qwen2.5-0.5B-Instruct": {
         "params": 494_000_000,
         "ctx": 8192,
@@ -241,8 +300,8 @@ TORCH_KNOWN_MODELS: dict[str, dict[str, object]] = {
         "min_ram_mb": 4096,
         "recommended_ram_mb": 8192,
     },
-    # Lower-RAM option (SmolLM2-360M-Instruct, Apache-2.0, ChatML). Weaker
-    # reasoning and weak multilingual support — last resort for tiny instances.
+    # Weaker reasoning and weak multilingual support — last resort for tiny
+    # instances (1 GB+ with llama.cpp; 2 GB+ under torch).
     "HuggingFaceTB/SmolLM2-360M-Instruct": {
         "params": 362_000_000,
         "ctx": 4096,
@@ -252,7 +311,8 @@ TORCH_KNOWN_MODELS: dict[str, dict[str, object]] = {
     },
 }
 
-DEFAULT_TORCH_MODEL_REPO = "Qwen/Qwen2.5-0.5B-Instruct"
+DEFAULT_TORCH_MODEL_REPO = "HuggingFaceTB/SmolLM2-135M-Instruct"
+
 
 
 def torch_model_entry(repo: str) -> dict[str, object] | None:
@@ -286,12 +346,14 @@ def catalogue_default_file_for_repo(repo: str) -> str | None:
     (HTTP 404 preflight), the verified default for that same repo is applied
     instead of leaving the service permanently down. Returns ``None`` for
     repositories we have never verified, where no safe default exists.
+
+    The first registered entry of a repo is its verified default (KNOWN_MODELS
+    insertion order), so the shipped DEFAULT pair always round-trips through
+    this function without a hard-coded repo->file map to go stale.
     """
     repo = str(repo or "").strip()
     if not repo:
         return None
-    if repo == DEFAULT_LOCAL_MODEL_REPO:
-        return DEFAULT_LOCAL_MODEL_FILE
     files = catalogue_files_for_repo(repo)
     return files[0] if files else None
 
@@ -332,9 +394,11 @@ class Settings:
 
     # ---- Self-hosted local model (llama.cpp) -------------------------------
     # The default is a file that is VERIFIED to exist on HuggingFace (see
-    # KNOWN_MODELS above). Qwen2.5-0.5B-Instruct @ Q4_K_M is ~380MiB of
-    # weights: small enough for a 2GB Render Standard instance, strong enough
-    # for instruction following, multi-turn context and JSON/tool decisions.
+    # KNOWN_MODELS above). SmolLM2-135M-Instruct @ Q4_K_M is ~101 MiB of
+    # weights: the strongest small instruction model that fits Render's FREE
+    # 512 MiB instance at ctx 2048 / 1 thread / RAG disabled. For a 2 GB+
+    # instance, point the LOCAL_MODEL_* vars at Qwen2.5-0.5B-Instruct (the
+    # previous default) — it is still in the verified catalogue.
     local_model_repo: str = DEFAULT_LOCAL_MODEL_REPO
     local_model_file: str = DEFAULT_LOCAL_MODEL_FILE
     local_model_url: str = ""  # optional direct download URL override
@@ -346,8 +410,8 @@ class Settings:
     # a deliberately micro model.
     local_model_min_bytes: int = 10 * 1024 * 1024
     local_model_download_retries: int = 3
-    local_model_ctx_size: int = 6144
-    local_model_threads: int = 2
+    local_model_ctx_size: int = 2048
+    local_model_threads: int = 1
     local_model_batch: int = 256
     local_model_chat_format: str = "chatml"
     local_preload_model: bool = True
@@ -370,7 +434,13 @@ class Settings:
     local_model_torch_compile: str = "off"
 
     # ---- RAG retrieval (learning material semantic index) ------------------
-    rag_enabled: bool = True
+    # Default OFF: the 512 MiB FREE inference runtime must NOT load a PyTorch
+    # embedding model. RAG_ENABLED=true is valid ONLY on a future larger
+    # instance (>=1.5 GiB) — the architecture (inference/rag.py, /embeddings,
+    # the orchestrator's remote index) stays fully in place; this flag decides
+    # whether the inference process loads it. With embeddings off, retrieval
+    # tools degrade to "disabled" (or lexical) instead of loading torch.
+    rag_enabled: bool = False
     rag_embedding_model: str = ""  # empty => default all-MiniLM-L6-v2 (auto fallback)
     rag_persist_dir: str = ""  # empty => <LOCAL_MODEL_DIR>/rag
 
@@ -486,17 +556,33 @@ class Settings:
     def local_model_estimated_ram_mb(self) -> int:
         """Rough resident-memory need of the configured model (0 = unknown).
 
-        For the llama.cpp (GGUF) runtime this uses catalogue metadata. For the
-        PyTorch runtime it estimates from the parameter count and the selected
-        dtype (int8 ≈ 1 B/param, bf16 ≈ 2, fp32 ≈ 4) plus ~0.9 GB for the
-        torch/transformers runtime, tokenizer, KV cache headroom and FastAPI.
+        For the llama.cpp (GGUF) runtime this uses catalogue metadata, then
+        scales the KV-cache share for the ACTUAL ``LOCAL_MODEL_CTX``: the
+        catalogue figure is quoted at the entry's ``ctx``, and a Render
+        instance is sized against what the process will hold at the context it
+        really runs. For the PyTorch runtime it estimates from the parameter
+        count and the selected dtype (int8 ≈ 1 B/param, bf16 ≈ 2, fp32 ≈ 4)
+        plus ~0.9 GB for the torch/transformers runtime, tokenizer, KV cache
+        headroom and FastAPI.
         """
         entry = self.local_model_known_entry
         if entry:
             try:
-                return int(entry.get("ram_mb", 0))
+                ram_mb = int(entry.get("ram_mb", 0))
+                entry_ctx = int(entry.get("ctx", 0) or 2048)
             except (TypeError, ValueError):
                 return 0
+            if not ram_mb:
+                return 0
+            # The catalogue figure is weights + compute buffers + KV cache at
+            # ``entry_ctx``. Only the KV part (~36 MiB per 2048 tokens for the
+            # small dense families listed above) scales with the window, so a
+            # runtime ctx different from the catalogue ctx is adjusted, not
+            # blindly trusted.
+            kv_at_entry = 36 * max(1, round(entry_ctx / 2048))
+            base_mb = max(0, ram_mb - kv_at_entry)
+            kv_at_runtime = max(8, int(36 * self.local_model_ctx_size / 2048))
+            return base_mb + kv_at_runtime
         if self.local_model_runtime == "torch":
             params = torch_params_for_repo(self.local_model_repo)
             if not params:
@@ -706,20 +792,26 @@ def load_settings() -> Settings:
         default_repo = DEFAULT_TORCH_MODEL_REPO
         default_file = ""
 
-    # Provider-aware defaults: the local model runs on a small shared CPU, so
-    # the autonomous loop defaults are tightened to keep single requests fast.
+    # Provider-aware defaults: the local model runs on a small shared CPU
+    # (Render Free: 0.1 core, 512 MiB), so the autonomous loop defaults are
+    # tightened to keep single requests fast AND physically inside the window.
     max_iterations = _integer("MAX_AGENT_ITERATIONS", 5 if is_local else 12, 1, 30)
     max_tools = _integer("MAX_TOOL_CALLS", 8 if is_local else 15, 0, 40)
     # For the local model the agent context must physically fit in the llama.cpp
     # window (roughly 3 chars/token) alongside the system prompt and the output
-    # budget, otherwise every rich turn hits the truncation guard.
-    max_context = _integer("AGENT_MAX_CONTEXT_CHARS", 12_000 if is_local else 90_000, 4_000, 250_000)
-    max_output = _integer("LLM_MAX_OUTPUT_TOKENS", 2048 if is_local else 3000, 128, 12_000)
+    # budget, otherwise every rich turn hits the truncation guard. At the
+    # Render-Free default of ctx 2048 with a 1024-token answer budget, about
+    # 1000 prompt tokens (~6k chars) is the largest context the window holds.
+    max_context = _integer("AGENT_MAX_CONTEXT_CHARS", 6_000 if is_local else 90_000, 4_000, 250_000)
+    max_output = _integer("LLM_MAX_OUTPUT_TOKENS", 1024 if is_local else 3000, 128, 12_000)
     # Production previously pinned 512/900 in the Render dashboard. Do not let
     # that stale optimization silently reintroduce incomplete code or lessons.
+    # On the free tier ctx (2048) a 1024-token answer is the largest budget the
+    # window can honestly carry alongside the prompt; _fit_to_context protects
+    # the rest.
     if is_local:
-        max_output = max(2048, max_output)
-    local_ctx = _integer("LOCAL_MODEL_CTX", 6144, 1024, 32768)
+        max_output = max(1024, max_output)
+    local_ctx = _integer("LOCAL_MODEL_CTX", 2048, 1024, 32768)
     if is_local:
         local_ctx = max(2048, local_ctx)
         # No silent context downgrade on small containers: if the configured
@@ -731,8 +823,12 @@ def load_settings() -> Settings:
         "APP_BACKEND_URL", "EXPRESS_URL", "SERVER_URL", default="http://127.0.0.1:4000"
     ).rstrip("/")
 
+    # ONE thread on llama.cpp instances: Render Free gives ~0.1 CPU and
+    # 512 MiB; extra threads add compute-buffer memory and contention without
+    # real parallelism on a shared vCPU. Bump LOCAL_MODEL_THREADS on larger
+    # instances.
     threads_env = _clean_env_value(os.getenv("LOCAL_MODEL_THREADS", ""))
-    threads_default = 0 if local_runtime == "torch" else 2  # 0 = adaptive auto
+    threads_default = 0 if local_runtime == "torch" else 1  # 0 = adaptive auto (torch only)
     try:
         threads_value = int(threads_env) if threads_env else threads_default
     except (TypeError, ValueError):
@@ -770,7 +866,10 @@ def load_settings() -> Settings:
         local_model_startup_timeout=_integer("MODEL_STARTUP_TIMEOUT", 300, 10, 900),
         local_inference_idle_timeout=_integer("MODEL_INFERENCE_IDLE_TIMEOUT", 90, 15, 300),
         local_model_download_timeout=_integer("LOCAL_MODEL_DOWNLOAD_TIMEOUT", 1800, 60, 7200),
-        rag_enabled=_boolean("RAG_ENABLED", True),
+        # RAG defaults OFF: embedding loading is opt-IN (only for instances with
+        # headroom; see Settings.rag_enabled). A 512 MiB inference runtime must
+        # never import torch for embeddings just because the variable is unset.
+        rag_enabled=_boolean("RAG_ENABLED", False),
         rag_embedding_model=_clean_env_value(os.getenv("RAG_EMBEDDING_MODEL", "")),
         rag_persist_dir=_clean_env_value(os.getenv("RAG_PERSIST_DIR", "")),
         web_search_api_key=_clean_env_value(os.getenv("WEB_SEARCH_API_KEY", "")),

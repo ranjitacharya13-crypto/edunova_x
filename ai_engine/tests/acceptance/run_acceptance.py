@@ -94,7 +94,7 @@ def main() -> int:
     base_env = {**os.environ, "AI_INTERNAL_TOKEN": TOKEN, "AI_REQUIRE_INTERNAL_TOKEN": "true", "LOG_LEVEL": "INFO"}
     inf_env = {**base_env, "LLM_PROVIDER": "local", "LOCAL_MODEL_REPO": "local", "LOCAL_MODEL_FILE": gguf_path.name,
                "LOCAL_MODEL_DIR": str(gguf_path.parent), "LOCAL_MODEL_CTX": os.getenv("LOCAL_MODEL_CTX", "2048"),
-               "RAG_ENABLED": "false", "LOCAL_MODEL_THREADS": os.getenv("LOCAL_MODEL_THREADS", "2")}
+               "RAG_ENABLED": "false", "LOCAL_MODEL_THREADS": os.getenv("LOCAL_MODEL_THREADS", "1")}
     if args.memory_limit_mb:
         inf_env["AI_MEMORY_LIMIT_MB"] = str(args.memory_limit_mb)
     orch_env = {**base_env, "AI_INFERENCE_URL": f"http://127.0.0.1:{inf_port}", "RAG_ENABLED": "false",

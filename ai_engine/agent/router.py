@@ -481,6 +481,12 @@ def _answer_token_budget(settings: Settings, goal: str, *, base: int) -> int:
     This is a token ceiling, not a timer: llama.cpp normally stops at EOS. The
     budget is never reduced based on elapsed wall-clock time or measured decode
     speed. Detailed and coding tasks get enough room to finish valid output.
+
+    The ceiling is the smaller of the configured LLM_MAX_OUTPUT_TOKENS and the
+    model's own context budget: prompt + completion must fit in LOCAL_MODEL_CTX
+    (roughly 3 chars/token). At Render Free's 2048-token window the largest
+    honest completion is about 1024 tokens; inflating the request beyond that
+    only guarantees OUTPUT_LIMIT_REACHED without more quality.
     """
     text = goal.lower().strip()
     words = len(text.split())
@@ -499,7 +505,15 @@ def _answer_token_budget(settings: Settings, goal: str, *, base: int) -> int:
         desired = 640
     else:
         desired = 1000
-    return settings.llm_max_output_tokens
+    # Shaping is deliberately NOT applied to the request (see history): every
+    # task gets the full capacity the deployment allows, so an answer is never
+    # cut short because a heuristic classified it as "simple". The only real
+    # boundary is physical — the llama.cpp window. Reserve ~25% of the context
+    # for prompt + tools + conversation; give the completion the rest, bounded
+    # by the configured ceiling.
+    _ = (base, desired, words)
+    context_ceiling = max(256, settings.local_model_ctx_size - settings.local_model_ctx_size // 4)
+    return min(settings.llm_max_output_tokens, context_ceiling)
 
 
 async def _generate_streaming(

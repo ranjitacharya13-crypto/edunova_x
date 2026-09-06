@@ -70,7 +70,12 @@ class LocalProviderConfigTests(unittest.TestCase):
             diag = settings.llm_safe_diagnostics()
             self.assertTrue(diag["selfHosted"])
             self.assertFalse(diag["apiKeyRequired"])
-            self.assertIn("Qwen2.5-0.5B-Instruct", diag["local_model_id"])
+            self.assertIn("SmolLM2-135M-Instruct", diag["local_model_id"])
+            # Render Free sizing: the shipped default must be the small model.
+            self.assertEqual(settings.local_model_repo, "bartowski/SmolLM2-135M-Instruct-GGUF")
+            self.assertEqual(settings.local_model_ctx_size, 2048)
+            self.assertEqual(settings.local_model_threads, 1)
+            self.assertFalse(settings.rag_enabled)
         finally:
             if prev is None:
                 os.environ.pop("LLM_PROVIDER", None)
