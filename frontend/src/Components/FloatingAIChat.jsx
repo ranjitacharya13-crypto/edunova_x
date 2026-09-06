@@ -300,7 +300,8 @@ export default function FloatingAIChat({ feature = "dashboard" }) {
             id: makeMessageId("assistant_err"),
             role: "assistant",
             type: "error",
-            content: error?.message || "Sorry, I couldn't reach EduNova AI right now.",
+            errorCode: error?.code || null,
+            content: error?.message || "EduNova could not reach the API. Check your internet connection.",
             retryMessage: userMessage,
           },
         ]);
@@ -746,6 +747,11 @@ function ChatMessage({ message, onRetry, onConfirmAction, retryDisabled }) {
   }
 
   const isError = message.type === "error";
+  // Retrying cannot fix a deployment/resource failure; only show the button
+  // when the failure is transient (model busy, network blip, inference error).
+  const NON_RETRYABLE = new Set(["MODEL_RESOURCE_INSUFFICIENT", "OUT_OF_MEMORY", "MODEL_STARTUP_FAILED", "MODEL_FAILED",
+    "MODEL_DOWNLOAD_FAILED", "MODEL_INVALID", "MODEL_LOAD_FAILED", "WARMUP_FAILED", "DEPENDENCY_FAILED", "CONFIG_FAILED", "AUTH_FAILED", "PERMISSION_DENIED"]);
+  const canRetry = isError && !NON_RETRYABLE.has(String(message.errorCode || "").toUpperCase());
 
   return (
     <div className="flex items-start gap-2.5">
@@ -821,7 +827,10 @@ function ChatMessage({ message, onRetry, onConfirmAction, retryDisabled }) {
           </div>
         )}
 
-        {isError && (
+        {isError && message.errorCode && (
+          <p className="mt-2 font-mono text-[10px] uppercase tracking-wide text-rose-400/80">{message.errorCode}</p>
+        )}
+        {canRetry && (
           <button
             type="button"
             onClick={() => onRetry(message)}

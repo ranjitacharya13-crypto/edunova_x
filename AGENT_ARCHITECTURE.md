@@ -6,22 +6,16 @@ EduNova AI operates as a **UNIFIED DATA-AWARE AGENT** capable of intelligently c
 3. **CONVERSATION CONTEXT** (Multi-turn topic resolution & memory)
 4. **MODEL KNOWLEDGE** (General educational & scientific concepts)
 
-> **Self-hosted since v3.0.** The AI brain is an open-source model running
-> **in-process** inside the `ai_engine` FastAPI service — no
-> OpenAI/Groq/Gemini/Anthropic/OpenRouter calls are made. The runtime follows
-> the model format in use: **llama.cpp/GGUF** (`LOCAL_MODEL_RUNTIME=llama_cpp`,
-> the production runtime, `agent/local_llm.py`) for GGUF files, and **PyTorch +
-> HuggingFace Transformers** (`LOCAL_MODEL_RUNTIME=torch`,
-> `inference/torch_runtime.py`) for safetensors models. Both stacks are
-> installed from the single `ai_engine/requirements.txt`
-> (`llama-cpp-python` ships as a prebuilt CPU wheel from the extra index
-> declared in that file — no C++ compile at deploy time). Production runs
-> **Qwen2.5-0.5B-Instruct GGUF Q4_K_M**
-> (`bartowski/Qwen2.5-0.5B-Instruct-GGUF`, integrity-pinned in `config.py`),
-> loaded and warmed **at boot**. Web search remains an external *data source*;
-> all reasoning and answer generation is done by the local model. See
-> `docs/AI_ARCHITECTURE_REPORT.md` for measured latency/load data and the
-> warm-start request-queue design.
+> **Self-hosted, two-process since v6.0.** The AI brain is an open-source
+> model — **Qwen2.5-0.5B-Instruct GGUF Q4_K_M** (`bartowski/…`, integrity-pinned
+> in `config.py`) — running through **llama.cpp** inside the dedicated
+> **persistent inference service** (`ai_engine/inference_server.py`, ≥ 2 GB
+> RAM). The **orchestrator** (`ai_engine/main.py`) never loads weights and never
+> imports `llama_cpp`/`torch`; it reaches the model over an authenticated
+> HTTP/SSE client (`agent/remote_llm.py`). PyTorch is used only for RAG
+> embeddings (served by the inference service on `/embeddings`). No
+> OpenAI/Groq/Gemini/Anthropic/OpenRouter calls are made anywhere. See
+> `docs/FINAL_ROOT_CAUSE_REPORT.md` for the memory root cause and measurements.
 
 ```text
                                 USER
@@ -64,26 +58,32 @@ EduNova AI operates as a **UNIFIED DATA-AWARE AGENT** capable of intelligently c
 
 ---
 
-## 0. Local Model Runtime (llama.cpp)
+## 0. Model runtime — one authoritative lifecycle
 
 ```text
-FastAPI ai_engine process
- ├─ LocalModelManager          lifecycle: download (HF/direct URL) -> verify -> load (mmap)
- │    • background load at boot: port binds immediately, /health stays live
- │    • states: not_started | downloading | loading | ready | error
- │    • optional SHA-256 pinning, atomic .part -> rename, 10MB min-size guard
- ├─ LocalLlamaLLM              planner-compatible interface (probe/complete_json/complete_text)
- │    • ChatML prompt rendering (LOCAL_MODEL_CHAT_FORMAT for other models)
- │    • JSON-schema -> llama.cpp grammar: decisions are ALWAYS valid JSON
- │    • single-flight generation lock: one inference at a time (fits shared CPU)
- └─ AgentEngine / IntentRouter unchanged contracts on top
+edunova-api (Node)      edunova-ai (FastAPI orchestrator)        edunova-inference (FastAPI)
+POST /api/ai/chat  -->  IntentRouter / ToolRegistry / RAG   -->  inference/manager.ModelManager
+POST /api/ai/stream     agent/remote_llm.RemoteInferenceLLM        └─ supervised llama.cpp worker
+GET  /api/ai/ready      GET /health /ready /model/status           agent/local_llm.LocalModelManager
+GET  /api/ai/model/status   /system/resources /metrics              (weights engine only)
 ```
 
-Failure honesty: while the model is downloading/loading, chat returns
-`503 LLM_MODEL_LOADING`; if load fails, `503 LLM_MODEL_UNAVAILABLE` with a
-sanitized reason. **Nothing is silently replaced with a canned answer.**
-The Express API (`server/routes/ai.js`) already retries those 503s on a
-backoff schedule sized for cold starts (`AI_UPSTREAM_RETRY_*`).
+Lifecycle inside the inference service (once per process, never per request):
+
+```text
+BOOT -> CONFIG_LOADED -> RESOURCES_CHECKED (inference/resources.py: required vs container MiB)
+     -> DEPENDENCIES_READY (import llama_cpp) -> MODEL_LOCATED -> MODEL_VALID (size+sha256+GGUF magic)
+     -> MODEL_LOADING -> MODEL_LOADED -> WARMUP_RUNNING ("What is 2 + 2?") -> WARMUP_SUCCESS
+     -> INFERENCE_TEST_SUCCESS -> READY  (public: MODEL_NOT_READY | MODEL_LOADING | MODEL_READY | MODEL_FAILED)
+```
+
+Failure honesty: a container that cannot hold the model fails **before** the
+worker is spawned with `MODEL_RESOURCE_INSUFFICIENT {required_mb, available_mb,
+recommended_mb}`; every other failure is a terminal `MODEL_FAILED` sub-state.
+Requests observe readiness once and return the precise code — no warm queue,
+no retry of model loading, no "preparing…" loop, no canned answers.
+Streaming is real token-by-token SSE through all three hops; generation runs
+to EOS or the token ceiling and is never cut by elapsed time.
 
 ## 0.1 Deterministic Fast Paths (IntentRouter)
 
@@ -216,7 +216,7 @@ npm run build --prefix frontend
 `ai_engine/tests/test_local_model.py` covers: local-provider configuration
 (and that no API key is required), intent routing for all canonical questions,
 fast-path execution with tool fixtures (DB scoping, web citations, pending
-write confirmations), quiz/plan payload validation, `LocalLlamaLLM` behavior
+write confirmations), quiz/plan payload validation, `RemoteInferenceLLM`/`ModelManager` behavior
 against a fake `llama_cpp` (ChatML prompt shape, grammar usage, JSON parsing),
 and failure honesty (loading/unavailable states never fake an answer).
 

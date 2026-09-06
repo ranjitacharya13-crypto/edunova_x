@@ -1,41 +1,32 @@
-# EduNova AI engine (FastAPI) — self-hosted model runtime (llama.cpp GGUF)
+# EduNova AI — Python image for BOTH AI services (select with SERVICE_ROLE).
+#
+#   SERVICE_ROLE=inference  (default)  -> inference_server:app  (THE model; >= 2 GB RAM)
+#   SERVICE_ROLE=orchestrator          -> main:app              (no model; 512 MiB is enough)
+#
+# The inference image installs llama-cpp-python (GGUF LLM) + CPU PyTorch
+# (embeddings). verify_runtime.py fails the build if either import is broken.
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    # PyPI ships llama-cpp-python as source only; the official prebuilt CPU
-    # wheels live on this extra index, so builds avoid compiling C++.
-    # (requirements.txt declares the same index, this is belt-and-braces.)
     PIP_EXTRA_INDEX_URL=https://abetlen.github.io/llama-cpp-python/whl/cpu \
-    # Weights cache. Mount a volume here to avoid re-downloading the GGUF on
-    # every container start.
-    LOCAL_MODEL_DIR=/var/lib/edunova/models
+    LOCAL_MODEL_DIR=/var/lib/edunova/models \
+    SERVICE_ROLE=inference
 
 WORKDIR /app
-
-# requirements.txt installs the llama_cpp runtime (llama-cpp-python from the
-# prebuilt-wheel index above) together with the REST/tooling stack.
-COPY requirements.txt ./
+COPY requirements.txt requirements-orchestrator.txt ./
 RUN pip install --no-cache-dir "torch==2.8.0" --index-url https://download.pytorch.org/whl/cpu \
     && pip install --no-cache-dir -r requirements.txt \
-    # Build-time proof the llama_cpp runtime really is installed in the image
-    # (not just declared): fail the build loudly if the import breaks.
-    && python -c "import llama_cpp; print('llama_cpp runtime OK', getattr(llama_cpp, '__version__', ''))"
+    && python -c "import llama_cpp, torch; print('runtime OK', llama_cpp.__version__, torch.__version__)"
 
 COPY . .
 RUN python verify_runtime.py
-
 RUN mkdir -p "$LOCAL_MODEL_DIR"
 VOLUME ["/var/lib/edunova/models"]
+EXPOSE 8001 8002
 
-# The GGUF model weights are downloaded at runtime into LOCAL_MODEL_DIR
-# (never baked into the image; overridable via LOCAL_MODEL_* env vars).
-EXPOSE 8001
-
-# Liveness only — /health reports `modelReady` separately so an orchestrator
-# never kills the container while the weights are still downloading.
+# Liveness only — /health never implies model readiness; use /ready for that.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=5 \
-    CMD python -c "import os,urllib.request,sys; urllib.request.urlopen('http://127.0.0.1:'+os.getenv('PORT','8001')+'/health', timeout=8)" || exit 1
+    CMD python -c "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:'+os.getenv('PORT','8002')+'/health', timeout=8)" || exit 1
 
-# Start-time verification of the llama_cpp runtime before serving traffic.
-CMD ["sh", "-c", "python verify_runtime.py && uvicorn main:app --host 0.0.0.0 --workers 1 --port ${PORT:-8001}"]
+CMD ["sh", "-c", "if [ \"$SERVICE_ROLE\" = orchestrator ]; then python verify_runtime.py --orchestrator && exec uvicorn main:app --host 0.0.0.0 --workers 1 --port ${PORT:-8001}; else python verify_runtime.py && exec uvicorn inference_server:app --host 0.0.0.0 --workers 1 --port ${PORT:-8002}; fi"]

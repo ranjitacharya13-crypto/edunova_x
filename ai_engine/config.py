@@ -356,16 +356,11 @@ class Settings:
     local_model_startup_timeout: int = 300
     local_inference_idle_timeout: int = 90
 
-    # ---- PyTorch-first runtime (inference/torch_runtime.py) ----------------
-    # Runtime selection: "torch" (default, PyTorch + transformers) or
-    # "llama_cpp" (legacy GGUF runtime). Model weights are downloaded and the
-    # model is warmed to READY at service startup; user requests never trigger
-    # a download or cold load — they queue while the model prepares.
+    # ---- Runtime -------------------------------------------------------------
+    # The LLM runtime is llama.cpp (GGUF) inside the persistent inference
+    # service. PyTorch is used for embeddings/ML only. The legacy "torch" LLM
+    # runtime settings below are retained for configuration compatibility.
     local_model_runtime: str = "llama_cpp"
-    # Weight representation: auto | fp32 | bf16 | int8. "auto" inspects the
-    # container memory and model size (inference/adaptive.py) and picks the
-    # fastest representation that fits; int8 (dynamic quantization) is the
-    # usual CPU winner for small models on shared cores.
     local_model_dtype: str = "auto"
     local_model_device: str = "auto"  # auto | cpu | cuda
     local_model_hf_revision: str = "main"
@@ -397,6 +392,14 @@ class Settings:
     ai_internal_token: str = ""
     ai_require_internal_token: bool = False
     app_backend_url: str = "http://127.0.0.1:4000"
+    # ---- Split architecture: orchestrator -> persistent inference service --
+    # The lightweight orchestrator (main.py) never loads the model; it calls
+    # the inference service (inference_server.py) at this URL with the shared
+    # AI_INTERNAL_TOKEN. Empty => "not configured" (reported, never guessed).
+    inference_url: str = ""
+    # Network backstop for one generation round-trip (streaming keeps the
+    # connection active; this is not an answer-length limit).
+    inference_request_timeout: int = 600
     cors_origins: tuple[str, ...] = (
         "http://localhost:5173",
         "http://127.0.0.1:5173",
@@ -719,14 +722,10 @@ def load_settings() -> Settings:
     local_ctx = _integer("LOCAL_MODEL_CTX", 6144, 1024, 32768)
     if is_local:
         local_ctx = max(2048, local_ctx)
-        # The live Render service currently has a 512 MiB cgroup. Qwen 0.5B at
-        # 6144 context reaches ~534 MB RSS and leaves no OOM safety margin.
-        # Keep the larger context on Standard+, but automatically use 4096 on
-        # a <=768 MiB container. Output remains 2048; oversized retrieved facts
-        # are trimmed before generation rather than cutting the answer.
-        memory_limit = _cgroup_memory_limit()
-        if memory_limit is not None and memory_limit <= 768 * 1024 * 1024:
-            local_ctx = min(local_ctx, 4096)
+        # No silent context downgrade on small containers: if the configured
+        # model + context do not fit, inference/resources.py fails fast with
+        # MODEL_RESOURCE_INSUFFICIENT (required/available/recommended MiB)
+        # instead of hiding the problem behind a smaller window.
 
     app_backend_url = _first_env(
         "APP_BACKEND_URL", "EXPRESS_URL", "SERVER_URL", default="http://127.0.0.1:4000"
@@ -790,5 +789,7 @@ def load_settings() -> Settings:
         ai_internal_token=_clean_env_value(os.getenv("AI_INTERNAL_TOKEN", "")),
         ai_require_internal_token=_boolean("AI_REQUIRE_INTERNAL_TOKEN", False),
         app_backend_url=app_backend_url,
+        inference_url=_first_env("AI_INFERENCE_URL", "INFERENCE_SERVICE_URL", default="").rstrip("/"),
+        inference_request_timeout=_integer("AI_INFERENCE_REQUEST_TIMEOUT", 600, 15, 3600),
         cors_origins=cors_origins,
     )

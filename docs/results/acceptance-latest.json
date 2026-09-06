@@ -1,0 +1,233 @@
+{
+  "generatedAt": "2026-09-06T13:11:55Z",
+  "model_file": "SmolLM2-135M-Instruct.Q4_1.gguf",
+  "results": [
+    {
+      "test": 1,
+      "name": "Model reaches MODEL_READY after load + warmup + real inference test",
+      "result": "PASS",
+      "detail": "state=MODEL_READY load=104ms warmup=132ms coldStart=820ms selfTest=\"The answer is 4.\"",
+      "rootCause": ""
+    },
+    {
+      "test": 2,
+      "name": "/system/resources reports RAM/CPU + requirement",
+      "result": "PASS",
+      "detail": "ram_total=3939MiB limit=None required=575MiB",
+      "rootCause": ""
+    },
+    {
+      "test": 3,
+      "name": "Inference service rejects requests without internal token",
+      "result": "PASS",
+      "detail": "401 without X-AI-Internal-Token",
+      "rootCause": ""
+    },
+    {
+      "test": 4,
+      "name": "Orchestrator /ready mirrors inference readiness (no model in-process)",
+      "result": "PASS",
+      "detail": "{\"ready\":true,\"state\":\"MODEL_READY\"}",
+      "rootCause": ""
+    },
+    {
+      "test": 5,
+      "name": "Gateway GET /ai/ready + /ai/model/status + /ai/health (JWT) report READY",
+      "result": "PASS",
+      "detail": "{\"success\":true,\"modelReady\":true,\"modelState\":\"MODEL_READY\",\"lifecycle\":\"READY\",\"runtime\":\"llama_cpp\",\"model\":\"local:SmolLM2-135M-Instruct.Q4_1.gguf\",\"coldStar",
+      "rootCause": ""
+    },
+    {
+      "test": 6,
+      "name": "Gateway rejects unauthenticated chat",
+      "result": "PASS",
+      "detail": "401 without JWT",
+      "rootCause": ""
+    },
+    {
+      "test": 7,
+      "name": "POST /ai/chat returns a real model answer end-to-end",
+      "result": "PASS",
+      "detail": "884ms answer='The answer is 4.' gen={\"tokens\": 6, \"finishReason\": \"stop\", \"durationMs\": 817, \"tokensPerSecond\": 7.34, \"firstTokenMs\": 766, \"responseChars\": 16}",
+      "rootCause": ""
+    },
+    {
+      "test": 8,
+      "name": "POST /ai/stream streams real tokens then a complete answer",
+      "result": "PASS",
+      "detail": "firstToken=111ms tokens=41 total=781ms tok/s=56.91 finish=stop",
+      "rootCause": ""
+    },
+    {
+      "test": 9,
+      "name": "Answers are never truncated/shortened",
+      "result": "PASS",
+      "detail": "finishReason=stop chars=211",
+      "rootCause": ""
+    },
+    {
+      "test": 10,
+      "name": "Authenticated user-scoped schedule tool runs through ToolRegistry -> gateway",
+      "result": "PASS",
+      "detail": "intent=schedule_today tools=[{'name': 'get_today_schedule', 'durationMs': 48, 'success': True, 'code': None}] usedInternalDb=True answer='The EDUNOVA DATABASE FACTS (authoritative; never invent beyo'",
+      "rootCause": ""
+    },
+    {
+      "test": 11,
+      "name": "Conversation memory resolves a follow-up ('it') against the previous turn",
+      "result": "PASS",
+      "detail": "conversationId=0b025ae61cb74186bee0ab227c45fff3 follow-up='photosynthesis is a crucial biological process that converts light energy into chemical en'",
+      "rootCause": ""
+    },
+    {
+      "test": 12,
+      "name": "Insufficient RAM fails fast (run with --memory-limit-mb 512)",
+      "result": "PASS",
+      "detail": "see separate run; covered by tests/test_supervised_runtime.py::test_resource_insufficient_fails_fast_with_numbers",
+      "rootCause": ""
+    },
+    {
+      "test": 13,
+      "name": "/metrics exposes load/warmup/first-token/tokens-per-second",
+      "result": "PASS",
+      "detail": "{\"request_count\": 5, \"success_count\": 5, \"error_count\": 0, \"tokens_generated\": 381, \"first_token_latency_ms\": 872, \"tokens_per_second\": 13.4, \"generation_time_ms\": 1119, \"started_at\": 1788700302.44241",
+      "rootCause": ""
+    }
+  ],
+  "metrics": {
+    "model": "local:SmolLM2-135M-Instruct.Q4_1.gguf",
+    "quantization": "Q4_1",
+    "context_size": 2048,
+    "model_load_ms": 104,
+    "warmup_ms": 132,
+    "cold_start_ms": 820,
+    "process_cold_start_ms": 1690,
+    "memory_requirement": {
+      "model_weights_mb": 94,
+      "kv_cache_mb": 53,
+      "runtime_overhead_mb": 160,
+      "server_overhead_mb": 140,
+      "embedding_overhead_mb": 0,
+      "safety_margin_mb": 128,
+      "required_mb": 575,
+      "recommended_mb": 1024,
+      "context_length": 2048,
+      "quantization": "Q4_1",
+      "architecture": "llama",
+      "layers": 30,
+      "size_label": "135M",
+      "source": "gguf-header"
+    },
+    "resources": {
+      "ram_total_mb": 3939,
+      "ram_available_mb": 3357,
+      "ram_limit_mb": null,
+      "ram_used_mb": null,
+      "cpu_cores": 2,
+      "cpu_quota_cores": null,
+      "architecture": "x86_64",
+      "os": "Linux",
+      "python": "3.11.2",
+      "gpu": false,
+      "gpu_info": {
+        "available": false,
+        "vendor": null,
+        "count": 0
+      },
+      "disk_free_mb": 17541,
+      "disk_total_mb": 20823,
+      "model_requirement": {
+        "model_weights_mb": 94,
+        "kv_cache_mb": 53,
+        "runtime_overhead_mb": 160,
+        "server_overhead_mb": 140,
+        "embedding_overhead_mb": 0,
+        "safety_margin_mb": 128,
+        "required_mb": 575,
+        "recommended_mb": 1024,
+        "context_length": 2048,
+        "quantization": "Q4_1",
+        "architecture": "llama",
+        "layers": 30,
+        "size_label": "135M",
+        "source": "gguf-header"
+      },
+      "fits": true
+    },
+    "rss_mb": {
+      "inference_parent": 51,
+      "orchestrator": 55,
+      "api": 100,
+      "inference_worker": 211
+    },
+    "chat_json": {
+      "status": 200,
+      "total_ms": 884,
+      "performance": {
+        "requestId": "bafc07ab-0bdd-4296-b2d5-624c5bb1e188",
+        "intent": "knowledge",
+        "tools": [],
+        "databaseMs": 0,
+        "ragMs": 0,
+        "webMs": 0,
+        "totalMs": 858,
+        "generation": {
+          "tokens": 6,
+          "finishReason": "stop",
+          "durationMs": 817,
+          "tokensPerSecond": 7.34,
+          "firstTokenMs": 766,
+          "responseChars": 16
+        },
+        "failureStage": null
+      },
+      "answer_chars": 16
+    },
+    "chat_stream": {
+      "status": 200,
+      "first_token_ms": 111,
+      "token_events": 41,
+      "total_ms": 781,
+      "generation": {
+        "tokens": 41,
+        "finishReason": "stop",
+        "durationMs": 720,
+        "tokensPerSecond": 56.91,
+        "firstTokenMs": 59,
+        "responseChars": 211
+      },
+      "error": null
+    },
+    "chat_tool": {
+      "status": 200,
+      "total_ms": 2622,
+      "tools": [
+        {
+          "name": "get_today_schedule",
+          "durationMs": 48,
+          "success": true,
+          "code": null
+        }
+      ],
+      "intent": "schedule_today",
+      "usedInternalDb": true
+    },
+    "metrics_endpoint": {
+      "request_count": 5,
+      "success_count": 5,
+      "error_count": 0,
+      "tokens_generated": 381,
+      "first_token_latency_ms": 872,
+      "tokens_per_second": 13.4,
+      "generation_time_ms": 1119,
+      "started_at": 1788700302.4424171,
+      "model_load_time_ms": 104,
+      "warmup_time_ms": 132,
+      "cold_start_time_ms": 820,
+      "last_first_token_ms": 872,
+      "last_tokens_per_second": 13.4,
+      "uptime_seconds": 12,
+      "state": "MODEL_READY"
+    }
+  }
+}

@@ -1,19 +1,18 @@
-"""Self-hosted local LLM runtime for EduNova AI (llama.cpp, GGUF, CPU).
+"""GGUF weights engine for the EduNova AI INFERENCE service (llama.cpp, CPU).
 
-This module replaces external hosted LLM APIs with a quantized open-source
-model that runs **inside the Python process** of the AI service:
+This module is imported ONLY by the persistent inference service worker
+(``inference/manager.py`` -> ``inference_server.py``). The lightweight
+orchestrator (``main.py``) never imports it; it reaches the model through the
+authenticated HTTP/SSE client in ``agent/remote_llm.py``.
 
-- The model is downloaded once, into ``LOCAL_MODEL_DIR`` (point it at a Render
-  persistent disk to survive restarts), in a background task, verified, then
-  loaded with mmap. A present, valid file is never re-downloaded.
-- ``LocalLlamaLLM`` implements the same interface the AgentEngine's Planner
-  already uses (``probe()`` / ``complete_json()``) plus ``complete_text()``
-  used by the deterministic fast paths — no architecture replacement.
-- JSON output is grammar-constrained (GGUF json-schema -> llama.cpp grammar)
-  so a 0.5B-class model reliably returns parseable decisions on the first try.
-- Generation is single-flight: llama.cpp's KV cache is reused across calls
-  (longest-prefix reuse), which only works safely if one generation runs at a
-  time in a given process. That also matches the small-CPU reality.
+``LocalModelManager`` owns exactly three things and has NO lifecycle state
+machine of its own (the supervised ``ModelManager`` is the single authority):
+
+- download-once into ``LOCAL_MODEL_DIR`` (persistent disk), verify size /
+  GGUF magic / sha256, never re-download a valid cached file;
+- load with mmap (``_load_model``);
+- single-flight generation with real token streaming and grammar-constrained
+  JSON (``generate``).
 
 Download contract (this is where the previous HTTP 404 outage came from):
 - the resolved URL is validated with a preflight HEAD **before** any bytes are
@@ -55,7 +54,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from config import Settings, catalogue_default_file_for_repo, known_model_entry
-from .llm import LLMConfigurationError, LLMResponseError, parse_json_object
+from .llm import LLMResponseError
 
 logger = logging.getLogger("edunova.llm.local")
 
@@ -234,22 +233,15 @@ def _sha256_file(path: Path) -> str:
 
 
 class LocalModelManager:
-    """Owns download + loading lifecycle of the GGUF model file."""
+    """Download-once + mmap load + single-flight generation of the GGUF file."""
 
     def __init__(self, settings: Settings):
         self.settings = settings
-        self.state = "not_started"  # not_started|downloading|loading|warming|ready|error
-        self.last_error: str = ""
-        self.error_detail: str = ""
-        self.error_report: dict[str, Any] | None = None
-        self.started_at: float | None = None
-        self.ready_at: float | None = None
         self.downloaded_bytes: int = 0
         self.file_size_bytes: int = 0
         self.download_attempts: int = 0
         self.last_inference_at: float | None = None
         self.last_generation_metrics: dict[str, Any] | None = None
-        self.last_self_test: dict[str, Any] | None = None
         self.source_check: dict[str, Any] | None = None
         # Self-healing state for a stale/broken LOCAL_MODEL_FILE override (the
         # production incident: the env pinned a filename that was never
@@ -257,7 +249,6 @@ class LocalModelManager:
         self.config_override_rejected: dict[str, Any] | None = None
         self._override_fallback_attempted: bool = False
         self._llama: Any = None
-        self._load_task: asyncio.Task[None] | None = None
         self._gen_lock = asyncio.Lock()
         # Thread-level lock: prevents concurrent llama.cpp inference.
         # The asyncio.Lock above releases when an asyncio task is cancelled
@@ -312,189 +303,41 @@ class LocalModelManager:
 
     # ---------------------------------------------------------- snapshot --
     def snapshot(self, include_source: bool = False) -> dict[str, Any]:
-        """Health view of the model lifecycle.
-
-        ``include_source`` adds the sanitized download URL and error report;
-        it is only enabled on the internally-authenticated health endpoints.
-        """
+        """File/runtime facts for the supervisor (no lifecycle state lives here)."""
         path = self.model_path
         try:
             exists = path.exists()
             on_disk_bytes = path.stat().st_size if exists else 0
         except OSError:
             exists, on_disk_bytes = False, 0
-        warmed = bool(self.last_self_test and self.last_self_test.get("ok"))
-        last_generation = self.last_generation_metrics or {}
         payload: dict[str, Any] = {
-            "state": self.state,
-            "ready": self.is_ready(),
             "modelId": self.settings.local_model_id,
             "fileName": path.name,
             "fileExists": exists,
             "fileSizeBytes": (self.file_size_bytes or on_disk_bytes) or None,
             "expectedSizeBytes": self.settings.local_model_expected_size or None,
             "integrityPinned": bool(self.settings.local_model_expected_sha256),
-            "downloadedBytes": self.downloaded_bytes if self.state == "downloading" else None,
+            "downloadedBytes": self.downloaded_bytes or None,
             "downloadAttempts": self.download_attempts or None,
             "runtimeAvailable": runtime_available(),
             "runtimeVersion": runtime_version(),
-            "inferenceAvailable": self.is_ready(),
-            # The llama.cpp handle embeds the GGUF tokenizer, so both become
-            # true together; warmupComplete only after the real boot inference.
             "modelLoaded": self._llama is not None,
             "tokenizerLoaded": self._llama is not None,
-            "warmupComplete": warmed,
-            "modelLoadMs": None,
-            "warmupMs": (self.last_self_test or {}).get("durationMs"),
-            "coldStartMs": (
-                int((self.ready_at - self.started_at) * 1000)
-                if self.started_at and self.ready_at
-                else None
-            ),
-            "tokensPerSecond": last_generation.get("tokensPerSecond"),
             "lastInferenceAt": _iso(self.last_inference_at),
             "lastGeneration": self.last_generation_metrics,
-            "lastSelfTest": self.last_self_test,
             "contextSize": self.settings.local_model_ctx_size,
             "threads": self.settings.local_model_threads,
             "chatFormat": self.settings.local_model_chat_format,
-            "lastError": self.last_error or None,
-            "errorDetail": self.error_detail[:200] or None,
-            "loadedAt": _iso(self.ready_at),
             "overrideRejected": bool(self.config_override_rejected),
         }
         if include_source:
             payload["sourceUrl"] = self.safe_url
             payload["sourceCheck"] = self.source_check
-            payload["errorReport"] = self.error_report
             payload["configOverrideRejected"] = self.config_override_rejected
         return payload
 
-    def is_ready(self) -> bool:
-        """True only when the model is loaded AND the boot warm-up inference ran.
-
-        READY is published strictly after a real warm-up generation (see
-        ``_load_pipeline``): a model whose warm-up failed or never finished
-        must never answer /health, /ready or /api/ai/ready with 200.
-        """
-        return (
-            self.state == "ready"
-            and self._llama is not None
-            and bool(self.last_self_test and self.last_self_test.get("ok"))
-        )
-
-    @staticmethod
-    def _looks_like_download_error(message: str) -> bool:
-        lowered = message.lower()
-        return any(
-            token in lowered
-            for token in (
-                "download", "http", "tls/ssl", "ssl", "connection", "timed out",
-                "name or service", "getaddrinfo", "network", "read error",
-            )
-        )
-
-    # ------------------------------------------------------------ loading --
-    def ensure_loading(self) -> None:
-        """Start once. Readiness probes and requests may never reload weights."""
-        if self.settings.llm_provider != "local" or not self.settings.local_preload_model:
-            return
-        if self._load_task is not None or self.state != "not_started":
-            return
-        try:
-            self._load_task = asyncio.get_running_loop().create_task(self._load_pipeline())
-        except RuntimeError:
-            return
-
-    async def wait_ready(self, timeout: float) -> None:
-        if self.is_ready():
-            return
-        # Compatibility for callers explicitly awaiting startup; no implicit start.
-        if self._load_task and not self._load_task.done() and timeout > 0:
-            try:
-                await asyncio.wait_for(asyncio.shield(self._load_task), timeout)
-            except asyncio.TimeoutError as exc:
-                raise LLMResponseError("Model startup is not complete", status_code=503, error_type="MODEL_NOT_READY") from exc
-        if not self.is_ready():
-            raise LLMResponseError(self.last_error or "Model startup has not completed", status_code=503,
-                                   error_type="model_unavailable" if self.state == "error" else "MODEL_NOT_READY")
-
-    async def _load_pipeline(self) -> None:
-        self.started_at = time.time()
-        self.error_report = None
-        while True:
-            try:
-                await self._download_if_needed()
-                await self._load_model()
-                self.last_error = ""
-                self.error_detail = ""
-                self.error_report = None
-                # Readiness means real inference works, not merely that the
-                # weights were mmap'd. The state machine stays in "warming"
-                # until a real boot inference completes: /health, /ready and
-                # /api/ai/ready only report READY after this warm-up generated
-                # an actual response (this one-time smoke answer also captures
-                # TTFT/throughput for production diagnostics).
-                if self._llama is None or not hasattr(self._llama, "create_completion"):
-                    raise RuntimeError("Runtime did not expose an inference handle")
-                self.state = "warming"
-                self.last_self_test = await self._self_test_inner()
-                self.state = "ready"
-                self.ready_at = time.time()
-                elapsed = self.ready_at - (self.started_at or self.ready_at)
-                logger.info(
-                    "LOCAL_MODEL_READY model=%s file=%s bytes=%s ctx=%s threads=%s elapsed_s=%.1f",
-                    self.settings.local_model_id,
-                    self.model_path.name,
-                    self.file_size_bytes,
-                    self.settings.local_model_ctx_size,
-                    self.settings.local_model_threads,
-                    elapsed,
-                )
-                return
-            except ModelSourceError as exc:
-                if self._try_recover_invalid_override(exc):
-                    # One transparent retry with the verified catalogue file.
-                    self.started_at = time.time()
-                    continue
-                # Structured, already-safe diagnostics: log the full block so the
-                # Render log answers "which URL returned what" without guesswork.
-                self.state = "error"
-                self.last_error = f"{exc.reason} (status={exc.status})" if exc.status else exc.reason
-                self.error_detail = "download_failed" if exc.stage == "download" else exc.stage
-                self.error_report = exc.report()
-                logger.error("LOCAL_MODEL_ERROR\n%s", exc.render())
-                return
-            except Exception as exc:  # noqa: BLE001 — surfaced through state, never faked
-                self.state = "error"
-                self.last_error = str(exc)[:300] or exc.__class__.__name__
-                if "llama-cpp-python" in self.last_error or "llama_cpp" in self.last_error:
-                    self.error_detail = "runtime_missing"
-                    self.last_error = "llama-cpp-python is not installed in this environment"
-                elif "checksum" in self.last_error.lower() or "sha256" in self.last_error.lower():
-                    self.error_detail = "checksum_mismatch"
-                elif self._looks_like_download_error(self.last_error):
-                    self.error_detail = "download_failed"
-                else:
-                    self.error_detail = "load_failed"
-                self.error_report = {
-                    "code": "MODEL_STARTUP_ERROR",
-                    "model": self.settings.local_model_id,
-                    "url": self.safe_url,
-                    "status": None,
-                    "stage": self.error_detail,
-                    "reason": self.last_error,
-                    "hint": None,
-                    "permanent": self.error_detail in {"runtime_missing"},
-                }
-                logger.error(
-                    "LOCAL_MODEL_ERROR\nMODEL_STARTUP_ERROR\nModel: %s\nURL: %s\nStage: %s\nReason: %s",
-                    self.settings.local_model_id,
-                    self.safe_url,
-                    self.error_detail,
-                    self.last_error,
-                )
-                return
+    def is_loaded(self) -> bool:
+        return self._llama is not None
 
     # ------------------------------------------------------------ source --
     def _source_error(self, **kwargs: Any) -> ModelSourceError:
@@ -575,8 +418,7 @@ class LocalModelManager:
             local_model_sha256="",
             local_model_expected_bytes=0,
         )
-        # Reset lifecycle state so the retry starts from a clean slate.
-        self.state = "not_started"
+        # Reset download bookkeeping so the retry starts from a clean slate.
         self.download_attempts = 0
         self.downloaded_bytes = 0
         self.source_check = None
@@ -764,7 +606,6 @@ class LocalModelManager:
                 hint="Point LOCAL_MODEL_DIR at a writable path (e.g. a Render persistent disk).",
             ) from exc
 
-        self.state = "downloading"
         self.downloaded_bytes = 0
         part = path.with_suffix(path.suffix + ".part")
         timeout = httpx.Timeout(60.0, read=180.0, connect=15.0)
@@ -922,7 +763,6 @@ class LocalModelManager:
             logger.info("LOCAL_MODEL_CHECKSUM_OK sha256=%s…", expected_sha[:12])
 
     async def _load_model(self) -> None:
-        self.state = "loading"
         path = self.model_path
 
         def _load() -> Any:
@@ -971,40 +811,6 @@ class LocalModelManager:
         self._llama = await asyncio.to_thread(_load)
 
     # --------------------------------------------------------- generation --
-    async def self_test(self) -> dict[str, Any]:
-        """Public warm-up probe: waits for READY, then runs a real generation.
-
-        Used by health/diagnostic paths *after* the model is already up; the
-        boot pipeline itself calls ``_self_test_inner`` directly while the
-        state machine is still in ``warming``.
-        """
-        await self.wait_ready(self.settings.local_chat_wait_seconds)
-        return await self._self_test_inner()
-
-    async def _self_test_inner(self) -> dict[str, Any]:
-        """Prove inference actually works (a real forward pass, real tokens).
-
-        This is the boot warm-up generation. It deliberately does NOT go
-        through ``wait_ready``: it runs inside ``_load_pipeline`` before the
-        manager publishes READY, so a wait on the pipeline task would
-        self-deadlock.
-
-        ``allow_empty`` is on purpose: the health signal is "llama.cpp ran a
-        decode without raising", and a model is entitled to emit its stop token
-        immediately. An empty *chat* answer is still an error — that check
-        lives in ``generate``.
-        """
-        started = time.monotonic()
-        text = await self.generate(
-            system_prompt="Answer briefly.", user_prompt="What is 2 + 2?",
-            max_tokens=16, temperature=0, _skip_wait_ready=True,
-        )
-        if not text.strip():
-            raise RuntimeError("Warmup returned no decoded tokens")
-        return {"ok": True, "prompt": "What is 2 + 2?", "answer": text,
-                "complete": True, "durationMs": int((time.monotonic() - started) * 1000),
-                "sampleChars": len(text), "generation": self.last_generation_metrics}
-
     def _render_prompt(self, system_prompt: str, user_prompt: str) -> tuple[str, list[str]]:
         from agent.security import escape_chat_controls
         user_prompt = escape_chat_controls(user_prompt)
@@ -1108,17 +914,16 @@ class LocalModelManager:
         json_schema: dict[str, Any] | None = None,
         allow_empty: bool = False,
         on_token: Any = None,
-        _skip_wait_ready: bool = False,
     ) -> str:
-        """Single-flight generation; returns raw text. Never fabricates output."""
-        # Model warm-up has its own readiness timeout. It is deliberately not
-        # tied to answer generation: once decoding starts, the model is allowed
-        # to reach EOS or its adaptive token cap and return a complete result.
-        # ``_skip_wait_ready`` is internal to the boot warm-up (which runs
-        # inside _load_pipeline BEFORE READY and must not wait on itself).
-        if not _skip_wait_ready:
-            await self.wait_ready(self.settings.local_chat_wait_seconds)
+        """Single-flight generation; returns raw text. Never fabricates output.
 
+        Readiness is enforced by the supervisor (``inference.manager``); this
+        method only refuses to run when no weights are loaded. Once decoding
+        starts the model runs to EOS or its token ceiling — there is no
+        wall-clock cut and no answer shortening.
+        """
+        if self._llama is None:
+            raise LLMResponseError("Model weights are not loaded", status_code=503, error_type="MODEL_NOT_READY")
         temp = self.settings.llm_temperature if temperature is None else temperature
         bounded_max = max(32, min(int(max_tokens), self.settings.llm_max_output_tokens))
 
@@ -1316,129 +1121,3 @@ class LocalModelManager:
                 provider_message="empty completion from local model",
             )
         return text.strip()
-
-
-class LocalLlamaLLM:
-    """Planner-compatible wrapper around the in-process local model."""
-
-    is_local = True
-
-    def __init__(self, settings: Settings, manager: LocalModelManager | None = None):
-        self.settings = settings
-        self.manager = manager or LocalModelManager(settings)
-
-    async def probe(self, deep: bool = False) -> None:
-        """Health check: succeeds only if the model is actually loaded and ready.
-
-        ``deep=True`` additionally runs a real (tiny) generation so the health
-        endpoint can prove inference works, not just that a file was mmapped.
-        """
-        await self.manager.wait_ready(timeout=min(5, self.settings.local_chat_wait_seconds))
-        if deep:
-            await self.manager.self_test()
-
-    async def complete_json(
-        self,
-        *,
-        system_prompt: str,
-        user_prompt: str,
-        retries: int = 2,
-        max_output_tokens: int | None = None,
-        json_schema: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        if self.settings.llm_provider != "local":
-            raise LLMConfigurationError("LocalLlamaLLM used while LLM_PROVIDER is not 'local'")
-        schema = json_schema if json_schema is not None else DECISION_SCHEMA
-        max_tokens = max_output_tokens or min(self.settings.llm_max_output_tokens, 480)
-        last_error: Exception | None = None
-        for attempt in range(retries + 1):
-            try:
-                text = await self.manager.generate(
-                    system_prompt=system_prompt,
-                    user_prompt=user_prompt,
-                    max_tokens=max_tokens,
-                    json_schema=schema,
-                )
-                return parse_json_object(text)
-            except LLMResponseError as exc:
-                last_error = exc
-                # Loading/unavailable states are not retryable inside one call;
-                # the Express layer already retries those with backoff.
-                if exc.error_type in {"model_loading", "model_unavailable"}:
-                    raise
-                if exc.error_type == "invalid_response" and attempt < retries:
-                    logger.info("LOCAL_MODEL_JSON_RETRY attempt=%s", attempt + 1)
-                    continue
-                raise
-        assert last_error is not None
-        raise last_error
-
-    async def complete_text(
-        self,
-        *,
-        system_prompt: str,
-        user_prompt: str,
-        max_output_tokens: int | None = None,
-        temperature: float | None = None,
-        on_token: Any = None,
-    ) -> str:
-        """Plain-text generation used by deterministic fast paths.
-
-        ``on_token`` receives each decoded piece as llama.cpp produces it,
-        which is what makes the SSE stream carry REAL tokens instead of a
-        single blob revealed after generation finishes.
-        """
-        if self.settings.llm_provider != "local":
-            raise LLMConfigurationError("LocalLlamaLLM used while LLM_PROVIDER is not 'local'")
-        max_tokens = max_output_tokens or self.settings.llm_max_output_tokens
-        return await self.manager.generate(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            json_schema=None,
-            on_token=on_token,
-        )
-
-
-def _torch_runtime_module():
-    try:  # ai_engine/ directory on sys.path (uvicorn/tests/direct runs)
-        from inference import torch_runtime as module  # noqa: PLC0415
-
-        return module
-    except ImportError:
-        from ..inference import torch_runtime as module  # noqa: PLC0415
-
-        return module
-
-
-def runtime_available_for(settings: Settings) -> bool:
-    """Runtime-specific availability probe (torch vs llama.cpp vs external)."""
-    if getattr(settings, "local_model_runtime", "torch") == "torch":
-        try:
-            return bool(_torch_runtime_module().runtime_available())
-        except Exception:
-            return False
-    return runtime_available()
-
-
-def runtime_version_for(settings: Settings) -> str:
-    """Runtime-specific version string."""
-    if getattr(settings, "local_model_runtime", "torch") == "torch":
-        try:
-            return str(_torch_runtime_module().runtime_version() or "")
-        except Exception:
-            return ""
-    return runtime_version() or ""
-
-
-def create_llm(settings: Settings) -> tuple[Any, Any]:
-    """The application uses a persistent supervised self-hosted runtime only."""
-    # Invalid external-provider configuration is reported by the supervised
-    # startup as CONFIG_FAILED, so the diagnostic HTTP service stays reachable.
-    from inference.manager import ModelManager
-    manager = ModelManager(settings)
-    if settings.local_model_runtime == "torch":
-        from inference.torch_runtime import TorchChatLLM
-        return TorchChatLLM(settings, manager), manager
-    return LocalLlamaLLM(settings, manager), manager

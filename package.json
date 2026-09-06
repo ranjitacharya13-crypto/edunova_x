@@ -26,14 +26,15 @@
     "desktop:build": "npm run build && electron-builder --config electron-builder.yml",
     "desktop:win": "npm run desktop:build -- --win",
     "desktop:mac": "npm run desktop:build -- --mac",
-    "desktop:linux": "npm run desktop:build -- --linux"
+    "desktop:linux": "npm run desktop:build -- --linux",
+    "start:inference": "node scripts/run-python.js -m uvicorn inference_server:app --port 8002"
   },
   "//dependencies": "Root = desktop launcher + maintenance scripts ONLY. The Express API's dependencies live in server/package.json and MUST NOT be duplicated here: root copies get hoisted into the module resolution path and silently mask a missing server install (this is what produced 'Cannot find module nodemailer' on Render).",
   "dependencies": {
     "bcryptjs": "^3.0.3",
     "mongodb": "^6.10.0"
   },
-  "//devDependencies": "Desktop-app and local-dev tooling ONLY — never needed by the Render backend. Install production deps with `npm install --omit=dev` so electron's binary download is skipped entirely.",
+  "//devDependencies": "Desktop-app and local-dev tooling ONLY \u2014 never needed by the Render backend. Install production deps with `npm install --omit=dev` so electron's binary download is skipped entirely.",
   "devDependencies": {
     "concurrently": "^9.2.1",
     "electron": "^28.2.0",
@@ -45,5 +46,5 @@
   "engines": {
     "node": ">=20.0.0"
   },
-  "//electron-note": "electron@28's postinstall (install.js) checks ONLY the ELECTRON_SKIP_BINARY_DOWNLOAD *environment variable* — npm config keys are ignored. It downloads a ~100MB binary from github.com and hard-fails `npm install` on CI/Render/Cloudflare with 'RequestError: unable to verify the first certificate'. Production installs therefore use `npm install --omit=dev`, which skips electron entirely (see render.yaml and DEPLOYMENT.md). For a full dev install behind a proxy, export ELECTRON_SKIP_BINARY_DOWNLOAD=1 first, or run `npm run desktop:install`."
+  "//electron-note": "electron@28's postinstall (install.js) checks ONLY the ELECTRON_SKIP_BINARY_DOWNLOAD *environment variable* \u2014 npm config keys are ignored. It downloads a ~100MB binary from github.com and hard-fails `npm install` on CI/Render/Cloudflare with 'RequestError: unable to verify the first certificate'. Production installs therefore use `npm install --omit=dev`, which skips electron entirely (see render.yaml and DEPLOYMENT.md). For a full dev install behind a proxy, export ELECTRON_SKIP_BINARY_DOWNLOAD=1 first, or run `npm run desktop:install`."
 }

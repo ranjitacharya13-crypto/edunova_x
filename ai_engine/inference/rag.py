@@ -110,6 +110,73 @@ class Embedder:
         return [v/norm for v in values]
 
 
+class RemoteEmbedder:
+    """Embeddings computed by the inference service (PyTorch lives THERE).
+
+    The orchestrator never imports torch: it posts texts to
+    ``POST {inference_url}/embeddings`` with the internal token and receives
+    vectors + the embedding-space fingerprint. Same interface as ``Embedder``.
+    """
+
+    def __init__(self, inference_url: str, token: str = "", timeout: float = 60.0):
+        import httpx
+        self._httpx = httpx
+        self.base_url = str(inference_url or "").rstrip("/")
+        self.token = token
+        self.timeout = timeout
+        self.model_name = "remote"
+        self.backend = "remote-transformer"
+        self.fingerprint = "remote:unknown"
+        self._load_error = None
+        self._lock = threading.RLock()
+
+    def _headers(self):
+        headers = {"Content-Type": "application/json"}
+        if self.token:
+            headers["X-AI-Internal-Token"] = self.token
+        return headers
+
+    def is_ready(self):
+        return bool(self.base_url) and self.fingerprint != "remote:unknown"
+
+    def load(self):
+        if not self.base_url:
+            self._load_error = "AI_INFERENCE_URL is not configured"
+            raise RagError(self._load_error)
+        try:
+            with self._httpx.Client(timeout=self.timeout) as client:
+                response = client.post(f"{self.base_url}/embeddings", json={"texts": ["edunova"]}, headers=self._headers())
+            if response.status_code >= 400:
+                detail = response.json().get("detail", {}) if response.content else {}
+                self._load_error = str(detail.get("message") or f"HTTP {response.status_code}")[:200]
+                raise RagError(self._load_error)
+            data = response.json()
+            self.fingerprint = str(data.get("fingerprint") or "remote:unknown")
+            self.model_name = self.fingerprint.split(":")[2] if self.fingerprint.count(":") >= 2 else "remote"
+            self._load_error = None
+        except RagError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            self._load_error = f"Embedding service unreachable ({type(exc).__name__})"
+            raise RagError(self._load_error) from exc
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        if not self.is_ready():
+            self.load()
+        vectors: list[list[float]] = []
+        with self._lock, self._httpx.Client(timeout=self.timeout) as client:
+            for start in range(0, len(texts), 32):
+                response = client.post(f"{self.base_url}/embeddings", json={"texts": texts[start:start + 32]}, headers=self._headers())
+                if response.status_code >= 400:
+                    detail = response.json().get("detail", {}) if response.content else {}
+                    raise RagError(str(detail.get("message") or f"Embedding service HTTP {response.status_code}")[:200])
+                data = response.json()
+                if data.get("fingerprint") and data["fingerprint"] != self.fingerprint:
+                    raise RagError("Embedding index mismatch; reindex required")
+                vectors.extend(data.get("vectors", []))
+        return vectors
+
+
 class RagIndex:
     def __init__(self, embedder: Embedder | None = None, persist_dir: str = ""):
         self.embedder = embedder or Embedder()

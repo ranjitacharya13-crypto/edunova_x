@@ -16,8 +16,18 @@
 #              +----------+-----------+
 #              |                      |
 #              v                      v
-#        MongoDB Atlas         Python FastAPI AI   [Render: edunova-ai]
-#                                (via AI_ENGINE_URL)
+#        MongoDB Atlas      Python FastAPI AI orchestrator  [Render: edunova-ai]
+#                             (via AI_ENGINE_URL; NO model, ~150 MiB)
+#                                        |
+#                                        |  HTTPS + X-AI-Internal-Token
+#                                        v  (AI_INFERENCE_URL)
+#                           Persistent AI inference service [Render: edunova-inference]
+#                             llama.cpp GGUF LLM + PyTorch embeddings, 2 GB RAM
+#
+# RAM BUDGET (see each service block for the derivation)
+#   edunova-api        Node/Express, no LLM            ~150 MiB  -> 512 MiB plan OK
+#   edunova-ai         FastAPI orchestrator, no LLM    ~150 MiB  -> 512 MiB plan OK
+#   edunova-inference  model 397 MB + runtime          ~1.3 GiB  -> 2 GB plan REQUIRED
 #
 # NOTES
 #   - There is NO Render static-site frontend. The frontend stays on Cloudflare.
@@ -105,145 +115,48 @@ services:
         value: "false"
 
   # ---------------------------------------------------------------------------
-  # 2) edunova-ai — FastAPI autonomous learning/research agent
+  # 2) edunova-ai — FastAPI AI ORCHESTRATOR (Layer A). LIGHTWEIGHT: NO MODEL.
   #    rootDir: ai_engine  ->  `main:app` resolves to ai_engine/main.py
   #
-  #    SELF-HOSTED MODEL: a quantized open-source GGUF model (Qwen2.5-0.5B-
-  #    Instruct Q4_K_M, Apache-2.0) runs in-process through llama.cpp
-  #    (llama-cpp-python) — LOCAL_MODEL_RUNTIME=llama_cpp. No OpenAI/Groq/
-  #    Gemini/Anthropic/OpenRouter keys are used — the reasoning model is
-  #    self-hosted. The PyTorch CPU wheel is still installed by the build
-  #    command so the optional LOCAL_MODEL_RUNTIME=torch path works without a
-  #    rebuild, but the GGUF model is always loaded by llama.cpp, never by
-  #    PyTorch.
+  #    ROOT-CAUSE FIX (memory): the model used to be loaded INSIDE this
+  #    process, and the deployed container had 512 MiB while model + server
+  #    needed ~1100 MiB ("Model + server ML need at least 1100 MiB; container
+  #    has 512 MiB"). The model now lives ONLY in edunova-inference (below).
+  #    This service does intent routing, the authenticated ToolRegistry, RAG
+  #    orchestration, web search, conversation memory and SSE relay. It never
+  #    imports llama_cpp or torch (requirements-orchestrator.txt).
   #
-  #    RUNTIME-MISSING INCIDENT (fixed here): the deployed service was failing
-  #    with `LOCAL_MODEL_RUNTIME_MISSING runtime=llama_cpp` because the
-  #    llama.cpp runtime lived in an OPTIONAL requirements-llamacpp.txt file
-  #    that the deployment never installed, while requirements.txt did not
-  #    contain llama-cpp-python. llama-cpp-python is now part of the base
-  #    ai_engine/requirements.txt (pinned to a version with a PREBUILT CPU
-  #    wheel on the abetlen extra index — no C++ compile at deploy time), the
-  #    build command below fails loudly if `import llama_cpp` does not work,
-  #    and the start command re-verifies it before uvicorn binds.
-  #
-  #    ---- SIZING (read before changing `plan`) --------------------------------
-  #    Model:   Qwen2.5-0.5B-Instruct GGUF Q4_K_M (~397 MB file, Apache-2.0)
-  #    Runtime: llama.cpp CPU (mmap; weights are never duplicated in RAM).
-  #             Estimated RSS ≈ 700 MB at LOCAL_MODEL_CTX=6144 (weights + KV
-  #             cache + compute buffers). The service auto-lowers context to
-  #             4096 when the container has <=768 MB so a small plan still
-  #             boots.
-  #
-  #    Render instance types:  Free 512 MB / 0.1 CPU  •  Starter 512 MB / 0.5 CPU
-  #                            Standard 2 GB / 1 CPU  •  Pro 4 GB / 2 CPU
-  #
-  #    => STANDARD (2 GB / 1 CPU) is the safe minimum for Qwen2.5-0.5B at full
-  #       context; on 512 MB plans the auto-lowered 4096 context fits but has
-  #       little OOM headroom (use the SmolLM2-360M catalogue option instead
-  #       for comfortable 512 MB operation).
-  #
-  #    PERSISTENT DISK: the weights are cached on the disk mounted below, so
-  #    the download happens ONCE (first boot) instead of on every restart or
-  #    deploy — this is the cold-start strategy: disk-cached weights => warm
-  #    boots skip the download entirely.
-  #
-  #    WARMING: /health binds immediately (status: live); the model is loaded
-  #    and warmed in the background at startup. /api/ai/ready returns 200 only
-  #    after load + warm-up inference. edunova-api queues streaming chat
-  #    requests (AI_WARM_QUEUE_MAX_MS) while the model prepares — students see
-  #    "EduNova AI is preparing…" and their message is answered automatically.
+  #    SIZING: ~120–180 MiB RSS  =>  fits a 512 MiB plan with headroom.
   # ---------------------------------------------------------------------------
   - type: web
     name: edunova-ai
     runtime: python
-    plan: standard
+    plan: starter
     branch: main
     rootDir: ai_engine
-    # CPU wheels for PyTorch are installed from the official CPU index BEFORE
-    # requirements.txt so pip never resolves the default (CUDA, ~3GB) wheel.
-    # The llama.cpp runtime (llama-cpp-python, prebuilt CPU wheel) comes from
-    # requirements.txt itself, so `pip install -r requirements.txt` is the
-    # single install step that makes BOTH runtimes available.
-    # torch is pinned to a CPU wheel that matches the transformers pin in
-    # requirements.txt. This pair is load-bearing: transformers>=4.56 refuses
-    # to load .bin checkpoints unless torch>=2.6, and transformers 5.x dropped
-    # `torch_dtype=`. The previous open ranges let a rebuild silently resolve a
-    # newer transformers against torch 2.4, which broke from_pretrained and
-    # left the model permanently un-READY.
-    # The trailing `python -c "import llama_cpp; ..."` is the deployment's
-    # runtime verification: a build where llama-cpp-python failed to install
-    # (or resolved to a source build that produced no importable module) fails
-    # HERE, loudly, instead of serving LOCAL_MODEL_RUNTIME_MISSING at runtime.
-    buildCommand: pip install "torch==2.8.0" --index-url https://download.pytorch.org/whl/cpu && pip install -r requirements.txt && python verify_runtime.py
-    # $PORT is injected by Render; binding 0.0.0.0 is required.
-    # Exactly ONE uvicorn worker: the llama.cpp model lives in this process and
-    # generation is single-flight. A second worker would double the RAM.
-    # The start command re-verifies the runtime import before serving traffic.
-    startCommand: python -c "import llama_cpp; print('llama_cpp runtime OK')" && uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
+    buildCommand: pip install -r requirements-orchestrator.txt && python verify_runtime.py --orchestrator
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
     healthCheckPath: /health
     autoDeploy: true
-    disk:
-      # Model weights + HF cache live on the persistent disk => downloaded once
-      # at first boot, not on every deploy/cold start (cold-start strategy).
-      name: edunova-model-cache
-      mountPath: /var/data/models
-      sizeGB: 4
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.9"
       - key: CORS_ORIGIN
         value: https://edunova-x.ranjitacharya13.workers.dev
-      # ---- Self-hosted local model (the AI brain) ---------------------------
       - key: LLM_PROVIDER
         value: local
-      - key: LOCAL_MODEL_RUNTIME
-        value: llama_cpp
-      # llama.cpp GGUF runtime. The (repo, file) pair below is a VERIFIED
-      # catalogue entry (ai_engine/config.py -> KNOWN_MODELS): the file exists
-      # on HuggingFace, size + sha256 are integrity-pinned, chat format is
-      # ChatML. The GGUF is downloaded ONCE at service startup into the
-      # persistent disk below (never during a user request) and warmed to
-      # READY with a real inference before /api/ai/ready returns 200.
-      - key: LOCAL_MODEL_REPO
-        value: bartowski/Qwen2.5-0.5B-Instruct-GGUF
-      - key: LOCAL_MODEL_FILE
-        value: Qwen2.5-0.5B-Instruct-Q4_K_M.gguf
-      # Used only by a LOCAL_MODEL_RUNTIME=torch deployment (ignored by
-      # llama_cpp): auto => adaptive compute picks int8/bf16/fp32 from the
-      # real container RAM.
-      # - key: LOCAL_MODEL_DTYPE
-      #   value: auto
-      # - key: LOCAL_MODEL_DEVICE
-      #   value: auto
-      # GGUF weights cache on the persistent disk.
-      - key: LOCAL_MODEL_DIR
-        value: /var/data/models
-      - key: LOCAL_MODEL_CTX
-        value: "6144"
-      # llama.cpp CPU threads. The code auto-lowers context to 4096 on
-      # <=768 MB containers and clamps threads to sane bounds at runtime.
-      - key: LOCAL_MODEL_THREADS
-        value: "2"
-      - key: LOCAL_PRELOAD_MODEL
-        value: "true"
-      # AI-service-side queue budget while the model warms. It never cuts an
-      # answer; the API gateway holds streaming requests separately.
-      - key: MODEL_STARTUP_TIMEOUT
-        value: "300"
-      - key: MODEL_INFERENCE_IDLE_TIMEOUT
-        value: "90"
-      - key: LOCAL_MODEL_DOWNLOAD_TIMEOUT
-        value: "1800"
-      # RAG retrieval (semantic learning-material index; user-scoped).
+      # Public HTTPS URL of edunova-inference (set after its first deploy).
+      - key: AI_INFERENCE_URL
+        sync: false
+      # Per-request ceiling for one inference call (network safety net only;
+      # generation is never cut by this — see inference service).
+      - key: AI_INFERENCE_REQUEST_TIMEOUT
+        value: "600"
+      # RAG orchestration: embeddings are computed by the inference service.
       - key: RAG_ENABLED
         value: "true"
-      # Explicit PyTorch semantic embeddings; failures are surfaced, not silently
-      # replaced with incompatible lexical vectors.
       - key: RAG_EMBEDDING_MODEL
         value: sentence-transformers/all-MiniLM-L6-v2
-      # Quality ceiling. The router adaptively selects 128–1800 tokens by task;
-      # no elapsed-time logic reduces this budget during generation.
       - key: LLM_MAX_OUTPUT_TOKENS
         value: "2048"
       - key: LLM_TEMPERATURE
@@ -255,18 +168,15 @@ services:
       # Public HTTPS URL of edunova-api, required for real authenticated tools.
       - key: APP_BACKEND_URL
         sync: false
-      # Required: same random value as on edunova-api.
+      # Required: same random value on edunova-api, edunova-ai, edunova-inference.
       - key: AI_INTERNAL_TOKEN
         sync: false
       - key: AI_REQUIRE_INTERNAL_TOKEN
         value: "true"
-      # ---- Bounded autonomous execution (tuned for shared CPU) --------------
       - key: MAX_AGENT_ITERATIONS
         value: "3"
       - key: MAX_TOOL_CALLS
         value: "8"
-      # Retained for bounded autonomous-loop compatibility; model generation
-      # itself is never stopped based on this performance target.
       - key: MAX_AGENT_RUNTIME_SECONDS
         value: "300"
       - key: WEB_SEARCH_MAX_RESULTS
@@ -277,14 +187,103 @@ services:
         value: "200000"
       - key: WEB_MAX_EXTRACTED_CHARS
         value: "45000"
-      # Must fit inside LOCAL_MODEL_CTX (~3 chars/token) together with the
-      # system prompt and LLM_MAX_OUTPUT_TOKENS, or every data-rich turn gets
-      # trimmed by the runtime context guard.
+      # Must fit inside LOCAL_MODEL_CTX (~3 chars/token) with system prompt +
+      # LLM_MAX_OUTPUT_TOKENS (mirror the value on edunova-inference).
       - key: AGENT_MAX_CONTEXT_CHARS
         value: "12000"
+      - key: LOCAL_MODEL_CTX
+        value: "6144"
 
   # ---------------------------------------------------------------------------
-  # 3) edunova-signal — OPTIONAL standalone WebRTC signaling service.
+  # 3) edunova-inference — PERSISTENT SELF-HOSTED AI INFERENCE SERVICE (Layer B)
+  #    rootDir: ai_engine  ->  `inference_server:app`
+  #
+  #    THE ONLY PROCESS THAT LOADS THE MODEL. Lifecycle (once, at startup):
+  #      resource check -> runtime check -> GGUF validation -> load -> warmup
+  #      ("What is 2 + 2?") -> independent inference test -> MODEL_READY
+  #    If the container cannot hold the model the service fails fast with
+  #    MODEL_RESOURCE_INSUFFICIENT {required_mb, available_mb, recommended_mb}
+  #    and stays MODEL_FAILED (never an infinite "preparing").
+  #
+  #    ---- SIZING (documented numbers; the service verifies them at boot) ----
+  #    Model file:      Qwen2.5-0.5B-Instruct GGUF Q4_K_M  ≈ 397 MB (Apache-2.0)
+  #    Runtime:         llama.cpp CPU (mmap) via llama-cpp-python 0.3.35
+  #    Requirement at LOCAL_MODEL_CTX=6144 (inference/resources.py):
+  #        weights 398 MiB + KV cache 80 MiB + llama runtime 160 MiB
+  #        + FastAPI/uvicorn 140 MiB + PyTorch embeddings 260 MiB
+  #        + safety margin 128 MiB  = 1166 MiB REQUIRED
+  #        (906 MiB with RAG_ENABLED=false / lexical embeddings)
+  #    Recommended RAM: 2048 MiB  •  CPU: 1 dedicated core (2 threads)
+  #    Render:  Free/Starter 512 MB (WILL FAIL the resource check)
+  #             Standard 2 GB / 1 CPU  <= minimum that fits  •  Pro 4 GB / 2 CPU
+  #    Model RAM 512 MiB plan: NOT SUPPORTED. That is the incident.
+  #
+  #    PERSISTENT DISK: weights are cached at /var/data/models, downloaded once.
+  # ---------------------------------------------------------------------------
+  - type: web
+    name: edunova-inference
+    runtime: python
+    plan: standard
+    branch: main
+    rootDir: ai_engine
+    # CPU torch first so pip never resolves the CUDA wheel; requirements.txt
+    # then installs llama-cpp-python (prebuilt CPU wheel) + the embedding
+    # stack. verify_runtime.py fails the BUILD if `import llama_cpp` or
+    # `import torch` is broken.
+    buildCommand: pip install "torch==2.8.0" --index-url https://download.pytorch.org/whl/cpu && pip install -r requirements.txt && python verify_runtime.py
+    # Exactly ONE uvicorn worker: the model lives in this process (supervised
+    # native worker) and generation is single-flight. The runtime is
+    # re-verified before the port binds.
+    startCommand: python verify_runtime.py && uvicorn inference_server:app --host 0.0.0.0 --port $PORT --workers 1
+    healthCheckPath: /health
+    autoDeploy: true
+    disk:
+      name: edunova-model-cache
+      mountPath: /var/data/models
+      sizeGB: 4
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: LLM_PROVIDER
+        value: local
+      - key: LOCAL_MODEL_RUNTIME
+        value: llama_cpp
+      # VERIFIED catalogue entry (ai_engine/config.py -> KNOWN_MODELS): size +
+      # sha256 integrity-pinned, ChatML. Downloaded once to the persistent disk.
+      - key: LOCAL_MODEL_REPO
+        value: bartowski/Qwen2.5-0.5B-Instruct-GGUF
+      - key: LOCAL_MODEL_FILE
+        value: Qwen2.5-0.5B-Instruct-Q4_K_M.gguf
+      - key: LOCAL_MODEL_DIR
+        value: /var/data/models
+      - key: LOCAL_MODEL_CTX
+        value: "6144"
+      - key: LOCAL_MODEL_THREADS
+        value: "2"
+      - key: MODEL_STARTUP_TIMEOUT
+        value: "300"
+      - key: MODEL_INFERENCE_IDLE_TIMEOUT
+        value: "90"
+      - key: LOCAL_MODEL_DOWNLOAD_TIMEOUT
+        value: "1800"
+      # PyTorch sentence embeddings served on POST /embeddings for the
+      # orchestrator's RAG index (loaded after the LLM is READY).
+      - key: RAG_ENABLED
+        value: "true"
+      - key: RAG_EMBEDDING_MODEL
+        value: sentence-transformers/all-MiniLM-L6-v2
+      - key: LLM_MAX_OUTPUT_TOKENS
+        value: "2048"
+      - key: LLM_TEMPERATURE
+        value: "0.2"
+      # Required: same random value as on edunova-api and edunova-ai.
+      - key: AI_INTERNAL_TOKEN
+        sync: false
+      - key: AI_REQUIRE_INTERNAL_TOKEN
+        value: "true"
+
+  # ---------------------------------------------------------------------------
+  # 4) edunova-signal — OPTIONAL standalone WebRTC signaling service.
   #    Disabled by default: server/server.js already provides Socket.IO
   #    signaling and chat on the API service. Uncomment ONLY if you want
   #    signaling isolated, and then point VITE_SIGNAL_URL at this service
