@@ -238,7 +238,7 @@ class LocalModelManager:
 
     def __init__(self, settings: Settings):
         self.settings = settings
-        self.state = "not_started"  # not_started|downloading|loading|ready|error
+        self.state = "not_started"  # not_started|downloading|loading|warming|ready|error
         self.last_error: str = ""
         self.error_detail: str = ""
         self.error_report: dict[str, Any] | None = None
@@ -323,6 +323,8 @@ class LocalModelManager:
             on_disk_bytes = path.stat().st_size if exists else 0
         except OSError:
             exists, on_disk_bytes = False, 0
+        warmed = bool(self.last_self_test and self.last_self_test.get("ok"))
+        last_generation = self.last_generation_metrics or {}
         payload: dict[str, Any] = {
             "state": self.state,
             "ready": self.state == "ready",
@@ -337,6 +339,19 @@ class LocalModelManager:
             "runtimeAvailable": runtime_available(),
             "runtimeVersion": runtime_version(),
             "inferenceAvailable": self.state == "ready" and self._llama is not None,
+            # The llama.cpp handle embeds the GGUF tokenizer, so both become
+            # true together; warmupComplete only after the real boot inference.
+            "modelLoaded": self._llama is not None,
+            "tokenizerLoaded": self._llama is not None,
+            "warmupComplete": warmed,
+            "modelLoadMs": None,
+            "warmupMs": (self.last_self_test or {}).get("durationMs"),
+            "coldStartMs": (
+                int((self.ready_at - self.started_at) * 1000)
+                if self.started_at and self.ready_at
+                else None
+            ),
+            "tokensPerSecond": last_generation.get("tokensPerSecond"),
             "lastInferenceAt": _iso(self.last_inference_at),
             "lastGeneration": self.last_generation_metrics,
             "lastSelfTest": self.last_self_test,
@@ -354,6 +369,19 @@ class LocalModelManager:
             payload["errorReport"] = self.error_report
             payload["configOverrideRejected"] = self.config_override_rejected
         return payload
+
+    def is_ready(self) -> bool:
+        """True only when the model is loaded AND the boot warm-up inference ran.
+
+        READY is published strictly after a real warm-up generation (see
+        ``_load_pipeline``): a model whose warm-up failed or never finished
+        must never answer /health, /ready or /api/ai/ready with 200.
+        """
+        return (
+            self.state == "ready"
+            and self._llama is not None
+            and bool(self.last_self_test and self.last_self_test.get("ok"))
+        )
 
     @staticmethod
     def _looks_like_download_error(message: str) -> bool:
@@ -445,17 +473,21 @@ class LocalModelManager:
             try:
                 await self._download_if_needed()
                 await self._load_model()
-                self.ready_at = time.time()
-                elapsed = self.ready_at - (self.started_at or self.ready_at)
-                self.state = "ready"
                 self.last_error = ""
                 self.error_detail = ""
                 self.error_report = None
                 # Readiness means real inference works, not merely that the
-                # weights were mmap'd. This one-time generated smoke answer also
-                # captures TTFT/throughput for production diagnostics.
+                # weights were mmap'd. The state machine stays in "warming"
+                # until a real boot inference completes: /health, /ready and
+                # /api/ai/ready only report READY after this warm-up generated
+                # an actual response (this one-time smoke answer also captures
+                # TTFT/throughput for production diagnostics).
                 if self._llama is not None and hasattr(self._llama, "create_completion"):
-                    self.last_self_test = await self.self_test()
+                    self.state = "warming"
+                    self.last_self_test = await self._self_test_inner()
+                self.state = "ready"
+                self.ready_at = time.time()
+                elapsed = self.ready_at - (self.started_at or self.ready_at)
                 logger.info(
                     "LOCAL_MODEL_READY model=%s file=%s bytes=%s ctx=%s threads=%s elapsed_s=%.1f",
                     self.settings.local_model_id,
@@ -986,7 +1018,22 @@ class LocalModelManager:
 
     # --------------------------------------------------------- generation --
     async def self_test(self) -> dict[str, Any]:
+        """Public warm-up probe: waits for READY, then runs a real generation.
+
+        Used by health/diagnostic paths *after* the model is already up; the
+        boot pipeline itself calls ``_self_test_inner`` directly while the
+        state machine is still in ``warming``.
+        """
+        await self.wait_ready(self.settings.local_chat_wait_seconds)
+        return await self._self_test_inner()
+
+    async def _self_test_inner(self) -> dict[str, Any]:
         """Prove inference actually works (a real forward pass, real tokens).
+
+        This is the boot warm-up generation. It deliberately does NOT go
+        through ``wait_ready``: it runs inside ``_load_pipeline`` before the
+        manager publishes READY, so a wait on the pipeline task would
+        self-deadlock.
 
         ``allow_empty`` is on purpose: the health signal is "llama.cpp ran a
         decode without raising", and a model is entitled to emit its stop token
@@ -1002,6 +1049,7 @@ class LocalModelManager:
             user_prompt="What is ML?",
             max_tokens=256,
             temperature=0.2,
+            _skip_wait_ready=True,
         )
         return {
             "ok": True,
@@ -1114,12 +1162,16 @@ class LocalModelManager:
         json_schema: dict[str, Any] | None = None,
         allow_empty: bool = False,
         on_token: Any = None,
+        _skip_wait_ready: bool = False,
     ) -> str:
         """Single-flight generation; returns raw text. Never fabricates output."""
         # Model warm-up has its own readiness timeout. It is deliberately not
         # tied to answer generation: once decoding starts, the model is allowed
         # to reach EOS or its adaptive token cap and return a complete result.
-        await self.wait_ready(self.settings.local_chat_wait_seconds)
+        # ``_skip_wait_ready`` is internal to the boot warm-up (which runs
+        # inside _load_pipeline BEFORE READY and must not wait on itself).
+        if not _skip_wait_ready:
+            await self.wait_ready(self.settings.local_chat_wait_seconds)
 
         temp = self.settings.llm_temperature if temperature is None else temperature
         bounded_max = max(32, min(int(max_tokens), self.settings.llm_max_output_tokens))

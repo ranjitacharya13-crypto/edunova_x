@@ -472,6 +472,13 @@ class _FakeLlama:
         }
 
 
+class _FailingWarmupLlama(_FakeLlama):
+    """Llama handle whose decode raises — warm-up must not report READY."""
+
+    def create_completion(self, prompt=None, max_tokens=None, grammar=None, stop=None, **kwargs):
+        raise RuntimeError("simulated decode failure")
+
+
 def _install_fake_llama_cpp():
     module = types.ModuleType("llama_cpp")
     module.Llama = _FakeLlama
@@ -525,6 +532,56 @@ class LocalModelManagerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("What is ML?", call["prompt"])
             self.assertIsNotNone(call["grammar"], "decision schema must force valid JSON")
             self.assertTrue(_FakeGrammar.captured)
+
+    async def test_readiness_is_published_only_after_warmup_generation(self):
+        """READY (state, is_ready, warmupComplete) requires a real warm-up run."""
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = self._settings_with_dir(tmp)
+            self._make_model_bytes(tmp)
+            manager = LocalModelManager(settings)
+            with _install_fake_llama_cpp():
+                manager.ensure_loading()
+                await manager.wait_ready(timeout=30)
+            self.assertEqual(manager.state, "ready")
+            self.assertTrue(manager.is_ready())
+            snap = manager.snapshot()
+            self.assertTrue(snap["ready"])
+            self.assertTrue(snap["modelLoaded"])
+            self.assertTrue(snap["tokenizerLoaded"])
+            self.assertTrue(snap["warmupComplete"])
+            self.assertIsNotNone(snap["lastSelfTest"])
+            self.assertTrue(snap["lastSelfTest"]["ok"])
+
+    async def test_failed_warmup_never_reports_ready(self):
+        """A model that loads but cannot decode must stay NOT ready + honest."""
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = self._settings_with_dir(tmp)
+            self._make_model_bytes(tmp)
+            manager = LocalModelManager(settings)
+            with patch.dict(
+                sys.modules,
+                {
+                    "llama_cpp": types.SimpleNamespace(
+                        Llama=_FailingWarmupLlama,
+                        LlamaGrammar=_FakeGrammar,
+                    ),
+                    "llama_cpp.llama": types.SimpleNamespace(
+                        Llama=_FailingWarmupLlama,
+                        LlamaGrammar=_FakeGrammar,
+                    ),
+                },
+            ):
+                manager.ensure_loading()
+                with self.assertRaises(LLMResponseError) as ctx:
+                    await manager.wait_ready(timeout=30)
+            self.assertEqual(manager.state, "error")
+            self.assertFalse(manager.is_ready())
+            snap = manager.snapshot()
+            self.assertFalse(snap["ready"])
+            self.assertTrue(snap["modelLoaded"], "weights loaded, only warm-up failed")
+            self.assertFalse(snap["warmupComplete"])
+            self.assertIn("failed during generation", snap["lastError"])
+            self.assertIn(ctx.exception.error_type, {"model_unavailable", "model_loading"})
 
     async def test_wait_ready_timeout_maps_to_model_loading(self):
         with tempfile.TemporaryDirectory() as tmp:
