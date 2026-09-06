@@ -43,6 +43,8 @@ class ApplicationToolClient:
             headers["X-AI-Internal-Token"] = self.settings.ai_internal_token
         if user_id:
             headers["X-User-Id"] = user_id
+        if (context or {}).get("request_id"):
+            headers["X-Request-Id"] = str(context["request_id"])[:80]
 
         payload = {
             "tool": tool_name,
@@ -50,29 +52,24 @@ class ApplicationToolClient:
             "conversationId": conversation_id,
         }
 
+        from ..llm import LLMResponseError
+        timeout = 45 if tool_name == "get_learning_documents" else 10
         try:
-            async with httpx.AsyncClient(timeout=8.0) as client:
-                response = await client.post(
-                    f"{self.backend_url}/api/ai/internal/tools",
-                    headers=headers,
-                    json=payload,
-                )
-                if response.status_code == 200:
-                    data = response.json()
-                    if data.get("success"):
-                        return data.get("data", data)
-                    return {"error": data.get("error", "Internal tool returned failure")}
-                safe_error = "EduNova backend rejected the tool request"
-                try:
-                    safe_error = str(response.json().get("error") or safe_error)[:300]
-                except Exception:
-                    pass
-                raise RuntimeError(f"{safe_error} (HTTP {response.status_code})")
-        except RuntimeError:
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+                response = await client.post(f"{self.backend_url}/api/ai/internal/tools", headers=headers, json=payload)
+                data = response.json()
+                if response.status_code == 200 and data.get("success") is True:
+                    return data.get("data", data)
+                code = data.get("code") or ("AUTH_FAILED" if response.status_code in {401, 403} else "DATABASE_FAILED")
+                detail = data.get("error")
+                message = detail.get("message") if isinstance(detail, dict) else detail
+                raise LLMResponseError(str(message or "EduNova tool failed")[:300], status_code=response.status_code, error_type=code)
+        except LLMResponseError:
             raise
+        except httpx.TimeoutException as exc:
+            raise LLMResponseError("EduNova data request timed out", status_code=504, error_type="DATABASE_FAILED") from exc
         except Exception as exc:
-            logger.warning("Remote application tool %s unavailable: %s", tool_name, type(exc).__name__)
-            raise RuntimeError("EduNova application data is temporarily unavailable") from exc
+            raise LLMResponseError("EduNova data request failed", status_code=503, error_type="DATABASE_FAILED") from exc
 
 
 
@@ -101,6 +98,10 @@ def build_internal_tools(settings: Settings) -> list[ToolDefinition]:
         )
 
     tools = [
+        _make_tool("get_classes", "Get the authenticated user's classes.", {"type": "object", "properties": {}, "additionalProperties": False}),
+        _make_tool("get_ar_lessons", "Find published AR lessons by subject/topic before offering Explain in AR.", {"type": "object", "properties": {"subject": {"type": "string", "maxLength": 100}, "topic": {"type": "string", "maxLength": 200}}, "additionalProperties": False}),
+        _make_tool("get_ar_context", "Get a published AR object and selected hotspot's educational context, not camera data.", {"type": "object", "properties": {"lessonId": {"type": "string", "maxLength": 100}, "hotspotId": {"type": "string", "maxLength": 60}}, "required": ["lessonId"], "additionalProperties": False}),
+        _make_tool("open_feature", "Offer a safe application navigation action. IDs must come from authorized tools; never invent them.", {"type": "object", "properties": {"view": {"type": "string", "enum": ["home", "timetable", "syllabus", "study", "live", "quiz", "progress", "study-plans", "ar", "assignments"]}, "id": {"type": "string", "maxLength": 100}}, "required": ["view"], "additionalProperties": False}),
         _make_tool(
             name="get_student_profile",
             description="Retrieve the authenticated student's profile, subjects, and grade level from EduNova database.",
@@ -324,7 +325,9 @@ def build_internal_tools(settings: Settings) -> list[ToolDefinition]:
                 "properties": {
                     "title": {"type": "string", "maxLength": 200},
                     "subject": {"type": "string", "maxLength": 100},
-                    "questions": {"type": "array"},
+                    "questions": {"type": "array", "maxItems": 10},
+                    "topic": {"type": "string", "maxLength": 200},
+                    "arLessonId": {"type": "string", "maxLength": 24},
                 },
                 "required": ["title", "subject", "questions"],
                 "additionalProperties": False,
@@ -340,7 +343,9 @@ def build_internal_tools(settings: Settings) -> list[ToolDefinition]:
                 "properties": {
                     "title": {"type": "string", "maxLength": 200},
                     "subject": {"type": "string", "maxLength": 100},
-                    "questions": {"type": "array"},
+                    "questions": {"type": "array", "maxItems": 10},
+                    "topic": {"type": "string", "maxLength": 200},
+                    "arLessonId": {"type": "string", "maxLength": 24},
                 },
                 "required": ["title", "subject", "questions"],
                 "additionalProperties": False,

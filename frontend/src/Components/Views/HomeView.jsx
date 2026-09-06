@@ -94,6 +94,8 @@ export default function HomeView({ user, setView }) {
   // =========================
   // STUDENT STATE
   // =========================
+  const [studentError, setStudentError] = useState("");
+  const [teacherError, setTeacherError] = useState("");
   const [studentPeriods, setStudentPeriods] = useState([]);
   const [studentLoading, setStudentLoading] = useState(true);
 
@@ -117,6 +119,7 @@ export default function HomeView({ user, setView }) {
   useEffect(() => {
     if (isStudent) {
       getTodayTimetable().then((res) => {
+        setStudentError(res?.error || "");
         setStudentPeriods(res?.timetable || []);
         setStudentLoading(false);
       });
@@ -129,6 +132,7 @@ export default function HomeView({ user, setView }) {
   useEffect(() => {
     if (isTeacher) {
       getTodayTeacherTimetable().then((res) => {
+        setTeacherError(res?.error || "");
         setTeacherPeriods(res?.timetable || []);
         setTeacherLoading(false);
       });
@@ -290,7 +294,7 @@ export default function HomeView({ user, setView }) {
                 </span>
               </div>
 
-              {studentLoading ? (
+              {studentError ? (<p role="alert" className="text-sm text-rose-600">{studentError}</p>) : studentLoading ? (
                 <p className="text-sm text-slate-500">Loading timetable...</p>
               ) : studentPeriods.length === 0 ? (
                 <p className="text-sm text-slate-500">No timetable for today</p>
@@ -424,7 +428,7 @@ export default function HomeView({ user, setView }) {
                 Today's Schedule
               </h4>
 
-              {teacherLoading ? (
+              {teacherError ? (<p role="alert" className="text-sm text-rose-600">{teacherError}</p>) : teacherLoading ? (
                 <p className="text-sm text-slate-500">Loading timetable...</p>
               ) : teacherPeriods.length === 0 ? (
                 <p className="text-sm text-slate-500">No timetable for today</p>

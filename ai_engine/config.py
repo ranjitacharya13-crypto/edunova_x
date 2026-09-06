@@ -353,13 +353,15 @@ class Settings:
     local_preload_model: bool = True
     local_chat_wait_seconds: int = 25  # how long chat waits for warmup before 503
     local_model_download_timeout: int = 900
+    local_model_startup_timeout: int = 300
+    local_inference_idle_timeout: int = 90
 
     # ---- PyTorch-first runtime (inference/torch_runtime.py) ----------------
     # Runtime selection: "torch" (default, PyTorch + transformers) or
     # "llama_cpp" (legacy GGUF runtime). Model weights are downloaded and the
     # model is warmed to READY at service startup; user requests never trigger
     # a download or cold load — they queue while the model prepares.
-    local_model_runtime: str = "torch"
+    local_model_runtime: str = "llama_cpp"
     # Weight representation: auto | fp32 | bf16 | int8. "auto" inspects the
     # container memory and model size (inference/adaptive.py) and picks the
     # fastest representation that fits; int8 (dynamic quantization) is the
@@ -636,7 +638,7 @@ def _normalize_runtime(raw: str | None) -> str:
         return "llama_cpp"
     if value in {"pytorch", "transformers", "hf", "torch"}:
         return "torch"
-    return "torch"  # default runtime is PyTorch-first
+    return value or "llama_cpp"  # unknown values fail validation; never silently choose a runtime
 
 
 def _normalize_dtype(raw: str | None) -> str:
@@ -688,9 +690,7 @@ def load_settings() -> Settings:
     repo_env = _clean_env_value(os.getenv("LOCAL_MODEL_REPO", ""))
     file_env = _clean_env_value(os.getenv("LOCAL_MODEL_FILE", ""))
     is_gguf_deployment = bool(repo_env.upper().endswith("-GGUF")) or file_env.lower().endswith(".gguf")
-    local_runtime = _normalize_runtime(runtime_env if runtime_env else ("llama_cpp" if is_gguf_deployment else "torch"))
-    if runtime_env and local_runtime != "torch" and local_runtime != "llama_cpp":
-        local_runtime = "torch"
+    local_runtime = _normalize_runtime(runtime_env if runtime_env else ("llama_cpp" if is_gguf_deployment or not repo_env else "torch"))
     local_dtype = _normalize_dtype(os.getenv("LOCAL_MODEL_DTYPE", "auto"))
     torch_compile = _clean_env_value(os.getenv("LOCAL_MODEL_TORCH_COMPILE", "off")).lower()
     if torch_compile not in {"off", "0", "false", "none", "auto", "1", "true", "on"}:
@@ -718,7 +718,7 @@ def load_settings() -> Settings:
         max_output = max(2048, max_output)
     local_ctx = _integer("LOCAL_MODEL_CTX", 6144, 1024, 32768)
     if is_local:
-        local_ctx = max(6144, local_ctx)
+        local_ctx = max(2048, local_ctx)
         # The live Render service currently has a 512 MiB cgroup. Qwen 0.5B at
         # 6144 context reaches ~534 MB RSS and leaves no OOM safety margin.
         # Keep the larger context on Standard+, but automatically use 4096 on
@@ -768,6 +768,8 @@ def load_settings() -> Settings:
         local_model_chat_format=_clean_env_value(os.getenv("LOCAL_MODEL_CHAT_FORMAT", "chatml")).lower() or "chatml",
         local_preload_model=_boolean("LOCAL_PRELOAD_MODEL", True),
         local_chat_wait_seconds=_integer("LOCAL_CHAT_WAIT_TIMEOUT", 120, 1, 300),
+        local_model_startup_timeout=_integer("MODEL_STARTUP_TIMEOUT", 300, 10, 900),
+        local_inference_idle_timeout=_integer("MODEL_INFERENCE_IDLE_TIMEOUT", 90, 15, 300),
         local_model_download_timeout=_integer("LOCAL_MODEL_DOWNLOAD_TIMEOUT", 1800, 60, 7200),
         rag_enabled=_boolean("RAG_ENABLED", True),
         rag_embedding_model=_clean_env_value(os.getenv("RAG_EMBEDDING_MODEL", "")),

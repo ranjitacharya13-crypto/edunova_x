@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 440" role="img" aria-labelledby="title desc">
+<title id="title">Human eye, a simplified cross-section</title><desc id="desc">Light enters from the right through the pupil and lens, focuses on the retina at the back, then signals travel through the optic nerve.</desc>
+<rect width="800" height="440" rx="24" fill="#f0f7ff"/>
+<circle cx="380" cy="215" r="153" fill="#fff" stroke="#8297b5" stroke-width="10"/>
+<path d="M380 68 A147 147 0 0 0 380 362" fill="none" stroke="#ed7161" stroke-width="12"/>
+<path d="M232 205 L165 218 L169 248 L238 234" fill="#f3be59"/>
+<ellipse cx="472" cy="215" rx="25" ry="76" fill="#ace5f5" stroke="#49b0ca" stroke-width="3"/>
+<path d="M514 141 V194 M514 236 V289" stroke="#5286b0" stroke-width="14"/>
+<path d="M650 197 L530 197 L472 204 L235 215 M650 233 L530 233 L472 226 L235 215" stroke="#e8ac24" stroke-width="3" fill="none"/>
+<g fill="#193858" font-family="system-ui,sans-serif" font-size="19"><text x="35" y="62" font-size="25" font-weight="700">Human Eye · teaching schematic</text><text x="125" y="137">Retina</text><text x="53" y="278">Optic nerve</text><text x="437" y="325">Lens</text><text x="554" y="156">Pupil / iris</text><text x="619" y="269">Light enters</text><text x="35" y="413" font-size="15">Schematic, not to scale. Select a part below to explore its function.</text></g>
+<g stroke="#193858" stroke-width="1.5"><path d="M187 143 L255 166"/><path d="M151 265 L189 233"/><path d="M473 302 L473 276"/><path d="M566 162 L520 195"/></g></svg>

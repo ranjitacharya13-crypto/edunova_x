@@ -8,6 +8,8 @@ const daySchema = new mongoose.Schema({
 });
 
 const timetableSchema = new mongoose.Schema({
+    ownerId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null, index: true },
+    classId: { type: String, default: null, index: true },
   Monday: [daySchema],
   Tuesday: [daySchema],
   Wednesday: [daySchema],

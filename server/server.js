@@ -166,7 +166,7 @@ app.use(express.json());
 // build artifacts. Render can therefore verify the process while dependencies
 // are still connecting.
 app.get("/health", (req, res) => {
-  res.status(200).json({ status: "ok" });
+  res.status(200).json({ status: "ok", service: "edunova-api", version: "5.0.0", database: mongoose.connection.readyState === 1 ? "connected" : "disconnected" });
 });
 
 // ==========================
@@ -218,13 +218,15 @@ const mongoConnection = MONGO_URI
 mongoConnection
   .then(async () => {
     console.log("✅ MongoDB connected");
+    // Add educational content idempotently; never seed or overwrite student records.
+    await require("./services/arLessons").seedCurriculum();
 
     const adminEmail = "ranjitacharya13@gmail.com";
     const adminName = "Super Admin";
     const adminUsername = "super_admin";
     const existingAdmin = await User.findOne({ email: adminEmail });
 
-    if (!existingAdmin) {
+    if (!existingAdmin && process.env.ADMIN_TEMP_PASSWORD) {
       const tempAdminPassword =
         process.env.ADMIN_TEMP_PASSWORD || crypto.randomBytes(24).toString("base64url");
       const adminPasswordHash = await bcrypt.hash(tempAdminPassword, 10);
@@ -239,16 +241,16 @@ mongoConnection
 
       console.log(`Seeded admin user: ${adminEmail}`);
       if (!process.env.ADMIN_TEMP_PASSWORD) {
-        console.log("ADMIN_TEMP_PASSWORD was not set. Generated temporary admin password:", tempAdminPassword);
+        console.warn("Admin bootstrap requires a configured password; credentials are never logged.");
       }
-    } else if (existingAdmin.role !== "admin") {
+    } else if (existingAdmin && existingAdmin.role !== "admin" && process.env.ADMIN_TEMP_PASSWORD) {
       existingAdmin.role = "admin";
       await existingAdmin.save();
       console.log(`Updated existing user role to admin: ${adminEmail}`);
     }
 
     // Create demo accounts if they don't exist (disable with `SEED_DEMO_USERS=false`).
-    if (String(process.env.SEED_DEMO_USERS || "").toLowerCase() !== "false") {
+    if (process.env.NODE_ENV !== "production" && String(process.env.SEED_DEMO_USERS || "").toLowerCase() === "true") {
       const demoUsers = [
         {
           name: "Demo Teacher",
@@ -311,6 +313,8 @@ app.use("/api/timetable", timetableRoute);
 app.use("/api/teacher-timetable", teacherTimetableRoute);
 app.use("/api/admin", adminRoutes);
 app.use("/api/ai", aiRoutes);
+app.use("/api/ar", require("./routes/ar"));
+app.use("/api/quizzes", require("./routes/quizzes"));
 
 // ==========================
 // CONTACT ROUTE

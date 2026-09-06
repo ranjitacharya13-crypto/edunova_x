@@ -14,7 +14,7 @@ router.post("/register", async (req, res) => {
   try {
     const { name, dob, gender, username, email, password, role } = req.body;
 
-    if (!email || !password || !username) {
+    if (typeof email !== "string" || typeof password !== "string" || typeof username !== "string" || !email || !password || !username || email.length > 320 || username.length > 100 || password.length > 1024) {
       return res.status(400).json({ error: "Missing fields" });
     }
 
@@ -70,7 +70,7 @@ router.post("/register", async (req, res) => {
       },
     });
   } catch (e) {
-    console.error("Register error:", e);
+    console.error("Register error:", e.name);
     res.status(500).json({ error: "Register failed" });
   }
 });
@@ -81,9 +81,9 @@ router.post("/register", async (req, res) => {
 router.post("/login", async (req, res) => {
   try {
     const { email, password } = req.body;
-    console.log("LOGIN INPUT:", email);
 
-    if (!email || !password) {
+
+    if (typeof email !== "string" || typeof password !== "string" || !email || !password || email.length > 320 || password.length > 1024) {
       return res.status(400).json({ error: "Missing email or password" });
     }
 
@@ -92,7 +92,7 @@ router.post("/login", async (req, res) => {
       $or: [{ email: email }, { username: email }]
     });
 
-    if (!user) {
+    if (!user || user.isBlocked) {
       return res.status(400).json({ error: "Invalid credentials" });
     }
 
@@ -121,7 +121,7 @@ router.post("/login", async (req, res) => {
       },
     });
   } catch (e) {
-    console.error("Login error:", e);
+    console.error("Login error:", e.name);
     res.status(500).json({ error: "Login failed" });
   }
 });

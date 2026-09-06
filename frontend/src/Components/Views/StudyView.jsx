@@ -1,11 +1,17 @@
 import React, { useState, useEffect } from "react";
 import { apiUrl } from "../../api/api";
 
+import ARLessonLibrary from "../AR/ARLessonLibrary";
+import { navigateTo } from "../../features/navigation";
+
 const API = apiUrl("");
 
 export default function StudyView({ user }) {
   const [files, setFiles] = useState([]);
   const [file, setFile] = useState(null);
+  const [subject, setSubject] = useState("");
+  const [topic, setTopic] = useState("");
+  const [fetchError, setFetchError] = useState("");
   const [loading, setLoading] = useState(false);
   const [activeVideoId, setActiveVideoId] = useState(null);
 
@@ -14,9 +20,11 @@ export default function StudyView({ user }) {
     try {
       const res = await fetch(`${API}/study`);
       const data = await res.json();
+      if (!res.ok || !Array.isArray(data)) throw new Error(data.error || "Materials could not be loaded");
       setFiles(data);
+      setFetchError("");
     } catch (err) {
-      console.error("Fetch error:", err);
+      setFetchError(err.message);
     }
   };
 
@@ -34,6 +42,8 @@ export default function StudyView({ user }) {
 
     const form = new FormData();
     form.append("file", file);
+    form.append("subject", subject);
+    form.append("topic", topic);
 
     try {
       const res = await fetch(`${API}/study`, {
@@ -93,6 +103,7 @@ export default function StudyView({ user }) {
           </h4>
 
           <form onSubmit={handleUpload} className="space-y-4">
+            <div className="grid gap-3 sm:grid-cols-2"><label className="text-sm">Subject<input value={subject} onChange={(e) => setSubject(e.target.value)} maxLength={100} placeholder="e.g. Physics" className="mt-1 w-full rounded-lg border p-2" /></label><label className="text-sm">Topic<input value={topic} onChange={(e) => setTopic(e.target.value)} maxLength={200} placeholder="e.g. Human Eye" className="mt-1 w-full rounded-lg border p-2" /></label></div>
             <input
               type="file"
               accept=".pdf,image/*,video/*"
@@ -116,6 +127,7 @@ export default function StudyView({ user }) {
         </div>
       )}
 
+      {fetchError && <p role="alert" className="mb-3 text-sm text-rose-600">{fetchError}</p>}
       {/* FILE LIST — STUDENT + TEACHER */}
       <div className="bg-white rounded-2xl p-5 shadow-soft">
         <h4 className="font-medium mb-3">
@@ -173,6 +185,10 @@ export default function StudyView({ user }) {
           </ul>
         )}
       </div>
+      {user && user.role !== "guest" && <>
+        <ARLessonLibrary location="study" />
+        <div className="mt-5 flex flex-wrap gap-4 text-sm"><button type="button" onClick={() => navigateTo({ view: "quiz" })} className="text-primary underline">Practice quizzes</button><button type="button" onClick={() => navigateTo({ view: "progress" })} className="text-primary underline">Progress & study plans</button></div>
+      </>}
     </div>
   );
 }

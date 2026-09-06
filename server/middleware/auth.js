@@ -12,11 +12,11 @@ module.exports = async function (req, res, next) {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     // attach minimal user info
     const user = await User.findById(decoded.id).select('-password');
-    if (!user) return res.status(401).json({ error: 'Invalid token user' });
-    req.user = { id: user._id, email: user.email, role: user.role, name: user.name };
+    if (!user || user.isBlocked) return res.status(401).json({ error: 'Invalid or blocked user' });
+    req.user = { id: user._id, email: user.email, role: user.role, name: user.name, enrolledClasses: user.enrolledClasses || [], subjects: user.subjects || [], timezone: user.timezone || "UTC" };
     next();
   } catch (e) {
-    console.error('Auth middleware error', e);
+    console.warn('AUTH_FAILED', e.name);
     return res.status(401).json({ error: 'Invalid token' });
   }
 };

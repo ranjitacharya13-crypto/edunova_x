@@ -52,3 +52,12 @@ Thumbs.db
 # Releases — never commit them into the source tree). A committed copy once
 # embedded real MongoDB credentials in a stale bundled .env, so this stays out.
 edunova-x-installer.zip
+
+# Runtime/private indexes, uploaded data and generated validation artifacts
+.cache/
+.pytest_cache/
+.*-audit.json
+ai_engine/tests/tmp_tiny_*/
+server/uploads/
+frontend/test-results/
+frontend/playwright-report/

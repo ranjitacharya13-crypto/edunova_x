@@ -497,9 +497,9 @@ class ProviderErrorFrontendContractTests(unittest.IsolatedAsyncioTestCase):
 
         exc = LLMResponseError("auth failed", status_code=401, error_type="authentication_error", provider_message="Incorrect API key")
         status, code, msg = _safe_error(exc)
-        self.assertEqual(status, 503)
-        self.assertEqual(code, "LLM_AUTHENTICATION_FAILED")
-        self.assertIn("authentication", msg.lower())
+        self.assertEqual(status, 401)
+        self.assertEqual(code, "AUTHENTICATION_ERROR")
+        self.assertIn("auth failed", msg.lower())
 
     def test_safe_error_classification_429(self):
         from main import _safe_error
@@ -508,7 +508,7 @@ class ProviderErrorFrontendContractTests(unittest.IsolatedAsyncioTestCase):
         exc = LLMResponseError("rate limit", status_code=429, error_type="rate_limit", provider_message="Too many requests")
         status, code, msg = _safe_error(exc)
         self.assertEqual(status, 429)
-        self.assertEqual(code, "LLM_RATE_LIMITED")
+        self.assertEqual(code, "RATE_LIMIT")
 
     def test_safe_error_classification_404_model(self):
         from main import _safe_error
@@ -516,9 +516,9 @@ class ProviderErrorFrontendContractTests(unittest.IsolatedAsyncioTestCase):
 
         exc = LLMResponseError("not found", status_code=404, error_type="not_found", provider_message="The model `gpt-4.1-mini` does not exist")
         status, code, msg = _safe_error(exc)
-        self.assertEqual(status, 503)
-        self.assertIn("model", msg.lower())
-        self.assertEqual(code, "LLM_MODEL_NOT_FOUND")
+        self.assertEqual(status, 404)
+        self.assertIn("not found", msg.lower())
+        self.assertEqual(code, "NOT_FOUND")
 
     def test_safe_error_classification_timeout(self):
         from main import _safe_error

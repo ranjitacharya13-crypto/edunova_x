@@ -195,7 +195,7 @@ describe("Express AI route -> FastAPI integration", () => {
     }
   });
 
-  test("cold upstream (Render-style HTML 503) recovers after retry and answers", async () => {
+  test("cold upstream is reported without replaying tool-bearing chat POSTs", async () => {
     const upstream = await startUpstreamAt((req, res, state) => {
       if (req.method === "POST" && req.url === "/api/ai/chat") {
         state.chatAttempts = (state.chatAttempts || 0) + 1;
@@ -225,11 +225,10 @@ describe("Express AI route -> FastAPI integration", () => {
     const app = await listen(makeApp());
     try {
       const { status, text } = await postChat(app, { token: signToken("cold-user-0000000001") });
-      assert.strictEqual(status, 200);
-      const { final } = await readSseFinalAnswer(text);
-      assert.strictEqual(final.success, true);
+      assert.strictEqual(status, 503);
+      assert.strictEqual(JSON.parse(text).error.code, "UPSTREAM_HTTP_503");
       const chatPosts = upstream.state.requests.filter((r) => r.path === "/api/ai/chat");
-      assert.strictEqual(chatPosts.length, 3, "should retry the chat POST until the upstream wakes");
+      assert.strictEqual(chatPosts.length, 1, "must never replay a chat POST");
     } finally {
       upstream.restoreEnv();
       upstream.server.close();
@@ -250,8 +249,8 @@ describe("Express AI route -> FastAPI integration", () => {
       });
       assert.strictEqual(status, 503);
       assert.strictEqual(json.success, false);
-      assert.match(json.error.message, /starting up or temporarily unavailable/i);
-      assert.strictEqual(json.agentStatus, "unavailable");
+      assert.strictEqual(json.error.code, "UPSTREAM_HTTP_503");
+      assert.strictEqual(json.agentStatus, "failed");
       assert.ok(!/could not start this request/.test(json.error.message), "the old misleading message must be gone");
     } finally {
       upstream.restoreEnv();
@@ -273,8 +272,8 @@ describe("Express AI route -> FastAPI integration", () => {
       });
       assert.strictEqual(status, 401);
       assert.strictEqual(json.error.message, "AI service authorization failed");
-      assert.strictEqual(json.agentStatus, "auth_failed");
-      assert.strictEqual(upstream.state.requests.length, 1, "4xx failures must not be retried");
+      assert.strictEqual(json.agentStatus, "failed");
+      assert.strictEqual(upstream.state.requests.filter((r) => r.path === "/api/ai/chat").length, 1, "4xx failures must not be retried");
     } finally {
       upstream.restoreEnv();
       upstream.server.close();
@@ -334,8 +333,8 @@ describe("Express AI route -> FastAPI integration", () => {
       }
       const limited = results.filter((r) => r.status === 429);
       assert.ok(limited.length > 0, "the 21st+ request should be rate limited");
-      assert.match(limited[0].json.error, /too many AI requests/i);
-      assert.strictEqual(limited[0].json.agentStatus, "rate_limited");
+      assert.match(limited[0].json.error.message, /too many AI requests/i);
+      assert.strictEqual(limited[0].json.error.code, "RATE_LIMITED");
     } finally {
       upstream.restoreEnv();
       upstream.server.close();

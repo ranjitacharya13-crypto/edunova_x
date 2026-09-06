@@ -106,20 +106,22 @@ class LocalProviderConfigTests(unittest.TestCase):
         self.assertNotIn("user:pass", diag)
         self.assertNotIn("example.com/model.gguf", diag)  # only host + filename
 
-    def test_create_llm_factory_defaults_to_pytorch_runtime(self):
-        settings = local_settings()  # default runtime is torch
+    def test_create_llm_factory_explicit_pytorch_uses_supervisor(self):
+        settings = local_settings(local_model_runtime="torch", local_model_repo="Qwen/Qwen2.5-0.5B-Instruct", local_model_file="")
         from inference.torch_runtime import TorchChatLLM, TorchModelManager
 
         llm, manager = create_llm(settings)
         self.assertIsInstance(llm, TorchChatLLM)
-        self.assertIsInstance(manager, TorchModelManager)
+        from inference.manager import ModelManager
+        self.assertIsInstance(manager, ModelManager)
         self.assertTrue(llm.is_local)
 
     def test_create_llm_factory_legacy_llama_cpp_runtime(self):
         settings = local_settings(local_model_runtime="llama_cpp")
         llm, manager = create_llm(settings)
         self.assertIsInstance(llm, LocalLlamaLLM)
-        self.assertIsInstance(manager, LocalModelManager)
+        from inference.manager import ModelManager
+        self.assertIsInstance(manager, ModelManager)
         self.assertTrue(llm.is_local)
 
 
@@ -246,6 +248,8 @@ def _registry_with_fixtures(*names: str) -> tuple[ToolRegistry, list[dict]]:
                     "toolName": "create_study_plan",
                     "message": "Confirm to apply create study plan to EduNova.",
                 }
+            if name == "get_today_schedule":
+                return {"periods": [{"subject": "Physics", "topic": "Force", "period": 1}], "liveSessions": []}
             return {"fixture": name, "arguments": args}
 
         category = "EXTERNAL" if name in {"web_search", "open_url", "extract_webpage"} else "INTERNAL"
@@ -273,7 +277,7 @@ class FastPathTests(unittest.IsolatedAsyncioTestCase):
     async def _run(self, message, conversation=(), tools=(), llm=None, decision=None, decision_tools=None):
         tool_names = tools or ("get_today_schedule", "get_quiz_history", "get_progress", "get_subjects",
                                "web_search", "save_quiz", "create_study_plan", "get_syllabus",
-                               "get_learning_materials", "get_assignments", "get_study_history", "get_exams")
+                               "get_learning_materials", "get_assignments", "get_study_history", "get_exams", "retrieve_learning_materials")
         registry, calls = _registry_with_fixtures(*tool_names)
         router = IntentRouter(self.settings)
         dec = decision or router.classify(message, list(conversation))
@@ -342,18 +346,18 @@ class FastPathTests(unittest.IsolatedAsyncioTestCase):
             executor=failing, permission="READ_EXTERNAL", category="EXTERNAL",
         ))
         llm = _ScriptedLLM(text="should-not-be-called")
-        payload = await run_fast_path(
-            settings=self.settings,
-            llm=llm,
-            registry=registry,
-            decision=RouteDecision(intent="web_research", tools=("web_search",)),
-            goal="latest space news",
-            conversation=[],
-            conversation_id="conv-local-0002",
-            user_id="student-42",
-            user_name="Test Student",
-        )
-        self.assertIn("unavailable", payload["message"].lower())
+        with self.assertRaises(LLMResponseError):
+            payload = await run_fast_path(
+                settings=self.settings,
+                llm=llm,
+                registry=registry,
+                decision=RouteDecision(intent="web_research", tools=("web_search",)),
+                goal="latest space news",
+                conversation=[],
+                conversation_id="conv-local-0002",
+                user_id="student-42",
+                user_name="Test Student",
+            )
         self.assertEqual(llm.calls, [], "LLM must not fabricate a web answer without search data")
 
     async def test_quiz_creation_validates_and_returns_pending_action(self):
@@ -363,7 +367,6 @@ class FastPathTests(unittest.IsolatedAsyncioTestCase):
             "questions": [
                 {"question": "What is force?", "options": ["push or pull", "energy", "mass", "speed"], "answerIndex": 0},
                 {"question": "Unit of force?", "options": ["Joule", "Newton", "Watt"], "answerIndex": 1},
-                {"question": "bad question", "options": ["only one"], "answerIndex": 5},  # invalid: dropped
             ],
         }
         llm = _ScriptedLLM(payload=quiz_payload)
@@ -373,7 +376,7 @@ class FastPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("get_today_schedule", names)
         self.assertIn("save_quiz", names)
         save_call = next(c for c in calls if c["name"] == "save_quiz")
-        # Invalid question was removed by validation before saving.
+        # All generated questions passed strict validation before saving.
         self.assertEqual(len(save_call["args"]["questions"]), 2)
         # Write requires explicit user confirmation (existing EduNova flow).
         self.assertTrue(payload["actions"], "expected a pending confirmation action")
@@ -418,28 +421,21 @@ class QuizPlanValidationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_quiz_payload({"questions": "not-a-list"})
 
-    def test_quiz_sanitizes_fields(self):
-        quiz = validate_quiz_payload(
-            {"title": "  " + "T" * 300, "questions": [
-                {"question": "Q?", "options": ["a", "b"], "answerIndex": 1},
-                {"question": "Bad", "options": [], "answerIndex": 0},
-                {"question": "BadIdx", "options": ["a", "b"], "answerIndex": 7},
-            ]},
-            fallback_subject="Physics",
-        )
-        self.assertEqual(len(quiz["title"]), 200)
-        self.assertEqual(quiz["subject"], "Physics")
-        self.assertEqual(len(quiz["questions"]), 1)
-        self.assertEqual(quiz["questions"][0]["answerIndex"], 1)
+    def test_quiz_rejects_incomplete_or_invalid_payload_instead_of_dropping_questions(self):
+        for payload in [
+            {"title": "Title", "questions": [{"question": "Q?", "options": ["a", "b"], "answerIndex": 1}]},
+            {"title": "Title", "subject": "Physics", "questions": [{"question": "Q?", "options": ["a", "b"], "answerIndex": 7}]},
+        ]:
+            with self.assertRaises(ValueError):
+                validate_quiz_payload(payload)
 
     def test_plan_requires_schedule(self):
         with self.assertRaises(ValueError):
             validate_plan_payload({"title": "Plan", "schedule": []})
 
-    def test_plan_normalizes_items(self):
-        plan = validate_plan_payload({"title": "P", "schedule": [{"topic": "Optics"}]})
-        self.assertEqual(plan["schedule"][0]["day"], "Day 1")
-        self.assertEqual(plan["schedule"][0]["topic"], "Optics")
+    def test_plan_does_not_invent_missing_times_and_subjects(self):
+        with self.assertRaises(ValueError):
+            validate_plan_payload({"title": "P", "schedule": [{"topic": "Optics"}]})
 
 
 # ---------------------------------------------------------------------------
@@ -523,6 +519,7 @@ class LocalModelManagerTests(unittest.IsolatedAsyncioTestCase):
             llm = LocalLlamaLLM(settings, manager)
             _FakeGrammar.captured.clear()
             with _install_fake_llama_cpp():
+                manager.ensure_loading()
                 await llm.probe()
                 result = await llm.complete_json(system_prompt="sys", user_prompt="What is ML?")
             self.assertEqual(result["action"], "final")
@@ -598,7 +595,7 @@ class LocalModelManagerTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(LLMResponseError) as ctx:
                     await manager.wait_ready(timeout=0.2)
             self.assertEqual(ctx.exception.status_code, 503)
-            self.assertEqual(ctx.exception.error_type, "model_loading")
+            self.assertEqual(ctx.exception.error_type, "MODEL_NOT_READY")
 
     async def test_failed_load_maps_to_model_unavailable(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -648,7 +645,7 @@ class LocalModelManagerTests(unittest.IsolatedAsyncioTestCase):
         llm = LocalLlamaLLM(settings, manager)
         with self.assertRaises(LLMResponseError) as ctx:
             await llm.complete_text(system_prompt="s", user_prompt="hello")
-        self.assertIn(ctx.exception.error_type, {"model_loading", "model_unavailable"})
+        self.assertIn(ctx.exception.error_type, {"MODEL_NOT_READY", "model_unavailable"})
 
 
 class CompactPlannerTests(unittest.IsolatedAsyncioTestCase):
@@ -686,3 +683,36 @@ class CompactPlannerTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class IntegratedIntentTests(unittest.IsolatedAsyncioTestCase):
+    async def test_ar_quiz_is_an_action_not_a_generic_ar_navigation_request(self):
+        decision = IntentRouter(local_settings()).classify("Create a practice quiz from this AR lesson's learning objectives.", [])
+        self.assertEqual(decision.intent, "action_create_quiz")
+
+    async def test_ar_discovery_uses_published_ids_and_application_navigation(self):
+        registry = ToolRegistry(allowed_permissions={"READ_INTERNAL"})
+        calls = []
+        async def lessons(args, context=None):
+            self.assertEqual(args, {"topic": "Human Eye"})
+            return {"lessons": [{"_id": "64d000000000000000000001", "title": "Human Eye", "topic": "Human Eye"}]}
+        async def navigate(args, context=None):
+            calls.append(args)
+            return {"navigate": args, "message": "Open lesson"}
+        for name, executor in [("get_ar_lessons", lessons), ("open_feature", navigate)]:
+            registry.register(ToolDefinition(name=name, description=name, input_schema={"type": "object"}, executor=executor, permission="READ_INTERNAL", category="INTERNAL"))
+        settings = local_settings()
+        result = await run_fast_path(settings=settings, llm=_ScriptedLLM(text="Explore the published eye lesson."), registry=registry,
+            decision=IntentRouter(settings).classify("Explain Human Eye in AR", []), goal="Explain Human Eye in AR", conversation=[], conversation_id="ar-contract", user_id="student-42", user_name="Student")
+        self.assertEqual(calls, [{"view": "ar", "id": "64d000000000000000000001"}])
+        self.assertEqual(result["actions"][0]["data"]["navigate"], calls[0])
+
+    async def test_no_recorded_class_cannot_become_a_successful_today_quiz(self):
+        registry = ToolRegistry(allowed_permissions={"READ_INTERNAL"})
+        async def empty(args, context=None): return {"periods": [], "liveSessions": []}
+        registry.register(ToolDefinition(name="get_today_schedule", description="schedule", input_schema={"type": "object"}, executor=empty, permission="READ_INTERNAL", category="INTERNAL"))
+        settings = local_settings(); llm = _ScriptedLLM(text="must not run")
+        with self.assertRaises(LLMResponseError) as failure:
+            await run_fast_path(settings=settings, llm=llm, registry=registry, decision=IntentRouter(settings).classify("Create a quiz from today's class", []),
+                goal="Create a quiz from today's class", conversation=[], conversation_id="no-class", user_id="student-42", user_name="Student")
+        self.assertEqual(failure.exception.error_type, "CLASS_CONTEXT_NOT_FOUND")
+        self.assertEqual(llm.calls, [])

@@ -7,7 +7,7 @@ const auth = require("../middleware/auth");
 const Assignment = require("../models/Assignment");
 
 const router = express.Router();
-const upload = multer({ storage: multer.memoryStorage() });
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 16 * 1024 * 1024 } });
 
 let db, bucket;
 mongoose.connection.once("open", () => {
@@ -272,7 +272,7 @@ router.post("/", auth, teacherOrStaffOrAdmin, upload.single("file"), async (req,
 router.get("/", async (req, res) => {
   try {
     const room = normalizeRoom(req.query.room);
-    const filter = room ? { room } : {};
+    const filter = { ownerId: null, visibility: { $ne: "private" }, ...(room ? { room } : {}) };
     const list = await Assignment.find(filter).sort({ createdAt: -1 }).lean();
     return res.json({ assignments: list });
   } catch (e) {
@@ -284,7 +284,7 @@ router.get("/", async (req, res) => {
 // Get assignment details (public)
 router.get("/:id", async (req, res) => {
   try {
-    const doc = await Assignment.findById(req.params.id).lean();
+    const doc = await Assignment.findOne({ _id: req.params.id, ownerId: null, visibility: { $ne: "private" } }).lean();
     if (!doc) return res.status(404).json({ error: "Not found" });
     return res.json({ assignment: doc });
   } catch (e) {
@@ -296,7 +296,7 @@ router.get("/:id", async (req, res) => {
 // Preview PDF (public)
 router.get("/:id/preview", async (req, res) => {
   try {
-    const doc = await Assignment.findById(req.params.id).lean();
+    const doc = await Assignment.findOne({ _id: req.params.id, ownerId: null, visibility: { $ne: "private" } }).lean();
     if (!doc) return res.status(404).json({ error: "Not found" });
     await streamPdfByFileId(res, doc.fileId, req.query.name, false);
   } catch (e) {
@@ -308,7 +308,7 @@ router.get("/:id/preview", async (req, res) => {
 // Download PDF (public)
 router.get("/:id/download", async (req, res) => {
   try {
-    const doc = await Assignment.findById(req.params.id).lean();
+    const doc = await Assignment.findOne({ _id: req.params.id, ownerId: null, visibility: { $ne: "private" } }).lean();
     if (!doc) return res.status(404).json({ error: "Not found" });
     await streamPdfByFileId(res, doc.fileId, req.query.name, true);
   } catch (e) {

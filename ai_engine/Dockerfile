@@ -16,12 +16,14 @@ WORKDIR /app
 # requirements.txt installs the llama_cpp runtime (llama-cpp-python from the
 # prebuilt-wheel index above) together with the REST/tooling stack.
 COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt \
+RUN pip install --no-cache-dir "torch==2.8.0" --index-url https://download.pytorch.org/whl/cpu \
+    && pip install --no-cache-dir -r requirements.txt \
     # Build-time proof the llama_cpp runtime really is installed in the image
     # (not just declared): fail the build loudly if the import breaks.
     && python -c "import llama_cpp; print('llama_cpp runtime OK', getattr(llama_cpp, '__version__', ''))"
 
 COPY . .
+RUN python verify_runtime.py
 
 RUN mkdir -p "$LOCAL_MODEL_DIR"
 VOLUME ["/var/lib/edunova/models"]
@@ -36,4 +38,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=5 \
     CMD python -c "import os,urllib.request,sys; urllib.request.urlopen('http://127.0.0.1:'+os.getenv('PORT','8001')+'/health', timeout=8)" || exit 1
 
 # Start-time verification of the llama_cpp runtime before serving traffic.
-CMD ["sh", "-c", "python -c \"import llama_cpp; print('llama_cpp runtime OK')\" && uvicorn main:app --host 0.0.0.0 --port ${PORT:-8001}"]
+CMD ["sh", "-c", "python verify_runtime.py && uvicorn main:app --host 0.0.0.0 --workers 1 --port ${PORT:-8001}"]

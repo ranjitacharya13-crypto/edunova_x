@@ -95,18 +95,8 @@ services:
         value: "60000"
       - key: AI_RATE_LIMIT_MAX_REQUESTS
         value: "20"
-      # Cold-start resilience: the model is downloaded/loaded at service
-      # startup and warmed to READY (GET /api/ai/ready returns 200 only then).
-      # Streaming /chat requests are queued at this gateway for up to
-      # AI_WARM_QUEUE_MAX_MS — the student sees "EduNova AI is preparing…" and
-      # their message is forwarded automatically once the model is ready, so a
-      # cold boot never surfaces "please try again shortly".
-      - key: AI_WARM_QUEUE_MAX_MS
-        value: "600000"
-      - key: AI_UPSTREAM_RETRY_DELAYS_MS
-        value: "3000,8000,15000,30000"
-      - key: AI_UPSTREAM_RETRY_WINDOW_MS
-        value: "240000"
+      # No warm queues and no replay of tool-bearing chat POSTs. Readiness is
+      # observed once; the persistent AI service owns startup and hard deadlines.
       # Seeding demo accounts (teacher@edunova.com / student@edunova.com, password
       # "123456") is a security risk in production — anyone could log in as a
       # demo teacher. Keep this "false" for a live deployment; set "true" only
@@ -185,7 +175,7 @@ services:
     # runtime verification: a build where llama-cpp-python failed to install
     # (or resolved to a source build that produced no importable module) fails
     # HERE, loudly, instead of serving LOCAL_MODEL_RUNTIME_MISSING at runtime.
-    buildCommand: pip install "torch==2.4.1" --index-url https://download.pytorch.org/whl/cpu && pip install -r requirements.txt && python -c "import llama_cpp; print('llama_cpp runtime OK', getattr(llama_cpp, '__version__', ''))"
+    buildCommand: pip install "torch==2.8.0" --index-url https://download.pytorch.org/whl/cpu && pip install -r requirements.txt && python verify_runtime.py
     # $PORT is injected by Render; binding 0.0.0.0 is required.
     # Exactly ONE uvicorn worker: the llama.cpp model lives in this process and
     # generation is single-flight. A second worker would double the RAM.
@@ -239,28 +229,25 @@ services:
         value: "true"
       # AI-service-side queue budget while the model warms. It never cuts an
       # answer; the API gateway holds streaming requests separately.
-      - key: LOCAL_CHAT_WAIT_TIMEOUT
-        value: "180"
+      - key: MODEL_STARTUP_TIMEOUT
+        value: "300"
+      - key: MODEL_INFERENCE_IDLE_TIMEOUT
+        value: "90"
       - key: LOCAL_MODEL_DOWNLOAD_TIMEOUT
         value: "1800"
       # RAG retrieval (semantic learning-material index; user-scoped).
       - key: RAG_ENABLED
         value: "true"
-      # Optional transformer embedder id; falls back to the built-in lexical
-      # embedder when unreachable. Leave empty for the default MiniLM id.
-      # - key: RAG_EMBEDDING_MODEL
-      #   value: sentence-transformers/all-MiniLM-L6-v2
+      # Explicit PyTorch semantic embeddings; failures are surfaced, not silently
+      # replaced with incompatible lexical vectors.
+      - key: RAG_EMBEDDING_MODEL
+        value: sentence-transformers/all-MiniLM-L6-v2
       # Quality ceiling. The router adaptively selects 128–1800 tokens by task;
       # no elapsed-time logic reduces this budget during generation.
       - key: LLM_MAX_OUTPUT_TOKENS
         value: "2048"
       - key: LLM_TEMPERATURE
         value: "0.2"
-      # ---- Emergency rollback only (unused while LLM_PROVIDER=local) --------
-      # Set LLM_PROVIDER=openai_compatible + LLM_API_KEY/LLM_MODEL/LLM_BASE_URL
-      # in the dashboard to temporarily restore a hosted provider, then remove
-      # once the local model is verified. Never commit a key here.
-      # -----------------------------------------------------------------------
       - key: WEB_SEARCH_API_KEY
         sync: false
       - key: WEB_SEARCH_PROVIDER
