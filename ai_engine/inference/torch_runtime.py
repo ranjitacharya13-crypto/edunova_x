@@ -29,6 +29,7 @@ runtime remains available via ``LOCAL_MODEL_RUNTIME=llama_cpp``.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import os
 import re
@@ -179,6 +180,8 @@ class TorchModelManager:
         self.last_self_test: dict[str, Any] | None = None
         self.last_first_token_ms: int | None = None
         self.cold_start_ms: int | None = None
+        self.warmup_ms: int | None = None
+        self.model_load_ms: int | None = None
 
         self._model: Any = None
         self._tokenizer: Any = None
@@ -194,6 +197,19 @@ class TorchModelManager:
         self._tokens_per_second: float | None = None
         self._model_path: Path | None = None
         self._torch_setup_done = False
+        # Single source of truth for "the model can serve a request right now".
+        # `state`/`lifecycle` are *reporting* fields; this flag is only ever set
+        # to True at the very end of a successful load+warm-up pipeline, so a
+        # failed warm-up can never leave the manager advertising readiness.
+        self._ready = False
+        # Restart guard for the load pipeline. A readiness poll (which arrives
+        # every ~2s from the API gateway) must NOT be able to relaunch a failed
+        # pipeline immediately — that turns a single startup failure into an
+        # endless download/load/OOM thrash that never converges on READY.
+        self._load_failures = 0
+        self._retry_not_before = 0.0
+        # Monotonic counter of load attempts (diagnostics only).
+        self._load_generation = 0
 
     # ------------------------------------------------------------ paths --
     @property
@@ -225,6 +241,29 @@ class TorchModelManager:
     def safe_url(self) -> str:
         return self.download_url
 
+    @staticmethod
+    def _find_cached_snapshot(cache_dir: Path, repo: str) -> Path | None:
+        """Locate an already-downloaded HuggingFace snapshot for ``repo``.
+
+        Mirrors the real hub layout: ``<cache>/models--<org>--<name>/snapshots/<sha>/``.
+        Returns the newest snapshot that contains both a config and weights.
+        """
+        try:
+            base = cache_dir / f"models--{str(repo).strip('/').replace('/', '--')}" / "snapshots"
+            if not base.is_dir():
+                return None
+            candidates = [
+                snap for snap in base.iterdir()
+                if snap.is_dir()
+                and (snap / "config.json").exists()
+                and any(snap.glob("*.safetensors") or snap.glob("*.bin"))
+            ]
+            if not candidates:
+                return None
+            return max(candidates, key=lambda p: p.stat().st_mtime)
+        except OSError:
+            return None
+
     def _uses_local_dir(self) -> bool:
         candidate = Path(self.settings.local_model_repo)
         return (candidate / "config.json").exists() or (self.model_dir / "config.json").exists()
@@ -240,7 +279,7 @@ class TorchModelManager:
         payload: dict[str, Any] = {
             "state": self.state,
             "lifecycle": self.lifecycle.snapshot(),
-            "ready": self.state == "ready",
+            "ready": self.is_ready(),
             "modelId": self.settings.local_model_id,
             "modelRepo": self.settings.local_model_repo,
             "fileName": "config.json",
@@ -251,7 +290,7 @@ class TorchModelManager:
             "runtimeAvailable": runtime_available(),
             "runtimeVersion": runtime_version(),
             "runtimeName": "torch",
-            "inferenceAvailable": self.state == "ready" and self._model is not None,
+            "inferenceAvailable": self.is_ready(),
             "lastInferenceAt": _iso(self.last_inference_at),
             "lastGeneration": self.last_generation_metrics,
             "lastSelfTest": self.last_self_test,
@@ -268,6 +307,14 @@ class TorchModelManager:
             "overrideRejected": bool(self.config_override_rejected),
             "parameterEstimate": self._parameter_count or None,
             "coldStartMs": self.cold_start_ms,
+            "warmupMs": self.warmup_ms,
+            "modelLoadMs": self.model_load_ms,
+            "tokensPerSecond": round(self._tokens_per_second, 2) if self._tokens_per_second else None,
+            "tokenizerLoaded": self._tokenizer is not None,
+            "modelLoaded": self._model is not None,
+            "warmupComplete": bool(self._ready),
+            "retryInSeconds": int(self.retry_after_seconds()) or None,
+            "loadFailures": self._load_failures or None,
         }
         if include_source:
             payload["sourceUrl"] = self.safe_url
@@ -276,39 +323,71 @@ class TorchModelManager:
         return payload
 
     # ------------------------------------------------------------ loading --
+    def is_ready(self) -> bool:
+        """The ONE authoritative readiness answer for this process.
+
+        READY means all four of: tokenizer loaded, weights loaded, the warm-up
+        inference succeeded, and no load failure since. It is deliberately not
+        derived from ``state``: ``state`` is a coarse reporting string that the
+        generation path flips to "busy"/"ready" around every request, so using
+        it as the readiness gate is what previously let a *failed warm-up* be
+        advertised as READY (the /ready endpoint returned 200 while the model
+        could not actually answer).
+        """
+        return bool(
+            self._ready
+            and self._model is not None
+            and self._tokenizer is not None
+        )
+
     def ensure_loading(self, force: bool = False) -> None:
         """Kick off the background download+load+warmup once (never blocking).
 
         ``force=True`` starts the pipeline even when preload is disabled; the
         readiness endpoint uses this so a gateway's request queue can wake a
         scale-to-zero/cold service instead of waiting forever for a model that
-        nobody started. Single-flight: repeated calls are no-ops while loading.
+        nobody started.
+
+        Single-flight AND restart-guarded: repeated calls are no-ops while the
+        pipeline runs, while the model is ready, and during the backoff window
+        after a failure. Without the backoff, the gateway's 2-second readiness
+        poll relaunches a failed pipeline ~300 times per request, so a single
+        startup fault (OOM, bad repo, missing file) becomes an endless
+        download/load thrash that can never converge on READY.
         """
+        if self.is_ready():
+            return
         if not self.settings.local_preload_model and not force:
             return
-        if self._load_task is None or self._load_task.done():
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                return
-            self._load_task = loop.create_task(self._load_pipeline())
+        if self._load_task is not None and not self._load_task.done():
+            return  # already loading — never start a second pipeline
+        if self._retry_not_before and time.time() < self._retry_not_before:
+            return  # cooling down after a failure; do not thrash
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._load_generation += 1
+        self._load_task = loop.create_task(self._load_pipeline())
+
+    def retry_after_seconds(self) -> float:
+        """Seconds until the next load attempt is allowed (0 = right now)."""
+        if not self._retry_not_before:
+            return 0.0
+        return max(0.0, self._retry_not_before - time.time())
 
     async def wait_ready(self, timeout: float) -> None:
         """Wait until the model is READY (weights + warm-up inference done)."""
-        if self.state == "ready" and self._model is not None:
+        if self.is_ready():
             return
-        if self.state == "error":
-            if self._retry_after_error_allowed():
-                logger.info("TORCH_MODEL_RETRY_AFTER_ERROR previous=%s", self.last_error)
-                self._reset_after_error()
-            else:
-                raise LLMResponseError(
-                    "The self-hosted EduNova model failed to start",
-                    status_code=503,
-                    error_type="model_unavailable",
-                    provider_message=self.last_error or "model load failed",
-                )
-        self.ensure_loading()
+        if self.state == "error" and self.retry_after_seconds() > 0:
+            raise LLMResponseError(
+                "The self-hosted EduNova model failed to start",
+                status_code=503,
+                error_type="model_unavailable",
+                provider_message=self.last_error or "model load failed",
+            )
+        self.ensure_loading(force=True)
         task = self._load_task
         if task is None:
             raise LLMResponseError(
@@ -333,7 +412,7 @@ class TorchModelManager:
                 error_type="model_unavailable",
                 provider_message=self.last_error or str(exc)[:200],
             ) from exc
-        if self.state != "ready" or self._model is None:
+        if not self.is_ready():
             raise LLMResponseError(
                 "The self-hosted EduNova model is unavailable",
                 status_code=503,
@@ -341,43 +420,52 @@ class TorchModelManager:
                 provider_message=self.last_error or "model not ready after load task",
             )
 
-    def _retry_after_error_allowed(self) -> bool:
-        return bool(
-            self.started_at
-            and time.time() - self.started_at > 180
-            and (self._load_task is None or self._load_task.done())
-        )
-
-    def _reset_after_error(self) -> None:
-        self.state = "not_started"
-        self.lifecycle.transition(STARTING, "retry after error")
-        self._load_task = None
-
     # ------------------------------------------------------------ pipeline --
     async def _load_pipeline(self) -> None:
         self.started_at = time.time()
         self.error_report = None
+        self._ready = False
         try:
+            logger.info("[AI] Starting service")
+            logger.info(
+                "[AI] Loading configuration model=%s runtime=torch dtype=%s device=%s ctx=%s",
+                self.settings.local_model_id,
+                self.settings.local_model_dtype,
+                self.settings.local_model_device,
+                self.settings.local_model_ctx_size,
+            )
             self._set_legacy("loading")
             self.lifecycle.transition(STARTING, "pipeline start")
             started = time.time()
             # Download/verify happens ONLY here (startup). Requests never reach
             # this code path: they call wait_ready() which awaits this task.
             await self._obtain_weights()
+            load_started = time.monotonic()
             await self._load_model()
             self._configure_quantization_and_compile()
+            self.model_load_ms = int((time.monotonic() - load_started) * 1000)
             # WARMING: a real warm-up inference proves the runtime is functional
             # before READY is advertised (/ready returns 200 only then).
             self.state = "warming"
             self.lifecycle.transition(WARMING, "weights loaded; running warm-up")
+            logger.info("[AI] Running warmup")
+            warm_started = time.monotonic()
             self.last_self_test = await self.self_test(warmup=True)
+            self.warmup_ms = int((time.monotonic() - warm_started) * 1000)
+            logger.info("[AI] Warmup successful warmup_ms=%s", self.warmup_ms)
             self.ready_at = time.time()
             self.cold_start_ms = int((self.ready_at - self.started_at) * 1000)
+            # Only NOW is the model genuinely usable. Everything above must have
+            # succeeded: weights, tokenizer and a real warm-up inference.
+            self._ready = True
+            self._load_failures = 0
+            self._retry_not_before = 0.0
             self.state = "ready"
             self.lifecycle.transition(READY, "ready for inference")
             self.last_error = ""
             self.error_detail = ""
             self.error_report = None
+            logger.info("[AI] MODEL READY")
             logger.info(
                 "TORCH_MODEL_READY model=%s dtype=%s device=%s params=%s cold_start_ms=%s selftest=%s",
                 self.settings.local_model_id,
@@ -387,22 +475,61 @@ class TorchModelManager:
                 self.cold_start_ms,
                 (self.last_self_test or {}).get("ok"),
             )
-        except LLMResponseError:
-            raise
         except Exception as exc:  # noqa: BLE001 — surfaced through state
+            # EVERY failure (including LLMResponseError from a failed warm-up)
+            # must land here. Previously LLMResponseError was re-raised without
+            # recording anything, leaving state="ready" (the generation path had
+            # already reset it) while lifecycle stayed WARMING and the model was
+            # unusable — i.e. /ready answered 200 for a model that could not
+            # generate. Never hide the exception; never advertise false READY.
             self._record_startup_error(exc)
 
     def _record_startup_error(self, exc: Exception) -> None:
+        self._ready = False
         self.state = "error"
         self.lifecycle.transition(ERROR, "startup failed")
         message = str(exc)[:400] or exc.__class__.__name__
+        provider_message = str(getattr(exc, "provider_message", "") or "")
+        if provider_message and provider_message not in message:
+            message = f"{message} ({provider_message[:200]})"
+        # Exponential backoff so a readiness poll cannot relaunch the pipeline
+        # every 2 seconds. Bounded: the service always retries eventually.
+        self._load_failures += 1
+        backoff = min(300.0, 15.0 * (2 ** min(self._load_failures - 1, 5)))
+        self._retry_not_before = time.time() + backoff
         self.last_error = message
-        if "torch" in message.lower() or "transformers" in message.lower():
+        lowered = message.lower()
+        if "out of memory" in lowered or "oom" in lowered or "cannot allocate" in lowered:
+            self.error_detail = "insufficient_memory"
+        elif "no module named" in lowered or "import" in lowered and "torch" in lowered:
             self.error_detail = "runtime_missing"
-        elif "connect" in message.lower() or "download" in message.lower() or "resolve" in message.lower():
+        elif "404" in lowered or "not found" in lowered or "repositorynotfound" in lowered:
+            self.error_detail = "model_not_found"
+        elif "401" in lowered or "403" in lowered or "gated" in lowered or "authentication" in lowered:
+            self.error_detail = "model_access_denied"
+        elif "connect" in lowered or "download" in lowered or "resolve" in lowered or "timeout" in lowered:
             self.error_detail = "download_failed"
+        elif "upgrade torch" in lowered or "version" in lowered:
+            self.error_detail = "dependency_conflict"
         else:
             self.error_detail = "load_failed"
+        hints = {
+            "insufficient_memory": (
+                "The container ran out of RAM loading the model. Use a smaller model "
+                "(LOCAL_MODEL_REPO) or a larger instance; see /api/ai/model/status for sizing."
+            ),
+            "runtime_missing": "Install the runtime: pip install -r ai_engine/requirements.txt",
+            "model_not_found": (
+                "LOCAL_MODEL_REPO does not exist on HuggingFace (HTTP 404). Copy the exact "
+                "repo id from https://huggingface.co/<repo>."
+            ),
+            "model_access_denied": "The model repository is gated/private; use a public model.",
+            "download_failed": "Check outbound network access to huggingface.co from the AI service.",
+            "dependency_conflict": (
+                "torch/transformers version mismatch. transformers>=4.56 requires torch>=2.6 "
+                "to load .bin checkpoints; pin compatible versions in requirements.txt."
+            ),
+        }
         self.error_report = {
             "code": "MODEL_STARTUP_ERROR",
             "model": self.settings.local_model_id,
@@ -410,14 +537,20 @@ class TorchModelManager:
             "status": None,
             "stage": self.error_detail,
             "reason": self.last_error,
-            "hint": "Check LOCAL_MODEL_REPO / LOCAL_MODEL_DIR / network access to HuggingFace.",
-            "permanent": self.error_detail == "runtime_missing",
+            "hint": hints.get(self.error_detail, "Check LOCAL_MODEL_REPO / LOCAL_MODEL_DIR."),
+            "permanent": self.error_detail in {"runtime_missing", "model_not_found", "model_access_denied"},
+            "attempt": self._load_failures,
+            "retryInSeconds": int(self.retry_after_seconds()),
         }
+        # Never hide the exception — full traceback to the service log.
         logger.error(
-            "TORCH_MODEL_ERROR\nMODEL_STARTUP_ERROR\nModel: %s\nStage: %s\nReason: %s",
+            "[AI] MODEL STARTUP FAILED\nReason: %s\nModel: %s\nStage: %s\nHint: %s\nRetry in: %ss",
+            self.last_error,
             self.settings.local_model_id,
             self.error_detail,
-            self.last_error,
+            self.error_report["hint"],
+            int(self.retry_after_seconds()),
+            exc_info=exc,
         )
 
     def _set_legacy(self, value: str) -> None:
@@ -443,6 +576,17 @@ class TorchModelManager:
         if (target / "config.json").exists():
             logger.info("TORCH_MODEL_CACHE_HIT repo=%s path=%s (no download)", repo, target)
             return
+        # Real HuggingFace cache layout check. `snapshot_download(cache_dir=X)`
+        # writes to X/models--<org>--<name>/snapshots/<sha>/, NOT to the flat
+        # path above — so the flat check ALWAYS missed and the weights were
+        # re-downloaded on every single boot (and, on a slow/blocked network,
+        # the service never reached READY). Resolving the cached snapshot makes
+        # the persistent disk actually work: download once, warm boots reuse it.
+        cached = self._find_cached_snapshot(target.parent, repo)
+        if cached is not None:
+            self._model_path = cached
+            logger.info("TORCH_MODEL_CACHE_HIT repo=%s snapshot=%s (no download)", repo, cached)
+            return
         self._set_legacy("downloading")
         self.lifecycle.transition(DOWNLOADING, "fetching weights")
         self.download_attempts += 1
@@ -453,15 +597,39 @@ class TorchModelManager:
             raise LLMConfigurationError(
                 "huggingface_hub is not installed; `pip install huggingface_hub`"
             ) from exc
+        # Only fetch what the text-generation runtime actually needs. Without
+        # this, snapshot_download pulls every file in the repo (ONNX exports,
+        # GGUF variants, duplicate .bin + .safetensors), which on a small
+        # instance means a multi-GB download that can time out before READY.
         local = await asyncio.to_thread(
-            snapshot_download,
-            repo_id=repo,
-            revision=self.settings.local_model_hf_revision,
-            cache_dir=str(target.parent),
-            local_dir=None,
+            functools.partial(
+                snapshot_download,
+                repo_id=repo,
+                revision=self.settings.local_model_hf_revision,
+                cache_dir=str(target.parent),
+                local_dir=None,
+                allow_patterns=[
+                    "*.json",
+                    "*.safetensors",
+                    "*.model",
+                    "*.txt",
+                    "tokenizer*",
+                ],
+                ignore_patterns=["*.onnx", "*.gguf", "*.msgpack", "*.h5", "*.pth", "*consolidated*"],
+                max_workers=2,
+            )
         )
         self._model_path = Path(local)
-        logger.info("TORCH_MODEL_DOWNLOAD_DONE repo=%s local=%s", repo, local)
+        try:
+            self.downloaded_bytes = sum(
+                f.stat().st_size for f in Path(local).rglob("*") if f.is_file()
+            )
+        except OSError:
+            pass
+        logger.info(
+            "TORCH_MODEL_DOWNLOAD_DONE repo=%s local=%s bytes=%s",
+            repo, local, self.downloaded_bytes,
+        )
 
     # --------------------------------------------------------------- load --
     async def _load_model(self) -> None:
@@ -494,12 +662,19 @@ class TorchModelManager:
         self._device = "cuda" if (device == "auto" and torch.cuda.is_available()) else (device if device in ("cuda", "cpu") else "cpu")
         if self._device == "cuda":
             torch_dtype = torch.float16 if self._dtype in ("fp16", "int8") else getattr(torch, "bfloat16" if self._dtype == "bf16" else "float32")
+        elif self._dtype == "fp32":
+            torch_dtype = torch.float32
         else:
-            torch_dtype = (
-                torch.float32
-                if self._dtype == "fp32"
-                else getattr(torch, "bfloat16" if self._dtype == "bf16" else "float32")
-            )
+            # bf16 AND int8 both load in bfloat16 (2 bytes/param).
+            #
+            # THIS IS A MEMORY-SAFETY FIX: int8 previously fell through to
+            # float32, so "auto" picked int8 because int8 *fits* (0.5 GB for a
+            # 0.5B model) and then loaded 4 bytes/param (~2.7 GB) anyway. On the
+            # 2 GB Render Standard instance the process was OOM-killed mid-load,
+            # so the model never reached READY. Dynamic int8 quantization is
+            # applied AFTER loading, converting one Linear at a time, so peak
+            # memory stays at the bf16 footprint instead of the fp32 one.
+            torch_dtype = torch.bfloat16
         logger.info(
             "TORCH_MODEL_LOAD dtype=%s device=%s params=%s mem_limit=%s threads=%s",
             self._dtype,
@@ -508,6 +683,30 @@ class TorchModelManager:
             memory_limit,
             adaptive.pick_threads(self.settings.local_model_threads),
         )
+        offline = bool(os.getenv("HF_HUB_OFFLINE", "") or self._uses_local_dir())
+
+        # Tokenizer FIRST: it is small and fast, so a broken/missing tokenizer
+        # fails in milliseconds instead of after a multi-GB weight load.
+        logger.info("[AI] Loading tokenizer")
+        try:
+            tokenizer = await asyncio.to_thread(
+                AutoTokenizer.from_pretrained,
+                str(path),
+                trust_remote_code=self.settings.local_model_trust_remote_code,
+                local_files_only=offline,
+            )
+        except Exception as exc:
+            raise RuntimeError(f"tokenizer load failed for {path}: {str(exc)[:300]}") from exc
+        self._tokenizer = tokenizer
+        self._apply_chat_config(tokenizer)
+        logger.info(
+            "[AI] Tokenizer loaded vocab=%s chat_template=%s eos=%s",
+            getattr(tokenizer, "vocab_size", "?"),
+            bool(self._tokenizer_config.get("chat_template")),
+            self._tokenizer_config.get("eos_token_id"),
+        )
+
+        logger.info("[AI] Loading model")
         try:
             model = await asyncio.to_thread(
                 AutoModelForCausalLM.from_pretrained,
@@ -516,21 +715,13 @@ class TorchModelManager:
                 device_map=None,
                 trust_remote_code=self.settings.local_model_trust_remote_code,
                 low_cpu_mem_usage=True,
-                local_files_only=bool(os.getenv("HF_HUB_OFFLINE", "") or self._uses_local_dir()),
+                local_files_only=offline,
             )
         except Exception as exc:
             raise RuntimeError(f"from_pretrained failed for {path}: {str(exc)[:300]}") from exc
         model.eval()
         self._model = model.to(self._device)
-
-        tokenizer = await asyncio.to_thread(
-            AutoTokenizer.from_pretrained,
-            str(path),
-            trust_remote_code=self.settings.local_model_trust_remote_code,
-            local_files_only=bool(os.getenv("HF_HUB_OFFLINE", "") or self._uses_local_dir()),
-        )
-        self._tokenizer = tokenizer
-        self._apply_chat_config(tokenizer)
+        logger.info("[AI] Model loaded dtype=%s device=%s", torch_dtype, self._device)
 
     def _apply_chat_config(self, tokenizer: Any) -> None:
         """Capture chat-template + stop-token facts used by generation."""
@@ -604,27 +795,59 @@ class TorchModelManager:
         from torch import nn
         from torch.ao.quantization import quantize_dynamic  # type: ignore[attr-defined]
 
-        try:
-            # Fast path: whole-model dynamic quantization (torch handles fp32).
-            quantize_dynamic(self._model, {nn.Linear}, dtype=torch.qint8, inplace=True)
-            return
-        except Exception as whole_model_error:  # noqa: BLE001
-            logger.info("TORCH_QUANTIZE_FALLBACK_PER_MODULE reason=%s", str(whole_model_error)[:150])
-            # Slow path: per-module. Convert each Linear to fp32, quantize it,
-            # then move on so the transient fp32 copy is released immediately.
-            model = self._model
-            for module in model.modules():
-                for name, child in list(module.named_children()):
-                    if isinstance(child, nn.Linear) and child.weight.dtype != torch.qint8:
-                        try:
-                            child.float()
-                            quantize_dynamic(child, {nn.Linear}, dtype=torch.qint8, inplace=True)
-                        except Exception as child_error:  # noqa: BLE001
-                            logger.warning(
-                                "TORCH_QUANTIZE_SKIP module=%s reason=%s",
-                                f"{type(module).__name__}.{name}",
-                                str(child_error)[:120],
-                            )
+        # Per-module conversion ONLY. Whole-model `quantize_dynamic` deep-copies
+        # the entire model, so peak RSS briefly holds two copies — exactly the
+        # spike that OOM-kills a 2 GB container. Converting one Linear at a time
+        # keeps the peak at (model + one layer).
+        #
+        # `quantize_dynamic(..., inplace=True)` on a child does NOT swap the
+        # module in its parent, so the returned module must be assigned back via
+        # setattr — otherwise the model silently stays unquantized.
+        model = self._model
+        converted = 0
+        skipped = 0
+        for module in model.modules():
+            for name, child in list(module.named_children()):
+                if not isinstance(child, nn.Linear):
+                    continue
+                try:
+                    child.float()  # dynamic quantization requires fp32 input weights
+                    setattr(module, name, quantize_dynamic(child, {nn.Linear}, dtype=torch.qint8))
+                    converted += 1
+                except Exception as child_error:  # noqa: BLE001
+                    skipped += 1
+                    logger.warning(
+                        "TORCH_QUANTIZE_SKIP module=%s reason=%s",
+                        f"{type(module).__name__}.{name}",
+                        str(child_error)[:120],
+                    )
+        if not converted:
+            raise RuntimeError("no Linear modules could be quantized to int8")
+
+        # Dynamic-quantized Linears run `quantized::linear_dynamic`, which
+        # accepts ONLY float32 activations. Everything still holding bf16
+        # (embeddings, norms, biases) would feed bf16 tensors into them and
+        # raise "mixed dtype (CPU): expect parameter to have scalar type of
+        # Float" at the first forward pass — i.e. the warm-up fails and the
+        # model never reaches READY. Cast the remaining float params/buffers
+        # (a small share of a decoder's weights) up to float32.
+        promoted = 0
+        for module in model.modules():
+            if "quantized" in type(module).__module__:
+                continue  # never touch a quantized module's packed params
+            for attr in ("_parameters", "_buffers"):
+                for key, tensor in list(getattr(module, attr, {}).items()):
+                    if tensor is not None and tensor.dtype in (torch.bfloat16, torch.float16):
+                        getattr(module, attr)[key] = (
+                            torch.nn.Parameter(tensor.float(), requires_grad=False)
+                            if attr == "_parameters"
+                            else tensor.float()
+                        )
+                        promoted += 1
+        logger.info(
+            "TORCH_QUANTIZE_MODULES converted=%s skipped=%s promoted_to_fp32=%s",
+            converted, skipped, promoted,
+        )
 
     # --------------------------------------------------------- generation --
     def _render_prompt(self, system_prompt: str, user_prompt: str) -> tuple[str, list[str]]:
@@ -638,7 +861,20 @@ class TorchModelManager:
                 prompt = tokenizer.apply_chat_template(
                     messages, tokenize=False, add_generation_prompt=True
                 )
-                return prompt, ["<|im_end|>", "<|endoftext|>", "</s>", "<|end|>"]
+                # Only stop markers that genuinely exist in THIS tokenizer's
+                # vocabulary. Listing foreign markers ("</s>" for a ChatML model)
+                # previously truncated answers, because the substring scan below
+                # matches raw decoded text.
+                candidates = ("<|im_end|>", "<|endoftext|>", "</s>", "<|end|>", "<|eot_id|>")
+                stops = []
+                for marker in candidates:
+                    try:
+                        tid = tokenizer.convert_tokens_to_ids(marker)
+                        if isinstance(tid, int) and tid >= 0 and tokenizer.convert_ids_to_tokens(tid) == marker:
+                            stops.append(marker)
+                    except Exception:
+                        continue
+                return prompt, stops
             except Exception as exc:  # noqa: BLE001
                 logger.warning("TORCH_CHAT_TEMPLATE_FAILED reason=%s", str(exc)[:120])
         return _FALLBACK_TEMPLATE.format(
@@ -694,7 +930,13 @@ class TorchModelManager:
         return prompt, max_tokens
 
     async def self_test(self, warmup: bool = False) -> dict[str, Any]:
-        """Prove inference works: a real forward pass, real tokens."""
+        """Prove inference works: a real forward pass, real tokens.
+
+        The warm-up proves the *runtime* works (weights + tokenizer + sampler +
+        KV cache all execute), so ``allow_empty=True``: an empty completion is a
+        model-quality signal, not a runtime fault, and must not keep a
+        perfectly functional service permanently out of READY.
+        """
         started = time.monotonic()
         text = await self.generate(
             system_prompt=(
@@ -702,9 +944,10 @@ class TorchModelManager:
                 if not warmup
                 else "You are EduNova AI, a helpful assistant. Reply with OK."
             ),
-            user_prompt="What is ML?" if not warmup else "Are you ready?",
+            user_prompt="What is ML?" if not warmup else "What is 2 + 2?",
             max_tokens=256 if not warmup else 8,
             temperature=0.2 if not warmup else 0.0,
+            allow_empty=warmup,
         )
         return {
             "ok": True,
@@ -737,7 +980,11 @@ class TorchModelManager:
         # state is allowed through because the warm-up inference itself calls
         # generate() from inside the load pipeline (state=warming) — gating on
         # the load task there would deadlock (the pipeline would await itself).
-        if self.state not in ("ready", "warming", "busy") or self._model is None:
+        # `warming` is allowed through because the warm-up inference itself runs
+        # from inside the load pipeline; gating it would deadlock (the pipeline
+        # would await its own task). Everything else must pass the real gate.
+        warming = self.state == "warming" and self._model is not None and self._tokenizer is not None
+        if not warming and not self.is_ready():
             await self.wait_ready(self.settings.local_chat_wait_seconds)
         temp = self.settings.llm_temperature if temperature is None else temperature
         bounded_max = max(16, min(int(max_tokens), self.settings.llm_max_output_tokens))
@@ -792,6 +1039,11 @@ class TorchModelManager:
                 status_code=503,
                 error_type="model_busy",
             )
+        # Remember the state we came from. The warm-up inference runs while the
+        # manager is "warming"; blindly restoring "ready" afterwards is what let
+        # a FAILED warm-up leave state="ready" (lifecycle stuck at WARMING) and
+        # made /ready return 200 for an unusable model.
+        previous_state = self.state
         try:
             self.state = "busy"
             if self.lifecycle.state in (READY, BUSY):
@@ -801,7 +1053,7 @@ class TorchModelManager:
                     system_prompt, user_prompt, max_tokens, temperature, allow_empty, on_token
                 )
             finally:
-                self.state = "ready"
+                self.state = "ready" if self._ready else previous_state
                 if self.lifecycle.state == BUSY:
                     self.lifecycle.transition(READY, "generation finished")
         finally:
@@ -844,17 +1096,29 @@ class TorchModelManager:
         eos_ids: set[int] = set()
         if tokenizer.eos_token_id is not None:
             eos_ids.add(int(tokenizer.eos_token_id))
+        # Stop tokens must be resolved STRICTLY. `convert_tokens_to_ids` returns
+        # the UNK id for a token that is not in the vocabulary, so mapping
+        # generic markers like "</s>" or "<|end|>" against a Qwen2 vocab yielded
+        # unk (id 0 = "<|endoftext|>") and made the decoder stop on a perfectly
+        # ordinary token — answers were cut off mid-sentence. Only accept an id
+        # that round-trips back to the exact same token text.
+        unk_id = getattr(tokenizer, "unk_token_id", None)
         stop_ids: list[int] = []
         for stop in stops:
             try:
-                tid = int(tokenizer.convert_tokens_to_ids(stop))
-                if tid is not None and tid >= 0:
-                    stop_ids.append(tid)
+                tid = tokenizer.convert_tokens_to_ids(stop)
             except Exception:
-                try:
-                    stop_ids.extend(tokenizer.encode(stop, add_special_tokens=False))
-                except Exception:
-                    pass
+                continue
+            if not isinstance(tid, int) or tid < 0:
+                continue
+            if unk_id is not None and tid == unk_id and stop != getattr(tokenizer, "unk_token", None):
+                continue
+            try:
+                if tokenizer.convert_ids_to_tokens(tid) != stop:
+                    continue  # not a real token in this vocabulary
+            except Exception:
+                continue
+            stop_ids.append(tid)
         if tokenizer.pad_token_id is not None:
             pad_id = int(tokenizer.pad_token_id)
             if pad_id not in eos_ids:
