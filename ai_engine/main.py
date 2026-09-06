@@ -148,8 +148,15 @@ def _log_startup_diagnostics() -> None:
     )
     if not settings.inference_url:
         logger.error(
-            "AI_INFERENCE_URL_MISSING hint=Set AI_INFERENCE_URL to the persistent inference service "
-            "(inference_server.py). This process never loads the model itself."
+            "CONFIG_FAILED code=AI_INFERENCE_URL_MISSING hint=Set AI_INFERENCE_URL to the persistent "
+            "inference service (inference_server.py). This process never loads the model itself. "
+            "The service refuses to start until it is set — see _require_runtime_configuration()."
+        )
+    if settings.ai_require_internal_token and not settings.ai_internal_token:
+        logger.error(
+            "CONFIG_FAILED code=AI_INTERNAL_TOKEN_MISSING hint=AI_REQUIRE_INTERNAL_TOKEN is true but "
+            "AI_INTERNAL_TOKEN is empty. Use the same random value on edunova-api, edunova-ai and "
+            "edunova-inference."
         )
     stale_external = [name for name in ("LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL") if os.getenv(name, "").strip()]
     if stale_external:
@@ -157,6 +164,54 @@ def _log_startup_diagnostics() -> None:
 
 
 _log_startup_diagnostics()
+
+
+class OrchestratorStartupError(RuntimeError):
+    """A configuration that makes chat impossible, raised at STARTUP.
+
+    Failing here rather than on the first student message is the point: the
+    Render deploy goes red immediately and the deploy log carries a
+    machine-readable code, instead of the service reporting a green
+    ``/health`` and answering the first chat with a 503.
+    """
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(f"{code}: {message}")
+        self.code = code
+        self.message = message
+
+
+def _require_runtime_configuration() -> None:
+    """Refuse to serve traffic when the orchestrator cannot reach the model.
+
+    These are the only two configuration errors that are unrecoverable at
+    runtime. Everything else (inference service down, model still loading,
+    resources too small) is a live state reported per request, never fatal at
+    boot, because the inference service may legitimately be starting later.
+    """
+    if not settings.inference_url:
+        raise OrchestratorStartupError(
+            "AI_INFERENCE_URL_MISSING",
+            "AI_INFERENCE_URL is not configured. The orchestrator never loads the model "
+            "itself: set AI_INFERENCE_URL on edunova-ai to the public HTTPS URL of the "
+            "persistent inference service (edunova-inference), with no trailing slash.",
+        )
+    if settings.ai_require_internal_token and not settings.ai_internal_token:
+        raise OrchestratorStartupError(
+            "AI_INTERNAL_TOKEN_MISSING",
+            "AI_REQUIRE_INTERNAL_TOKEN is true but AI_INTERNAL_TOKEN is empty. Set the same "
+            "random AI_INTERNAL_TOKEN on edunova-api, edunova-ai and edunova-inference.",
+        )
+
+
+def _inference_host() -> str:
+    """The inference service host for logs. Never the token, never a full URL."""
+    raw = str(settings.inference_url or "")
+    if not raw:
+        return "unset"
+    without_scheme = raw.split("://", 1)[-1]
+    return without_scheme.split("/", 1)[0].split("@", 1)[-1]
+
 
 registry = ToolRegistry(
     allowed_permissions={"READ_INTERNAL", "WRITE_INTERNAL", "READ_EXTERNAL", "UTILITY"}
@@ -195,15 +250,27 @@ async def _inference_status(force: bool = False) -> dict[str, Any]:
     now = time.time()
     if not force and llm.last_status is not None and llm.last_status_at and now - llm.last_status_at < _INFERENCE_STATUS_TTL:
         return llm.last_status
+    # This is the single choke point for the orchestrator -> inference hop, so
+    # the hop log lives here and covers BOTH the gateway's readiness probe and
+    # the chat path. Bounded by the status TTL above; never logs tokens or
+    # message text.
+    started = time.monotonic()
     try:
         status = await llm.status()
         _set_provider_state(str(status.get("state") or "unknown"), int(status.get("httpStatus") or 200), None)
+        logger.info("HOP_AI_TO_INFERENCE_OK host=%s ms=%s state=%s model_loaded=%s",
+                    _inference_host(), int((time.monotonic() - started) * 1000),
+                    status.get("state"), status.get("model_loaded"))
         return status
     except LLMConfigurationError as exc:
         _set_provider_state("CONFIG_FAILED", None, "CONFIG_FAILED")
+        logger.error("HOP_AI_TO_INFERENCE_FAILED host=%s ms=%s code=CONFIG_FAILED",
+                     _inference_host(), int((time.monotonic() - started) * 1000))
         return {"state": "CONFIG_FAILED", "error": str(exc), "errorStage": "CONFIG_FAILED", "permanentFailure": True, "reachable": False}
     except LLMResponseError as exc:
         _set_provider_state(exc.error_type, exc.status_code, exc.error_type)
+        logger.error("HOP_AI_TO_INFERENCE_FAILED host=%s ms=%s code=%s http=%s",
+                     _inference_host(), int((time.monotonic() - started) * 1000), exc.error_type, exc.status_code)
         return {"state": "MODEL_NOT_READY" if exc.error_type == "AI_SERVICE_UNREACHABLE" else exc.error_type,
                 "error": str(exc), "errorStage": exc.error_type, "reachable": False,
                 "permanentFailure": exc.error_type in {"AUTH_FAILED", "CONFIG_FAILED"}}
@@ -256,6 +323,17 @@ registry.register(build_retrieval_tool(settings, rag_index))
 async def lifespan(app: FastAPI):
     # No model lifecycle here. The orchestrator only OBSERVES the inference
     # service; it never downloads, loads or warms weights.
+    #
+    # Fatal configuration is caught BEFORE the port starts answering, so a
+    # missing AI_INFERENCE_URL fails the deploy instead of the first student
+    # message. uvicorn exits non-zero and Render marks the deploy failed.
+    try:
+        _require_runtime_configuration()
+    except OrchestratorStartupError as exc:
+        logger.error("ORCHESTRATOR_STARTUP_ABORTED code=%s reason=%s", exc.code, exc.message)
+        raise
+    logger.info("ORCHESTRATOR_STARTUP_OK inference_url_host=%s", _inference_host())
+
     async def observe_inference():
         status = await _inference_status(force=True)
         logger.info("INFERENCE_SERVICE_OBSERVED state=%s model=%s error=%s", status.get("state"), status.get("model"), status.get("error"))
@@ -721,7 +799,11 @@ def _safe_error(exc: Exception) -> tuple[int, str, str]:
 
 
 async def _ready_gate() -> None:
-    """One observational status read. Never starts, reloads or queues on the model."""
+    """One observational status read. Never starts, reloads or queues on the model.
+
+    The hop itself is timed and logged inside ``_inference_status`` so the
+    gateway's readiness probe and the chat path are both covered.
+    """
     status = await _inference_status()
     if _status_is_ready(status):
         return
@@ -791,8 +873,8 @@ async def _run_non_stream(request: ChatRequest) -> dict[str, Any]:
     _bump_metric("request_count")
     _bump_metric("success_count")
     logger.info(
-        "[EduNova AI] RESPONSE_SENT request_id=%s total_ms=%s",
-        request.request_id, total_ms,
+        "[EduNova AI] RESPONSE_SENT request_id=%s total_ms=%s inference_host=%s inference_connect_ms=%s",
+        request.request_id, total_ms, _inference_host(), llm.last_connect_ms,
     )
     return result
 

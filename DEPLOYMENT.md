@@ -195,7 +195,7 @@ Endpoints (all but `/health` and `/ready` require `X-AI-Internal-Token`):
 
 | Variable | Notes |
 |---|---|
-| `AI_INFERENCE_URL` | **Required.** Public HTTPS URL of `edunova-inference` |
+| `AI_INFERENCE_URL` | **Required — the service refuses to start without it.** Public HTTPS URL of `edunova-inference`, no trailing slash. Missing value aborts startup with `CONFIG_FAILED` / `AI_INFERENCE_URL_MISSING` (exit code 3, deploy goes red) instead of serving a 503 to the first chat |
 | `AI_INFERENCE_REQUEST_TIMEOUT` | Network safety net per inference call (`600` s); never shortens an answer |
 | `APP_BACKEND_URL` | Public HTTPS URL of `edunova-api` (authenticated tools) |
 | `AI_INTERNAL_TOKEN` / `AI_REQUIRE_INTERNAL_TOKEN` | Same token as the other services / `true` |
@@ -220,6 +220,28 @@ server-side): `POST /api/ai/chat`, `POST /api/ai/stream` (always SSE),
 Before forwarding chat it reads `/api/ai/ready` once and returns the precise
 code (`MODEL_LOADING`, `MODEL_RESOURCE_INSUFFICIENT`, `AI_SERVICE_UNREACHABLE`,
 …) — there is no warm queue and no "preparing…" loop.
+
+#### Per-hop timing logs
+
+Every chat request emits one structured log line per hop, so a slow or broken
+hop is identifiable from logs alone (no tokens, no message text):
+
+| Log event | Service | Meaning |
+|---|---|---|
+| `ai.request` | edunova-api | Browser → API accepted the request |
+| `ai.gateway.config_ok` / `ai.gateway.config_failed` | edunova-api | `AI_ENGINE_URL` / `AI_INTERNAL_TOKEN` state, logged once at boot |
+| `ai.hop.gateway_to_ai` | edunova-api | API → orchestrator readiness probe (`probeMs`, `modelReady`) |
+| `ai.hop.ai_response_headers` | edunova-api | Orchestrator answered the chat POST (`connectMs`) |
+| `HOP_AI_TO_INFERENCE_OK` / `HOP_AI_TO_INFERENCE_FAILED` | edunova-ai | Orchestrator → inference service (`probe_ms`, host) |
+| `RESPONSE_SENT` | edunova-ai | Full orchestrator turn (`total_ms`, `inference_connect_ms`) |
+| `ai.hop.browser_to_api_complete` | edunova-api | Non-stream response returned (`totalMs`) |
+| `ai.stream.end` | edunova-api | SSE stream closed (`totalMs`) |
+
+`edunova-api` logs `ai.gateway.config_failed` at boot when `AI_ENGINE_URL` or
+`AI_INTERNAL_TOKEN` is missing, but keeps running: it also serves auth,
+timetables, courses, AR and Socket.IO, so only `/api/ai/*` degrades (503
+`CONFIG_FAILED`). `edunova-ai` is the service that fails fast, because without
+`AI_INFERENCE_URL` it has nothing to serve at all.
 
 ### Model weights cache (persistent disk)
 

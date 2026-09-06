@@ -28,6 +28,33 @@ function getAiBaseUrl() {
   const url = String(process.env.AI_ENGINE_URL || (process.env.NODE_ENV !== "production" ? "http://127.0.0.1:8001" : "")).trim();
   return url.replace(/\/+$/, "");
 }
+// Logged once at boot so a missing AI gateway target is visible in the deploy
+// log instead of only in a student's 503.
+//
+// Deliberately NOT a hard exit: this process also serves auth, timetables,
+// courses, AR and Socket.IO. Taking the whole product down because the AI URL
+// is unset would be worse than degrading AI to an explicit CONFIG_FAILED 503.
+// edunova-ai is the service that fails fast, because without AI_INFERENCE_URL
+// it has literally nothing to do.
+function logAiGatewayConfig() {
+  const configured = Boolean(getAiBaseUrl());
+  const token = Boolean(process.env.AI_INTERNAL_TOKEN);
+  if (process.env.NODE_ENV === "production" && (!configured || !token)) {
+    console.error(JSON.stringify({
+      event: "ai.gateway.config_failed",
+      code: !configured ? "AI_ENGINE_URL_MISSING" : "AI_INTERNAL_TOKEN_MISSING",
+      message: !configured
+        ? "AI_ENGINE_URL is not configured; /api/ai/* will return 503 CONFIG_FAILED. Set it to the public HTTPS URL of edunova-ai."
+        : "AI_INTERNAL_TOKEN is not configured; /api/ai/* will return 503 AUTH_FAILED. Use the same value as on edunova-ai and edunova-inference.",
+      aiRoutesDegraded: true,
+      restOfApiAvailable: true,
+    }));
+    return;
+  }
+  console.info(JSON.stringify({ event: "ai.gateway.config_ok", aiEngineConfigured: configured, internalTokenConfigured: token }));
+}
+logAiGatewayConfig();
+
 function internalHeaders(requestId) {
   return { "Content-Type": "application/json", "X-Request-Id": requestId,
     ...(process.env.AI_INTERNAL_TOKEN ? { "X-AI-Internal-Token": process.env.AI_INTERNAL_TOKEN } : {}) };
@@ -83,7 +110,10 @@ async function handleAgentChat(req, res) {
     // One observational probe. A permanently failed or starting service is NOT
     // a request queue, and chat must not wake/reload it. No blind POST retries:
     // replaying a tool-bearing request could duplicate writes.
+    const probeStarted = Date.now();
     const ready = await axios.get(`${base}/api/ai/ready`, { headers: internalHeaders(requestId), timeout: 8000, signal: controller.signal, validateStatus: () => true });
+    // Hop 1->2 of the request path (Express gateway -> AI orchestrator).
+    console.info(JSON.stringify({ event: "ai.hop.gateway_to_ai", requestId, readyStatus: ready.status, probeMs: Date.now() - probeStarted, modelReady: ready.data?.modelReady === true, errorStage: ready.data?.errorStage || null }));
     if (ready.status !== 200 || ready.data?.modelReady !== true) {
       const code = ready.data?.errorStage || (ready.status === 401 ? "AUTH_FAILED" : ready.data?.permanentFailure ? "MODEL_STARTUP_FAILED" : "MODEL_NOT_READY");
       return fail(res, ready.status === 401 ? 503 : ready.status >= 400 ? ready.status : 503, code,
@@ -92,10 +122,12 @@ async function handleAgentChat(req, res) {
     const payload = { requestId, message: message.trim(), conversationId, ownerId: String(req.user.id),
       userRole: req.user.role, userName: req.user.name, userEmail: req.user.email,
       applicationContext: context, stream };
+    const upstreamStarted = Date.now();
     const upstream = await axios.post(`${base}/api/ai/chat`, payload, {
       headers: { ...internalHeaders(requestId), Accept: stream ? "text/event-stream" : "application/json" },
       responseType: "stream", signal: controller.signal, timeout: Math.max(15000, Number(process.env.AGENT_REQUEST_TIMEOUT) || 120000), validateStatus: () => true,
     });
+    console.info(JSON.stringify({ event: "ai.hop.ai_response_headers", requestId, upstreamStatus: upstream.status, connectMs: Date.now() - upstreamStarted }));
     if (upstream.status >= 400) {
       let data;
       try { data = await readLimited(upstream.data); }
@@ -104,7 +136,9 @@ async function handleAgentChat(req, res) {
       return fail(res, upstream.status, detail.code || (upstream.status === 401 ? "AUTH_FAILED" : "INFERENCE_FAILED"), typeof detail === "string" ? detail : detail.message || "AI rejected the request", requestId);
     }
     if (!stream) {
-      return res.status(upstream.status).json({ ...await readLimited(upstream.data), requestId });
+      const body = await readLimited(upstream.data);
+      console.info(JSON.stringify({ event: "ai.hop.browser_to_api_complete", requestId, totalMs: Date.now() - started, upstreamStatus: upstream.status }));
+      return res.status(upstream.status).json({ ...body, requestId });
     }
     if (!String(upstream.headers["content-type"]).includes("text/event-stream")) {
       upstream.data.destroy();
