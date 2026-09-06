@@ -287,24 +287,26 @@ export function aiRequestErrorMessage(status, detail) {
     return safeDetail || "EduNova AI authentication failed. Please sign in again; if it continues, the AI service configuration needs attention.";
   }
   if (status === 429) {
-    return safeDetail || "EduNova AI is busy right now. Please try again shortly.";
+    return safeDetail || "EduNova AI is receiving too many requests at once. Wait a few seconds and send your message again — it will not be lost.";
   }
   if (status === 503) {
-    // 503 from the AI service is either a config problem or a cold-start/wake-up.
-    // Prefer the backend's specific message when present; otherwise distinguish by intent.
+    // 503 from the AI service during warm-up means the model is still being
+    // prepared. The API gateway queues the request and streams a "preparing"
+    // status instead of returning this to the student, so this fallback is
+    // only reached when no specific backend message exists.
     if (safeDetail) return safeDetail;
-    return "EduNova AI configuration requires attention. The AI provider is not configured or is starting up. Please try again shortly.";
+    return "EduNova AI is preparing its model — your question is queued and will be answered automatically.";
   }
   if (status === 502) {
-    return safeDetail || "The AI model provider is temporarily unavailable. Please try again.";
+    return safeDetail || "The AI model provider is temporarily unavailable. Please try again in a moment.";
   }
   if (status === 504) {
-    return safeDetail || "EduNova AI is temporarily unavailable. Please try again.";
+    return safeDetail || "EduNova AI is still working on your request. If the connection dropped, send the message again.";
   }
   if (status >= 500) {
     // Generic fallback for other 5xx, but still honor a safe config hint if present
     if (isConfigMessage) return safeDetail;
-    return safeDetail || "The EduNova AI backend or model provider is temporarily unavailable. Please try again shortly.";
+    return safeDetail || "The EduNova AI backend is temporarily unavailable. Please try again in a moment.";
   }
   return safeDetail || "EduNova AI could not complete this request. Please try again.";
 }
@@ -332,7 +334,7 @@ export const AI_STATUS = {
 
 const AI_STATUS_LABELS = {
   [AI_STATUS.UNKNOWN]: "Checking AI model...",
-  [AI_STATUS.STARTING]: "AI model starting...",
+  [AI_STATUS.STARTING]: "EduNova AI is preparing...",
   [AI_STATUS.READY]: "Ready to help",
   [AI_STATUS.UNAVAILABLE]: "AI model unavailable",
 };
@@ -345,11 +347,12 @@ function classifyAIHealth(body, httpStatus) {
     return httpStatus === 503 ? AI_STATUS.STARTING : AI_STATUS.UNKNOWN;
   }
   if (body.modelReady === true || body.success === true) return AI_STATUS.READY;
-  const state = String(body.modelState || body.status || "").toLowerCase();
-  if (["not_started", "downloading", "loading", "model_loading", "cold"].includes(state)) {
+  const state = String(body.modelState || body.status || body.lifecycle || "").toLowerCase();
+  if (["not_started", "starting", "downloading", "loading", "warming", "model_loading", "cold"].includes(state)) {
     return AI_STATUS.STARTING;
   }
   if (["ready", "model_ready"].includes(state)) return AI_STATUS.READY;
+  if (["busy", "degraded"].includes(state)) return AI_STATUS.READY;
   if (state) return AI_STATUS.UNAVAILABLE;
   return AI_STATUS.UNKNOWN;
 }

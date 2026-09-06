@@ -1,0 +1,10 @@
+# Optional legacy runtime: llama.cpp (GGUF) bindings for EduNova AI.
+#
+# Only needed when LOCAL_MODEL_RUNTIME=llama_cpp is configured. The default
+# runtime is the PyTorch-first one (requirements.txt). PyPI ships
+# llama-cpp-python as a SOURCE distribution only, so the official prebuilt CPU
+# wheels from the extra index below are used (avoids a C++ build on Render).
+--extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+--prefer-binary
+
+llama-cpp-python==0.3.35

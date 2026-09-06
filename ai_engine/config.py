@@ -22,6 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import ipaddress
 import os
+from pathlib import Path
 import re
 from urllib.parse import urlsplit
 
@@ -205,6 +206,67 @@ KNOWN_MODELS: dict[tuple[str, str], dict[str, object]] = {
 DEFAULT_LOCAL_MODEL_REPO = "bartowski/Qwen2.5-0.5B-Instruct-GGUF"
 DEFAULT_LOCAL_MODEL_FILE = "Qwen2.5-0.5B-Instruct-Q4_K_M.gguf"
 
+# -----------------------------------------------------------------------------
+# Verified self-hosted PyTorch (transformers) model catalogue.
+#
+# These are the *model ids* the PyTorch-first runtime downloads through
+# HuggingFace at service startup (never during a user request).  ``params`` is
+# the approximate parameter count used by adaptive compute to pick a dtype that
+# fits the container memory; ``ctx`` is the practical context ceiling to set
+# via LOCAL_MODEL_CTX on the target instance.
+#
+# Model selection rule (do NOT confuse model size with intelligence):
+# choose the strongest model that can realistically operate within the
+# available infrastructure; capability is then added via tools + retrieval +
+# memory + EduNova data + web research, not by inflating the prompt.
+# -----------------------------------------------------------------------------
+TORCH_KNOWN_MODELS: dict[str, dict[str, object]] = {
+    # Default PyTorch model. Qwen2.5-0.5B-Instruct: Apache-2.0, ChatML + native
+    # tool-calling training, 32k native context, strong multilingual coverage
+    # (English/Tamil/Hindi + many others) — the smallest Qwen2.5 that still
+    # produces usable educational explanations and JSON decisions.
+    "Qwen/Qwen2.5-0.5B-Instruct": {
+        "params": 494_000_000,
+        "ctx": 8192,
+        "default_dtype": "auto",
+        "min_ram_mb": 2048,
+        "recommended_ram_mb": 4096,
+    },
+    # Quality upgrade once the instance has room (4GB+): still small enough for
+    # shared CPU, dramatically better reasoning/coding.
+    "Qwen/Qwen2.5-1.5B-Instruct": {
+        "params": 1_540_000_000,
+        "ctx": 8192,
+        "default_dtype": "auto",
+        "min_ram_mb": 4096,
+        "recommended_ram_mb": 8192,
+    },
+    # Lower-RAM option (SmolLM2-360M-Instruct, Apache-2.0, ChatML). Weaker
+    # reasoning and weak multilingual support — last resort for tiny instances.
+    "HuggingFaceTB/SmolLM2-360M-Instruct": {
+        "params": 362_000_000,
+        "ctx": 4096,
+        "default_dtype": "auto",
+        "min_ram_mb": 2048,
+        "recommended_ram_mb": 2048,
+    },
+}
+
+DEFAULT_TORCH_MODEL_REPO = "Qwen/Qwen2.5-0.5B-Instruct"
+
+
+def torch_model_entry(repo: str) -> dict[str, object] | None:
+    return TORCH_KNOWN_MODELS.get(str(repo or "").strip())
+
+
+def torch_params_for_repo(repo: str) -> int:
+    entry = torch_model_entry(repo)
+    try:
+        return int(entry.get("params", 0)) if entry else 0
+    except (TypeError, ValueError):
+        return 0
+
+
 
 def known_model_entry(repo: str, filename: str) -> dict[str, object] | None:
     return KNOWN_MODELS.get((str(repo or "").strip(), str(filename or "").strip()))
@@ -292,6 +354,29 @@ class Settings:
     local_chat_wait_seconds: int = 25  # how long chat waits for warmup before 503
     local_model_download_timeout: int = 900
 
+    # ---- PyTorch-first runtime (inference/torch_runtime.py) ----------------
+    # Runtime selection: "torch" (default, PyTorch + transformers) or
+    # "llama_cpp" (legacy GGUF runtime). Model weights are downloaded and the
+    # model is warmed to READY at service startup; user requests never trigger
+    # a download or cold load — they queue while the model prepares.
+    local_model_runtime: str = "torch"
+    # Weight representation: auto | fp32 | bf16 | int8. "auto" inspects the
+    # container memory and model size (inference/adaptive.py) and picks the
+    # fastest representation that fits; int8 (dynamic quantization) is the
+    # usual CPU winner for small models on shared cores.
+    local_model_dtype: str = "auto"
+    local_model_device: str = "auto"  # auto | cpu | cuda
+    local_model_hf_revision: str = "main"
+    local_model_trust_remote_code: bool = False
+    # "off" by default: torch.compile on small shared CPUs costs more than it
+    # saves for these models. Set "1"/"auto" to benchmark it per instance.
+    local_model_torch_compile: str = "off"
+
+    # ---- RAG retrieval (learning material semantic index) ------------------
+    rag_enabled: bool = True
+    rag_embedding_model: str = ""  # empty => default all-MiniLM-L6-v2 (auto fallback)
+    rag_persist_dir: str = ""  # empty => <LOCAL_MODEL_DIR>/rag
+
     web_search_api_key: str = ""
     web_search_provider: str = "brave"
     web_search_max_results: int = 5
@@ -331,18 +416,29 @@ class Settings:
                 return _LOCAL_MODEL_ID_SAFE.sub("", f"{parts.hostname or 'custom'}:{filename}")[:160]
             except Exception:
                 return "custom-url-model"
-        return _LOCAL_MODEL_ID_SAFE.sub("", f"{self.local_model_repo}:{self.local_model_file}")[:160]
+        repo = str(self.local_model_repo or "").strip()
+        file = str(self.local_model_file or "").strip()
+        if self.local_model_runtime == "torch":
+            # The torch runtime loads a whole HF repo / local directory.
+            return _LOCAL_MODEL_ID_SAFE.sub("", repo or "torch-model")[:160]
+        return _LOCAL_MODEL_ID_SAFE.sub("", f"{repo}:{file}")[:160] if repo else "local-model"
 
     @property
     def local_model_download_url(self) -> str:
-        """The exact URL the runtime will fetch the GGUF weights from.
+        """The source URL the runtime fetches weights from (diagnostics only).
 
-        Either an explicit ``LOCAL_MODEL_URL`` or the canonical HuggingFace
-        ``resolve/main`` link built from ``LOCAL_MODEL_REPO``/``LOCAL_MODEL_FILE``.
+        - explicit ``LOCAL_MODEL_URL`` (llama.cpp runtime, direct download);
+        - torch runtime: the HuggingFace repo page of ``LOCAL_MODEL_REPO``
+          (files are downloaded via ``huggingface_hub.snapshot_download``);
+        - llama.cpp runtime: canonical ``resolve/main`` link from repo + file.
         """
         if self.local_model_url:
             return self.local_model_url
-        if not (self.local_model_repo and self.local_model_file):
+        if not self.local_model_repo:
+            return ""
+        if self.local_model_runtime == "torch":
+            return f"https://huggingface.co/{self.local_model_repo}"
+        if not self.local_model_file:
             return ""
         return (
             f"https://huggingface.co/{self.local_model_repo}"
@@ -383,13 +479,28 @@ class Settings:
 
     @property
     def local_model_estimated_ram_mb(self) -> int:
-        """Rough resident-memory need of the configured model (0 = unknown)."""
+        """Rough resident-memory need of the configured model (0 = unknown).
+
+        For the llama.cpp (GGUF) runtime this uses catalogue metadata. For the
+        PyTorch runtime it estimates from the parameter count and the selected
+        dtype (int8 ≈ 1 B/param, bf16 ≈ 2, fp32 ≈ 4) plus ~0.9 GB for the
+        torch/transformers runtime, tokenizer, KV cache headroom and FastAPI.
+        """
         entry = self.local_model_known_entry
         if entry:
             try:
                 return int(entry.get("ram_mb", 0))
             except (TypeError, ValueError):
                 return 0
+        if self.local_model_runtime == "torch":
+            params = torch_params_for_repo(self.local_model_repo)
+            if not params:
+                return 0
+            dtype = str(self.local_model_dtype or "auto").lower()
+            bytes_per_param = 1 if dtype == "int8" else (2 if dtype == "bf16" else 4)
+            if dtype == "auto":
+                bytes_per_param = 1  # adaptive compute defaults to int8 on CPU
+            return int(params * bytes_per_param / (1024 * 1024)) + 900
         expected = self.local_model_expected_size
         # weights + ~35% for KV cache, compute buffers and allocator slack.
         return int(expected / (1024 * 1024) * 1.35) if expected else 0
@@ -409,6 +520,24 @@ class Settings:
     @property
     def llm_configuration_error(self) -> str | None:
         if self.llm_provider == "local":
+            if self.local_model_runtime not in {"torch", "llama_cpp"}:
+                return "unsupported_runtime"
+            if self.local_model_runtime == "torch":
+                # The torch runtime loads a HuggingFace repo id or a local
+                # directory that already contains a model (config.json).
+                repo = str(self.local_model_repo or "").strip()
+                local_dir = Path(repo) if repo else None
+                if not repo:
+                    return "missing_model_source"
+                if self.local_model_url:
+                    return "unsupported_for_torch_runtime"  # direct URL is GGUF-only
+                if str(self.local_model_file or "").lower().endswith(".gguf"):
+                    # A GGUF filename with the torch runtime is a config mistake.
+                    return "gguf_file_with_torch_runtime"
+                if local_dir and local_dir.exists() and not (local_dir / "config.json").exists():
+                    return "local_dir_missing_config"
+                return None
+            # ---- llama.cpp GGUF runtime (legacy) ----
             if not ((self.local_model_repo and self.local_model_file) or self.local_model_url):
                 return "missing_model_source"
             if self.local_model_url:
@@ -485,6 +614,10 @@ class Settings:
             "llm_json_mode": self.llm_json_mode,
             # Local model (self-hosted) diagnostics — no download URLs or secrets.
             "local_model_id": self.local_model_id,
+            "local_model_runtime": self.local_model_runtime,
+            "local_model_dtype": self.local_model_dtype,
+            "local_model_device": self.local_model_device,
+            "local_model_torch_compile": self.local_model_torch_compile,
             "local_model_ctx_size": self.local_model_ctx_size,
             "local_model_threads": self.local_model_threads,
             "local_preload_model": self.local_preload_model,
@@ -494,6 +627,27 @@ class Settings:
             "local_model_expected_bytes": self.local_model_expected_size or None,
             "local_model_estimated_ram_mb": self.local_model_estimated_ram_mb or None,
         }
+
+
+def _normalize_runtime(raw: str | None) -> str:
+    """Map runtime aliases onto {torch, llama_cpp}."""
+    value = _clean_env_value(raw).lower()
+    if value in {"gguf", "llamacpp", "llama_cpp", "llama.cpp", "llama-cpp", "llamacpp-python"}:
+        return "llama_cpp"
+    if value in {"pytorch", "transformers", "hf", "torch"}:
+        return "torch"
+    return "torch"  # default runtime is PyTorch-first
+
+
+def _normalize_dtype(raw: str | None) -> str:
+    value = _clean_env_value(raw).lower()
+    normalized = {
+        "fp32": "fp32", "float32": "fp32",
+        "bf16": "bf16", "bfloat16": "bf16",
+        "int8": "int8", "qint8": "int8", "dynamic-int8": "int8",
+        "auto": "auto", "": "auto",
+    }
+    return normalized.get(value, "auto")
 
 
 def load_settings() -> Settings:
@@ -525,6 +679,30 @@ def load_settings() -> Settings:
 
     is_local = llm_provider == "local"
 
+    # Runtime + model source selection.  LOCAL_MODEL_RUNTIME explicitly selects
+    # the inference runtime; when it is left unset we fall back to llama_cpp for
+    # existing GGUF-based deployments (repo ends with -GGUF or a .gguf file is
+    # pinned) so a rollout never silently breaks a working model cache, and to
+    # torch otherwise.
+    runtime_env = _clean_env_value(os.getenv("LOCAL_MODEL_RUNTIME", ""))
+    repo_env = _clean_env_value(os.getenv("LOCAL_MODEL_REPO", ""))
+    file_env = _clean_env_value(os.getenv("LOCAL_MODEL_FILE", ""))
+    is_gguf_deployment = bool(repo_env.upper().endswith("-GGUF")) or file_env.lower().endswith(".gguf")
+    local_runtime = _normalize_runtime(runtime_env if runtime_env else ("llama_cpp" if is_gguf_deployment else "torch"))
+    if runtime_env and local_runtime != "torch" and local_runtime != "llama_cpp":
+        local_runtime = "torch"
+    local_dtype = _normalize_dtype(os.getenv("LOCAL_MODEL_DTYPE", "auto"))
+    torch_compile = _clean_env_value(os.getenv("LOCAL_MODEL_TORCH_COMPILE", "off")).lower()
+    if torch_compile not in {"off", "0", "false", "none", "auto", "1", "true", "on"}:
+        torch_compile = "off"
+
+    if local_runtime == "llama_cpp":
+        default_repo = DEFAULT_LOCAL_MODEL_REPO
+        default_file = DEFAULT_LOCAL_MODEL_FILE
+    else:
+        default_repo = DEFAULT_TORCH_MODEL_REPO
+        default_file = ""
+
     # Provider-aware defaults: the local model runs on a small shared CPU, so
     # the autonomous loop defaults are tightened to keep single requests fast.
     max_iterations = _integer("MAX_AGENT_ITERATIONS", 5 if is_local else 12, 1, 30)
@@ -554,6 +732,13 @@ def load_settings() -> Settings:
         "APP_BACKEND_URL", "EXPRESS_URL", "SERVER_URL", default="http://127.0.0.1:4000"
     ).rstrip("/")
 
+    threads_env = _clean_env_value(os.getenv("LOCAL_MODEL_THREADS", ""))
+    threads_default = 0 if local_runtime == "torch" else 2  # 0 = adaptive auto
+    try:
+        threads_value = int(threads_env) if threads_env else threads_default
+    except (TypeError, ValueError):
+        threads_value = threads_default
+
     return Settings(
         llm_provider=llm_provider,
         llm_api_key=llm_api_key,
@@ -563,8 +748,14 @@ def load_settings() -> Settings:
         llm_max_output_tokens=max_output,
         llm_temperature=_floating("LLM_TEMPERATURE", 0.2, 0.0, 1.0),
         llm_json_mode=_boolean("LLM_JSON_MODE", True),
-        local_model_repo=_clean_env_value(os.getenv("LOCAL_MODEL_REPO", DEFAULT_LOCAL_MODEL_REPO)) or DEFAULT_LOCAL_MODEL_REPO,
-        local_model_file=_clean_env_value(os.getenv("LOCAL_MODEL_FILE", DEFAULT_LOCAL_MODEL_FILE)) or DEFAULT_LOCAL_MODEL_FILE,
+        local_model_runtime=local_runtime,
+        local_model_dtype=local_dtype,
+        local_model_device=_clean_env_value(os.getenv("LOCAL_MODEL_DEVICE", "auto")).lower() or "auto",
+        local_model_hf_revision=_clean_env_value(os.getenv("LOCAL_MODEL_REVISION", "main")) or "main",
+        local_model_trust_remote_code=_boolean("LOCAL_MODEL_TRUST_REMOTE_CODE", False),
+        local_model_torch_compile=torch_compile,
+        local_model_repo=_clean_env_value(os.getenv("LOCAL_MODEL_REPO", default_repo)) or default_repo,
+        local_model_file=_clean_env_value(os.getenv("LOCAL_MODEL_FILE", default_file)) or default_file,
         local_model_url=_clean_env_value(os.getenv("LOCAL_MODEL_URL", "")),
         local_model_dir=_clean_env_value(os.getenv("LOCAL_MODEL_DIR", "./models_cache")) or "./models_cache",
         local_model_sha256=_clean_env_value(os.getenv("LOCAL_MODEL_SHA256", "")).lower(),
@@ -572,12 +763,15 @@ def load_settings() -> Settings:
         local_model_min_bytes=_integer("LOCAL_MODEL_MIN_BYTES", 10 * 1024 * 1024, 4096, 20_000_000_000),
         local_model_download_retries=_integer("LOCAL_MODEL_DOWNLOAD_RETRIES", 3, 0, 8),
         local_model_ctx_size=local_ctx,
-        local_model_threads=_integer("LOCAL_MODEL_THREADS", 2, 1, 8),
+        local_model_threads=max(0, min(threads_value, 8)),
         local_model_batch=_integer("LOCAL_MODEL_BATCH", 256, 32, 2048),
         local_model_chat_format=_clean_env_value(os.getenv("LOCAL_MODEL_CHAT_FORMAT", "chatml")).lower() or "chatml",
         local_preload_model=_boolean("LOCAL_PRELOAD_MODEL", True),
-        local_chat_wait_seconds=_integer("LOCAL_CHAT_WAIT_TIMEOUT", 25, 1, 120),
-        local_model_download_timeout=_integer("LOCAL_MODEL_DOWNLOAD_TIMEOUT", 900, 60, 3600),
+        local_chat_wait_seconds=_integer("LOCAL_CHAT_WAIT_TIMEOUT", 120, 1, 300),
+        local_model_download_timeout=_integer("LOCAL_MODEL_DOWNLOAD_TIMEOUT", 1800, 60, 7200),
+        rag_enabled=_boolean("RAG_ENABLED", True),
+        rag_embedding_model=_clean_env_value(os.getenv("RAG_EMBEDDING_MODEL", "")),
+        rag_persist_dir=_clean_env_value(os.getenv("RAG_PERSIST_DIR", "")),
         web_search_api_key=_clean_env_value(os.getenv("WEB_SEARCH_API_KEY", "")),
         web_search_provider=_clean_env_value(os.getenv("WEB_SEARCH_PROVIDER", "brave")).lower(),
         web_search_max_results=_integer("WEB_SEARCH_MAX_RESULTS", 5, 1, 10),

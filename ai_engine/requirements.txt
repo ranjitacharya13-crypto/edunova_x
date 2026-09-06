@@ -1,24 +1,29 @@
-# EduNova AI engine — self-hosted runtime dependencies.
+# EduNova AI engine — PyTorch-first self-hosted inference runtime.
 #
-# llama-cpp-python is the local GGUF inference runtime (llama.cpp bindings).
-# PyPI ships it as a SOURCE distribution only, so a plain `pip install` would
-# compile llama.cpp with cmake on every deploy (slow, and it fails on build
-# images without a C++ toolchain). The official prebuilt CPU wheels live on the
-# extra index declared below, which is why it is pinned INSIDE this file rather
-# than only in render.yaml / the Dockerfile: local dev, CI, Docker and Render
-# then all resolve the same wheel without extra environment setup.
+# PyTorch is intentionally NOT listed here: the CPU wheel comes from the
+# official PyTorch CPU index in the deployment build command
+# (render.yaml / DEPLOYMENT.md):
 #
-# 0.3.35 publishes `py3-none-manylinux2014_x86_64` wheels: ABI-independent (any
-# Python 3.x) and glibc>=2.17, i.e. installable on Render's Python runtime
-# without a compiler. Do not downgrade to 0.2.x — those wheels are built per
-# CPython version and break whenever PYTHON_VERSION changes.
---extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
---prefer-binary
-
+#   pip install "torch>=2.2,<2.5" --index-url https://download.pytorch.org/whl/cpu
+#   pip install -r requirements.txt
+#
+# This keeps pip from ever resolving the default CUDA torch wheel from PyPI
+# (~3 GB of nvidia deps on Linux x86_64).
+#
+# The legacy llama.cpp GGUF runtime is optional and lives in
+# `requirements-llamacpp.txt` (LOCAL_MODEL_RUNTIME=llama_cpp).
+# ----------------------------------------------------------------------------
 fastapi>=0.115.0,<1.0.0
 uvicorn[standard]>=0.30.0,<1.0.0
 pydantic>=2.8.0,<3.0.0
 python-dotenv>=1.0.0,<2.0.0
 httpx>=0.27.0,<1.0.0
 beautifulsoup4>=4.12.0,<5.0.0
-llama-cpp-python==0.3.35
+
+# PyTorch-first inference stack
+transformers>=4.44.0,<5.0.0
+safetensors>=0.4.3
+accelerate>=0.33.0
+sentencepiece>=0.2.0
+tokenizers>=0.19.0
+huggingface-hub>=0.23.0

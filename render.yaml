@@ -95,13 +95,14 @@ services:
         value: "60000"
       - key: AI_RATE_LIMIT_MAX_REQUESTS
         value: "20"
-      # Cold-start resilience: on the free plan edunova-ai spins down when
-      # idle, and Render answers with an HTML 503 while it wakes. The AI also
-      # returns 503 LLM_MODEL_LOADING while the self-hosted GGUF weights are
-      # being downloaded/loaded after a cold boot. The API retries those fast
-      # failures on this schedule before surfacing an error, so the first
-      # question after an idle period succeeds once the model finishes booting.
-      # The window is sized for model download + load (~2-4 min worst case).
+      # Cold-start resilience: the model is downloaded/loaded at service
+      # startup and warmed to READY (GET /api/ai/ready returns 200 only then).
+      # Streaming /chat requests are queued at this gateway for up to
+      # AI_WARM_QUEUE_MAX_MS — the student sees "EduNova AI is preparing…" and
+      # their message is forwarded automatically once the model is ready, so a
+      # cold boot never surfaces "please try again shortly".
+      - key: AI_WARM_QUEUE_MAX_MS
+        value: "600000"
       - key: AI_UPSTREAM_RETRY_DELAYS_MS
         value: "3000,8000,15000,30000"
       - key: AI_UPSTREAM_RETRY_WINDOW_MS
@@ -117,39 +118,35 @@ services:
   # 2) edunova-ai — FastAPI autonomous learning/research agent
   #    rootDir: ai_engine  ->  `main:app` resolves to ai_engine/main.py
   #
-  #    SELF-HOSTED MODEL: the service runs a quantized GGUF model in-process
-  #    via llama.cpp (no OpenAI/Groq/Gemini/Anthropic keys).
+  #    SELF-HOSTED MODEL: the service runs a quantized open-source PyTorch
+  #    model in-process (torch.inference_mode + transformers, adaptive
+  #    int8/bf16/fp32 via LOCAL_MODEL_DTYPE=auto). No OpenAI/Groq/Gemini/
+  #    Anthropic/OpenRouter keys are used — the reasoning model is self-hosted.
   #
   #    ---- SIZING (read before changing `plan`) --------------------------------
-  #    Model:   Qwen2.5-0.5B-Instruct Q4_K_M  (379 MiB of weights, Apache-2.0)
-  #    Memory:  ~380 MB weights + ~75 MB KV cache (ctx 4096) + ~150 MB compute
-  #             buffers/allocator + ~130 MB Python/FastAPI  =>  ~700 MB RSS.
+  #    Model:   Qwen2.5-0.5B-Instruct  (~0.49B params, Apache-2.0)
+  #    Runtime: PyTorch CPU + transformers + tokenizer (~0.9 GB baseline)
+  #             + weights (int8 ≈ 0.5 GB / bf16 ≈ 1 GB) + KV cache.
   #
   #    Render instance types:  Free 512 MB / 0.1 CPU  •  Starter 512 MB / 0.5 CPU
   #                            Standard 2 GB / 1 CPU  •  Pro 4 GB / 2 CPU
   #
-  #    => The FREE and STARTER plans (512 MB) CANNOT run this model: the process
-  #       is OOM-killed during load, and 0.1 CPU would need minutes per answer.
-  #       STANDARD (2 GB / 1 CPU) is the MINIMUM required resource change and is
-  #       what this blueprint requests. This is a real cost change ($25/mo) and
-  #       is deliberate — the alternative is an AI that cannot start.
+  #    => The FREE and STARTER plans (512 MB) CANNOT run a PyTorch runtime: the
+  #       process is OOM-killed during load. STANDARD (2 GB / 1 CPU) is the
+  #       MINIMUM; PRO (4 GB / 2 CPU) is recommended for headroom and lets you
+  #       move up to Qwen2.5-1.5B-Instruct. Reported RAM required: >=2 GB
+  #       (int8), ~4 GB recommended.
   #
-  #    Staying on a 512 MB plan? Then you MUST also downgrade the model, e.g.
-  #       plan: starter
-  #       LOCAL_MODEL_REPO=bartowski/SmolLM2-360M-Instruct-GGUF
-  #       LOCAL_MODEL_FILE=SmolLM2-360M-Instruct-Q4_K_M.gguf   (258 MiB, ~480 MB RSS)
-  #       LOCAL_MODEL_CTX=2048
-  #    Both files are in the verified catalogue in ai_engine/config.py, so their
-  #    existence, size and sha256 are checked automatically.
+  #    PERSISTENT DISK: the weights are cached on the disk mounted below, so
+  #    the download happens ONCE (first boot) instead of on every restart or
+  #    deploy — this is the cold-start strategy: disk-cached weights => warm
+  #    boots skip the download entirely.
   #
-  #    PERSISTENT DISK: the weights are cached on the disk mounted below, so the
-  #    380 MB download happens ONCE (first boot) instead of on every restart or
-  #    deploy. Without a disk the model is re-downloaded on every cold start.
-  #
-  #    /health binds and answers immediately (status: live) and reports
-  #    `modelReady` separately, so Render never kills the service while the
-  #    weights download; chat returns 503 LLM_MODEL_LOADING until ready and
-  #    edunova-api retries those on a backoff schedule.
+  #    WARMING: /health binds immediately (status: live); the model is loaded
+  #    and warmed in the background at startup. /api/ai/ready returns 200 only
+  #    after load + warm-up inference. edunova-api queues streaming chat
+  #    requests (AI_WARM_QUEUE_MAX_MS) while the model prepares — students see
+  #    "EduNova AI is preparing…" and their message is answered automatically.
   # ---------------------------------------------------------------------------
   - type: web
     name: edunova-ai
@@ -157,69 +154,66 @@ services:
     plan: standard
     branch: main
     rootDir: ai_engine
-    buildCommand: pip install -r requirements.txt
+    # CPU wheels for PyTorch are installed from the official CPU index BEFORE
+    # requirements.txt so pip never resolves the default (CUDA, ~3GB) wheel.
+    # (The legacy llama.cpp runtime is optional: ai_engine/requirements-llamacpp.txt.)
+    buildCommand: pip install "torch>=2.2,<2.5" --index-url https://download.pytorch.org/whl/cpu && pip install -r requirements.txt
     # $PORT is injected by Render; binding 0.0.0.0 is required.
-    # Exactly ONE uvicorn worker: llama.cpp holds the model in this process and
+    # Exactly ONE uvicorn worker: the PyTorch model lives in this process and
     # generation is single-flight. A second worker would double the RAM.
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
     healthCheckPath: /health
     autoDeploy: true
     disk:
+      # Model weights + HF cache live on the persistent disk => downloaded once
+      # at first boot, not on every deploy/cold start (cold-start strategy).
       name: edunova-model-cache
       mountPath: /var/data/models
-      sizeGB: 2
+      sizeGB: 4
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.9"
       - key: CORS_ORIGIN
         value: https://edunova-x.ranjitacharya13.workers.dev
-      # PyPI hosts llama-cpp-python sources only; the official prebuilt CPU
-      # wheels are served from this extra index (avoids a slow C++ build).
-      - key: PIP_EXTRA_INDEX_URL
-        value: https://abetlen.github.io/llama-cpp-python/whl/cpu
       # ---- Self-hosted local model (the AI brain) ---------------------------
       - key: LLM_PROVIDER
         value: local
-      # VERIFIED to exist at
-      # https://huggingface.co/bartowski/Qwen2.5-0.5B-Instruct-GGUF/tree/main
-      # (public, ungated, 397,808,192 bytes). The previous value
-      # "Qwen2.5-0.5B-Instruct-IQ3_XXS.gguf" was never published in that repo,
-      # which is exactly why model download failed with HTTP 404.
+      - key: LOCAL_MODEL_RUNTIME
+        value: torch
+      # PyTorch-first runtime. Qwen2.5-0.5B-Instruct: Apache-2.0, ChatML +
+      # tool-calling + multilingual (incl. Tamil/Hindi), 32k native context.
+      # The model is downloaded ONCE at service startup (never during a user
+      # request) and warmed to READY before /api/ai/ready returns 200.
       - key: LOCAL_MODEL_REPO
-        value: bartowski/Qwen2.5-0.5B-Instruct-GGUF
-      - key: LOCAL_MODEL_FILE
-        value: Qwen2.5-0.5B-Instruct-Q4_K_M.gguf
-      # Weights cache on the persistent disk => downloaded once, not per deploy.
+        value: Qwen/Qwen2.5-0.5B-Instruct
+      # auto => adaptive compute picks int8/bf16/fp32 from real container RAM.
+      - key: LOCAL_MODEL_DTYPE
+        value: auto
+      - key: LOCAL_MODEL_DEVICE
+        value: auto
+      # Weights + HF snapshot cache on the persistent disk.
       - key: LOCAL_MODEL_DIR
         value: /var/data/models
-      # Size + sha256 for this repo/file are pinned in ai_engine/config.py
-      # (KNOWN_MODELS) and enforced automatically. Only set these when you point
-      # LOCAL_MODEL_* at a file that is not in that catalogue:
-      # - key: LOCAL_MODEL_SHA256
-      #   sync: false
-      # - key: LOCAL_MODEL_BYTES
-      #   sync: false
-      # Optional direct download URL (private mirror / pre-signed link):
-      # - key: LOCAL_MODEL_URL
-      #   sync: false
       - key: LOCAL_MODEL_CTX
         value: "6144"
+      # 0 => adaptive thread count (min(4, allocated CPU cores)).
       - key: LOCAL_MODEL_THREADS
-        value: "2"
-      - key: LOCAL_MODEL_BATCH
-        value: "256"
-      - key: LOCAL_MODEL_CHAT_FORMAT
-        value: chatml
+        value: "0"
       - key: LOCAL_PRELOAD_MODEL
         value: "true"
-      # Readiness timeout applies only before inference starts. It never cuts a
-      # generated answer; the API retries cold-start responses separately.
+      # AI-service-side queue budget while the model warms. It never cuts an
+      # answer; the API gateway holds streaming requests separately.
       - key: LOCAL_CHAT_WAIT_TIMEOUT
-        value: "25"
+        value: "180"
       - key: LOCAL_MODEL_DOWNLOAD_TIMEOUT
-        value: "900"
-      - key: LOCAL_MODEL_DOWNLOAD_RETRIES
-        value: "3"
+        value: "1800"
+      # RAG retrieval (semantic learning-material index; user-scoped).
+      - key: RAG_ENABLED
+        value: "true"
+      # Optional transformer embedder id; falls back to the built-in lexical
+      # embedder when unreachable. Leave empty for the default MiniLM id.
+      # - key: RAG_EMBEDDING_MODEL
+      #   value: sentence-transformers/all-MiniLM-L6-v2
       # Quality ceiling. The router adaptively selects 128–1800 tokens by task;
       # no elapsed-time logic reduces this budget during generation.
       - key: LLM_MAX_OUTPUT_TOKENS
