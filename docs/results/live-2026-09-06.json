@@ -1,0 +1,288 @@
+{
+  "generatedAt": "2026-09-06T06:53:40.600Z",
+  "gatewayPort": 33385,
+  "aiEngineUrl": "http://127.0.0.1:8001",
+  "gatewayVersion": "express-ai-routes (real code, warm-queue build)",
+  "scenarios": [
+    {
+      "id": "s1-what-is-ml",
+      "message": "What is machine learning?",
+      "status": 200,
+      "ok": true,
+      "eventCount": 282,
+      "tokenCount": 274,
+      "firstTokenMs": 6,
+      "preparing": true,
+      "finalType": "answer",
+      "finalStatus": "completed",
+      "hasRequestId": true,
+      "durationMs": 663
+    },
+    {
+      "id": "s2-binary-tree",
+      "message": "Explain binary trees with an example",
+      "status": 200,
+      "ok": true,
+      "eventCount": 285,
+      "tokenCount": 277,
+      "firstTokenMs": 6,
+      "preparing": true,
+      "finalType": "answer",
+      "finalStatus": "completed",
+      "hasRequestId": true,
+      "durationMs": 617
+    },
+    {
+      "id": "s3-my-timetable",
+      "message": "Show me my timetable for today",
+      "status": 200,
+      "ok": true,
+      "eventCount": 325,
+      "tokenCount": 314,
+      "firstTokenMs": 9,
+      "preparing": true,
+      "finalType": "answer",
+      "finalStatus": "completed",
+      "hasRequestId": true,
+      "durationMs": 721
+    },
+    {
+      "id": "s4-create-study-plan",
+      "message": "Create me a one-week study plan for Python",
+      "status": 200,
+      "ok": true,
+      "eventCount": 16,
+      "tokenCount": 0,
+      "firstTokenMs": null,
+      "preparing": true,
+      "finalType": "answer",
+      "finalStatus": "completed",
+      "hasRequestId": true,
+      "durationMs": 390
+    },
+    {
+      "id": "s5-quiz-me",
+      "message": "Quiz me on chapter 4 of maths",
+      "status": 200,
+      "ok": true,
+      "eventCount": 16,
+      "tokenCount": 0,
+      "firstTokenMs": null,
+      "preparing": true,
+      "finalType": "answer",
+      "finalStatus": "completed",
+      "hasRequestId": true,
+      "durationMs": 324
+    },
+    {
+      "id": "s6-follow-up",
+      "message": "What is a neural network?",
+      "status": 200,
+      "ok": true,
+      "eventCount": 285,
+      "tokenCount": 277,
+      "firstTokenMs": 6,
+      "preparing": true,
+      "finalType": "answer",
+      "finalStatus": "completed",
+      "hasRequestId": true,
+      "durationMs": 621
+    },
+    {
+      "id": "s7-concept-depth",
+      "message": "Explain gradient descent in detail",
+      "status": 200,
+      "ok": true,
+      "eventCount": 283,
+      "tokenCount": 275,
+      "firstTokenMs": 6,
+      "preparing": true,
+      "finalType": "answer",
+      "finalStatus": "completed",
+      "hasRequestId": true,
+      "durationMs": 617
+    },
+    {
+      "id": "s8-web-research",
+      "message": "Search the web for the latest ISRO launch",
+      "status": 200,
+      "ok": true,
+      "eventCount": 276,
+      "tokenCount": 268,
+      "firstTokenMs": 6,
+      "preparing": true,
+      "finalType": "answer",
+      "finalStatus": "completed",
+      "hasRequestId": true,
+      "durationMs": 626
+    },
+    {
+      "id": "s9-json-nonstream",
+      "message": "What is supervised learning?",
+      "status": 200,
+      "ok": true,
+      "hasRequestId": false,
+      "finalStatus": "completed",
+      "finalType": "answer",
+      "durationMs": 547
+    },
+    {
+      "id": "s10-tamil-multilingual",
+      "message": "What is machine learning? (explain simply)",
+      "status": 200,
+      "ok": true,
+      "eventCount": 288,
+      "tokenCount": 280,
+      "firstTokenMs": 6,
+      "preparing": true,
+      "finalType": "answer",
+      "finalStatus": "completed",
+      "hasRequestId": true,
+      "durationMs": 644
+    },
+    {
+      "id": "s11-prepare-queue",
+      "message": "Greet me",
+      "status": 200,
+      "ok": true,
+      "eventCount": 282,
+      "tokenCount": 274,
+      "firstTokenMs": 6,
+      "preparing": true,
+      "finalType": "answer",
+      "finalStatus": "completed",
+      "hasRequestId": true,
+      "durationMs": 668
+    },
+    {
+      "id": "s12-syllabus-progress",
+      "message": "What topics are left in my syllabus?",
+      "status": 200,
+      "ok": true,
+      "eventCount": 316,
+      "tokenCount": 305,
+      "firstTokenMs": 9,
+      "preparing": true,
+      "finalType": "answer",
+      "finalStatus": "completed",
+      "hasRequestId": true,
+      "durationMs": 769
+    }
+  ],
+  "load": [
+    {
+      "concurrency": 1,
+      "rounds": 3,
+      "requests": 3,
+      "succeeded": 3,
+      "failed": 0,
+      "latencyMs": {
+        "n": 3,
+        "meanMs": 679,
+        "p50Ms": 679,
+        "p95Ms": 692,
+        "maxMs": 692
+      },
+      "totalDurationMs": 2038
+    },
+    {
+      "concurrency": 5,
+      "rounds": 3,
+      "requests": 15,
+      "succeeded": 15,
+      "failed": 0,
+      "latencyMs": {
+        "n": 15,
+        "meanMs": 2694,
+        "p50Ms": 2607,
+        "p95Ms": 6676,
+        "maxMs": 6676
+      },
+      "totalDurationMs": 15982
+    },
+    {
+      "concurrency": 10,
+      "rounds": 3,
+      "requests": 30,
+      "succeeded": 30,
+      "failed": 0,
+      "latencyMs": {
+        "n": 30,
+        "meanMs": 6054,
+        "p50Ms": 5628,
+        "p95Ms": 11180,
+        "maxMs": 11802
+      },
+      "totalDurationMs": 31041
+    },
+    {
+      "concurrency": 20,
+      "rounds": 3,
+      "requests": 60,
+      "succeeded": 60,
+      "failed": 0,
+      "latencyMs": {
+        "n": 60,
+        "meanMs": 10855,
+        "p50Ms": 9391,
+        "p95Ms": 24721,
+        "maxMs": 27991
+      },
+      "totalDurationMs": 63534
+    }
+  ],
+  "summary": {
+    "scenariosPassed": 12,
+    "scenariosTotal": 12,
+    "load": [
+      {
+        "concurrency": 1,
+        "succeeded": 3,
+        "failed": 0,
+        "latencyMs": {
+          "n": 3,
+          "meanMs": 679,
+          "p50Ms": 679,
+          "p95Ms": 692,
+          "maxMs": 692
+        }
+      },
+      {
+        "concurrency": 5,
+        "succeeded": 15,
+        "failed": 0,
+        "latencyMs": {
+          "n": 15,
+          "meanMs": 2694,
+          "p50Ms": 2607,
+          "p95Ms": 6676,
+          "maxMs": 6676
+        }
+      },
+      {
+        "concurrency": 10,
+        "succeeded": 30,
+        "failed": 0,
+        "latencyMs": {
+          "n": 30,
+          "meanMs": 6054,
+          "p50Ms": 5628,
+          "p95Ms": 11180,
+          "maxMs": 11802
+        }
+      },
+      {
+        "concurrency": 20,
+        "succeeded": 60,
+        "failed": 0,
+        "latencyMs": {
+          "n": 60,
+          "meanMs": 10855,
+          "p50Ms": 9391,
+          "p95Ms": 24721,
+          "maxMs": 27991
+        }
+      }
+    ]
+  }
+}

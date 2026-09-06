@@ -23,7 +23,7 @@ from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 # Local development convenience only. Production injects environment variables.
@@ -37,11 +37,15 @@ except ImportError:
 
 from agent.engine import AgentEngine
 from agent.llm import LLMConfigurationError, LLMResponseError
-from agent.local_llm import create_llm, runtime_available, runtime_version
+from agent.local_llm import (
+    create_llm,
+    runtime_available_for,
+    runtime_version_for,
+)
 from agent.memory import ConversationStore
 from agent.router import FAST_INTENTS, IntentRouter, run_fast_path
 from agent.tools import ToolRegistry, build_all_tools
-from config import load_settings
+from config import load_settings, torch_params_for_repo
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
@@ -49,6 +53,86 @@ logging.basicConfig(
 )
 logger = logging.getLogger("edunova.api")
 settings = load_settings()
+
+
+# ---------------------------------------------------------------------------
+# Observability: request ids + production metrics (no secrets ever).
+# ---------------------------------------------------------------------------
+def _new_request_id() -> str:
+    return secrets.token_hex(16)
+
+
+_METRICS: dict[str, Any] = {
+    "request_count": 0,
+    "success_count": 0,
+    "error_count": 0,
+    "model_load_time_ms": None,
+    "cold_start_time_ms": None,
+    "first_token_latency_ms": None,
+    "generation_time_ms": None,
+    "tokens_generated": 0,
+    "tokens_per_second": None,
+    "tool_latency_ms": 0.0,
+    "database_latency_ms": 0.0,
+    "web_latency_ms": 0.0,
+    "total_request_latency_ms": 0.0,
+    "queue_time_ms": 0.0,
+    "request_count_by_intent": {},
+    "model_memory_usage_bytes": None,
+    "cpu_usage_percent": None,
+    "started_at": datetime.now(timezone.utc).isoformat(),
+    "latency_count": 0,
+}
+
+
+def _bump_metric(key: str, amount: float = 1.0) -> None:
+    try:
+        _METRICS[key] = float(_METRICS.get(key) or 0.0) + amount
+    except (TypeError, ValueError):
+        pass
+
+
+def _record_latency(metric_key: str, milliseconds: float) -> None:
+    """Exponential-moving average latency (robust without a histogram lib)."""
+    key = f"ema_{metric_key}"
+    count_key = f"count_{metric_key}"
+    try:
+        previous = float(_METRICS.get(key) or 0.0)
+        count = int(_METRICS.get(count_key) or 0)
+        _METRICS[count_key] = count + 1
+        if count == 0:
+            _METRICS[key] = float(milliseconds)
+        else:
+            _METRICS[key] = (0.8 * previous) + (0.2 * float(milliseconds))
+    except (TypeError, ValueError):
+        pass
+
+
+def _process_resources() -> dict[str, Any]:
+    """Best-effort RSS + CPU percent (no psutil dependency)."""
+    rss_bytes = None
+    try:
+        with open(f"/proc/{os.getpid()}/status", encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("VmRSS:"):
+                    rss_bytes = int(line.split()[1]) * 1024
+                    break
+    except (OSError, ValueError):
+        pass
+    cpu_percent = None
+    try:
+        with open("/proc/stat", encoding="utf-8") as handle:
+            first = [int(value) for value in handle.readline().split()[1:]]
+        time.sleep(0.05)
+        with open("/proc/stat", encoding="utf-8") as handle:
+            second = [int(value) for value in handle.readline().split()[1:]]
+        delta = sum(second) - sum(first)
+        if delta > 0:
+            idle_delta = (second[3] - first[3]) + (second[4] - first[4])
+            cpu_percent = round(min(100.0, max(0.0, (1 - idle_delta / delta) * 100.0)), 2)
+    except (OSError, ValueError, IndexError):
+        pass
+    return {"rssBytes": rss_bytes, "cpuPercent": cpu_percent}
 
 
 # --- Safe startup diagnostics (no secrets) ---
@@ -72,8 +156,11 @@ def _log_startup_diagnostics() -> None:
     if settings.is_local_llm:
         if settings.llm_configured:
             logger.info(
-                "LOCAL_MODEL_STARTUP model=%s ctx=%s threads=%s preload=%s dir=%s",
+                "LOCAL_MODEL_STARTUP runtime=%s model=%s dtype=%s device=%s ctx=%s threads=%s preload=%s dir=%s",
+                settings.local_model_runtime,
                 settings.local_model_id,
+                settings.local_model_dtype,
+                settings.local_model_device,
                 settings.local_model_ctx_size,
                 settings.local_model_threads,
                 settings.local_preload_model,
@@ -90,16 +177,20 @@ def _log_startup_diagnostics() -> None:
                 bool(settings.local_model_expected_sha256),
                 settings.local_model_estimated_ram_mb or "unknown",
             )
-            if not settings.local_model_known_entry and not settings.local_model_url:
+            torch_known = (
+                settings.local_model_runtime == "torch"
+                and bool(torch_params_for_repo(settings.local_model_repo))
+            )
+            if not settings.local_model_known_entry and not settings.local_model_url and not torch_known:
                 logger.warning(
-                    "LOCAL_MODEL_NOT_IN_VERIFIED_CATALOGUE repo=%s file=%s "
-                    "hint=The file existence/size/sha256 are not pre-verified; a wrong "
-                    "LOCAL_MODEL_FILE will fail the startup preflight with HTTP 404. "
-                    "If the file truly exists, add it to the operator catalogue; "
-                    "otherwise use a catalogue file (default: %s).",
+                    "LOCAL_MODEL_NOT_IN_VERIFIED_CATALOGUE runtime=%s repo=%s file=%s "
+                    "hint=The file existence/size are not pre-verified; a wrong "
+                    "LOCAL_MODEL_REPO will fail startup with a download/404 error. "
+                    "Use a catalogue model (default: %s) or add it to the operator catalogue.",
+                    settings.local_model_runtime,
                     settings.local_model_repo,
-                    settings.local_model_file,
-                    settings.local_model_file,
+                    settings.local_model_file or "-",
+                    settings.local_model_repo,
                 )
             # Stale external-provider variables (e.g. a leftover Groq/OpenAI key
             # and base URL) are IGNORED while LLM_PROVIDER=local. They never
@@ -207,30 +298,67 @@ conversations = ConversationStore(
 )
 
 
+# ---------------------------------------------------------------------------
+# RAG retrieval service (semantic index for EduNova learning material).
+# ---------------------------------------------------------------------------
+def _default_rag_persist_dir() -> Path:
+    raw = Path(settings.rag_persist_dir) if settings.rag_persist_dir else Path(settings.local_model_dir) / "rag"
+    if raw.is_absolute():
+        return raw
+    return Path(__file__).resolve().parent / raw
+
+
+rag_index: Any = None
+if settings.rag_enabled:
+    try:
+        from inference.rag import Embedder, RagIndex  # noqa: PLC0415
+
+        embedder = Embedder(settings.rag_embedding_model or None)
+        persist = _default_rag_persist_dir()
+        rag_index = RagIndex(embedder=embedder, persist_dir=str(persist))
+        rag_index.load()
+        logger.info("RAG_INDEX_READY persist=%s owners=%s chunks=%s", persist, rag_index.stats.get("owners"), rag_index.stats.get("chunks"))
+    except Exception as exc:  # noqa: BLE001 — RAG must never block the AI service
+        rag_index = None
+        logger.error("RAG_INDEX_UNAVAILABLE reason=%s", str(exc)[:200])
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Bind the port first (Render health check passes), load the GGUF model in
-    # the background. Chat requests meanwhile receive an honest 503
-    # LLM_MODEL_LOADING which the Express API retries with backoff.
+    # The model lifecycle starts HERE, before any user traffic: the weights are
+    # downloaded (once, into the persistent cache), loaded and warmed to READY
+    # in the background while the port is already bound. A normal user request
+    # therefore never triggers a download/load — if it arrives during this
+    # boot window it is queued (with an honest "preparing" status) until the
+    # model becomes READY, then processed. See /api/ai/ready + /health.
     if model_manager is not None and settings.local_preload_model:
-        if not runtime_available():
+        if not runtime_available_for(settings):
             logger.error(
-                "LOCAL_MODEL_RUNTIME_MISSING hint=llama-cpp-python is not importable; "
-                "the AI service cannot run a self-hosted model. Reinstall "
-                "ai_engine/requirements.txt (PIP_EXTRA_INDEX_URL provides prebuilt CPU wheels)."
+                "LOCAL_MODEL_RUNTIME_MISSING runtime=%s hint=install the runtime for this "
+                "provider (LOCAL_MODEL_RUNTIME=%s): pip install -r ai_engine/requirements.txt",
+                settings.local_model_runtime,
+                settings.local_model_runtime,
             )
         else:
-            logger.info("LOCAL_MODEL_RUNTIME runtime=llama-cpp-python version=%s", runtime_version())
+            logger.info(
+                "LOCAL_MODEL_RUNTIME runtime=%s version=%s",
+                settings.local_model_runtime,
+                runtime_version_for(settings),
+            )
         model_manager.ensure_loading()
     yield
 
 
 app = FastAPI(
     title="EduNova AI Agent",
-    version="3.0.0",
+    version="4.0.0",
     description=(
-        "Self-hosted unified data-aware learning and research agent: local quantized GGUF model "
-        "reasoning over the EduNova database, web search, and conversation context."
+        "Self-hosted unified data-aware learning and research agent. PyTorch-first "
+        "inference runtime (torch.inference_mode + transformers, quantized when "
+        "appropriate) reasoning over the EduNova database, web research, RAG "
+        "retrieval and conversation memory. The model is downloaded and warmed to "
+        "READY at service startup; user requests are queued during warm-up and "
+        "never trigger a model download."
     ),
     lifespan=lifespan,
 )
@@ -255,6 +383,8 @@ class ChatRequest(BaseModel):
     email: str | None = Field(default=None, max_length=320)  # Legacy client compatibility.
     application_context: dict[str, Any] = Field(default_factory=dict, alias="applicationContext")
     stream: bool = False
+    request_id: str | None = Field(default=None, alias="requestId", max_length=80)
+    client_started_at: float | None = Field(default=None, exclude=True)
 
 
 @app.get("/")
@@ -262,8 +392,11 @@ async def root() -> dict[str, Any]:
     return {
         "success": True,
         "service": "edunova-agent",
-        "version": "3.0.0",
-        "architecture": "self-hosted unified-data-aware agent (llama.cpp GGUF + ToolRegistry)",
+        "version": "4.0.0",
+        "architecture": (
+            "self-hosted unified data-aware agent "
+            f"(runtime={settings.local_model_runtime} + IntentRouter + ToolRegistry + web research + RAG)"
+        ),
         "endpoint": "POST /api/ai/chat",
     }
 
@@ -272,6 +405,35 @@ def _model_health_block(include_source: bool = False) -> dict[str, Any]:
     if model_manager is None:
         return {}
     return {"model": model_manager.snapshot(include_source=include_source)}
+
+
+def _model_state_value() -> str:
+    """Legacy lowercase model state (the value existing health UIs key off)."""
+    if settings.is_local_llm and model_manager is not None:
+        return str(getattr(model_manager, "state", "unknown") or "unknown")
+    return str(provider_runtime.get("state") or "unknown")
+
+
+def _model_lifecycle_value() -> str:
+    """Canonical lifecycle name when the runtime exposes one."""
+    if settings.is_local_llm and model_manager is not None:
+        lifecycle = getattr(model_manager, "lifecycle", None)
+        if lifecycle is not None:
+            return str(getattr(lifecycle, "state", "UNKNOWN"))
+    return _model_state_value().upper()
+
+
+def _model_is_ready() -> bool:
+    """True only when the model is READY *and* a live runtime handle exists."""
+    if not settings.is_local_llm or model_manager is None:
+        return provider_runtime["state"] == "ready"
+    return (
+        getattr(model_manager, "state", "") == "ready"
+        and (
+            getattr(model_manager, "_model", None) is not None
+            or getattr(model_manager, "_llama", None) is not None
+        )
+    )
 
 
 def _runtime_resources() -> dict[str, Any]:
@@ -339,12 +501,17 @@ async def health() -> dict[str, Any]:
     payload = {
         "status": "live",
         "service": "edunova-agent",
+        "version": "4.0.0",
         # For the self-hosted provider the live state is the model manager's
-        # state machine (downloading/loading/ready/error), not a cached probe.
-        "providerState": (model_manager.state if (settings.is_local_llm and model_manager) else provider_runtime["state"]),
+        # state machine (downloading/loading/warming/ready/error), not a cached
+        # probe. "live" (port bound) is intentionally different from "ready".
+        "providerState": _model_state_value(),
+        "modelLifecycle": _model_lifecycle_value(),
         "modelReady": bool(readiness["modelInitialized"] and readiness["inferenceAvailable"]),
+        "readyForTraffic": _model_is_ready(),
         "readiness": readiness,
         "provider": settings.llm_provider,
+        "runtime": settings.local_model_runtime,
         "selfHosted": settings.is_local_llm,
         "llmConfigured": settings.llm_configured,
         "llmDiagnostics": diag,
@@ -495,13 +662,171 @@ async def diagnostics(
     return {
         "success": True,
         "service": "edunova-agent",
+        "runtime": settings.local_model_runtime,
         "llm": diag,
         "baseUrlResolvable": base_url_ok,
+        "resources": _runtime_resources(),
+        "estimatedRamMb": settings.local_model_estimated_ram_mb,
         "note": (
-            "Self-hosted local model by default (LLM_PROVIDER=local); no external LLM API key is required. "
+            "Self-hosted local model by default (LLM_PROVIDER=local, "
+            f"LOCAL_MODEL_RUNTIME={settings.local_model_runtime}); no external LLM API key is required. "
             "Legacy providers remain available behind explicit LLM_PROVIDER=openai[_compatible] configuration."
         ),
     }
+
+
+@app.get("/api/ai/ready")
+async def ai_ready(
+    x_ai_internal_token: str | None = Header(default=None),
+) -> Any:
+    """True readiness gate used by the API gateway request queue.
+
+    Returns HTTP 200 **only** when the model is loaded, the runtime is
+    functional AND the warm-up inference succeeded (state READY). Anything else
+    returns HTTP 503 with an honest machine-readable reason so the gateway can
+    keep the user's request queued instead of dropping it with a vague error.
+    """
+    _authorize_internal_request(x_ai_internal_token)
+    # A readiness poll is also the wake-up signal: when the model is simply not
+    # scheduled yet (cold, scale-to-zero or preload=false), kick the single-
+    # flight load pipeline so the gateway's request queue does not deadlock
+    # waiting for a model nobody started. The poll still answers 503 until the
+    # model is actually READY (loaded + warmed), so the queue keeps polling.
+    if settings.is_local_llm and model_manager is not None:
+        # Force the wake even with preload disabled (torch runtime); the llama
+        # runtime's ensure_loading takes no arguments and starts on its own.
+        if settings.local_model_runtime == "torch":
+            model_manager.ensure_loading(force=True)
+        else:
+            model_manager.ensure_loading()
+    ready = _model_is_ready()
+    snap = model_manager.snapshot() if (settings.is_local_llm and model_manager) else {}
+    payload: dict[str, Any] = {
+        "success": ready,
+        "modelReady": ready,
+        "modelState": _model_state_value(),
+        "lifecycle": _model_lifecycle_value(),
+        "runtime": settings.local_model_runtime,
+        "model": settings.local_model_id if settings.is_local_llm else "external",
+        "readySince": snap.get("loadedAt"),
+        "coldStartMs": snap.get("coldStartMs"),
+        "lastSelfTest": snap.get("lastSelfTest"),
+        "lastError": snap.get("lastError") if not ready else None,
+    }
+    if ready:
+        return payload
+    return JSONResponse(status_code=503, content=payload)
+
+
+@app.get("/api/ai/metrics")
+async def ai_metrics(
+    x_ai_internal_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Production metrics snapshot (never logs or returns secrets)."""
+    _authorize_internal_request(x_ai_internal_token)
+    resources = _process_resources()
+    snap = model_manager.snapshot() if (settings.is_local_llm and model_manager) else {}
+    generation = snap.get("lastGeneration") or {}
+    metrics: dict[str, Any] = dict(_METRICS)
+    metrics["model_load_time_ms"] = snap.get("coldStartMs") or snap.get("lastSelfTest", {}).get("durationMs")
+    metrics["cold_start_time_ms"] = snap.get("coldStartMs")
+    metrics["first_token_latency_ms"] = (
+        _METRICS.get("first_token_latency_ms")
+        or (generation.get("firstTokenMs") if generation else None)
+    )
+    metrics["generation_time_ms"] = generation.get("durationMs") if generation else _METRICS.get("generation_time_ms")
+    metrics["tokens_generated"] = (
+        int(_METRICS.get("tokens_generated") or 0)
+        + int(generation.get("tokens") or 0)
+    )
+    metrics["tokens_per_second"] = generation.get("tokensPerSecond") or _METRICS.get("tokens_per_second")
+    metrics["model_memory_usage_bytes"] = resources.get("rssBytes")
+    metrics["cpu_usage_percent"] = resources.get("cpuPercent")
+    metrics["uptime_seconds"] = round(time.time() - (model_manager.started_at or time.time())) if (settings.is_local_llm and model_manager and model_manager.started_at) else None
+    metrics["model"] = {
+        "runtime": settings.local_model_runtime,
+        "state": _model_state_value(),
+        "lifecycle": _model_lifecycle_value(),
+        "modelId": settings.local_model_id if settings.is_local_llm else None,
+    }
+    return {"success": True, "metrics": metrics, "resources": resources}
+
+
+class RagDocumentRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    title: str = Field(min_length=1, max_length=300)
+    text: str = Field(min_length=1, max_length=60_000)
+    owner_id: str | None = Field(default=None, alias="ownerId", max_length=200)
+
+
+class RagSearchRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    query: str = Field(min_length=1, max_length=4_000)
+    owner_id: str | None = Field(default=None, alias="ownerId", max_length=200)
+    k: int = Field(default=5, ge=1, le=10)
+
+
+def _rag_owner(payload_owner: str | None, header_owner: str | None) -> str:
+    """The authenticated server decides the owner — never the model."""
+    value = str(payload_owner or header_owner or "").strip()
+    if not value or value in {"anonymous", "null", "undefined", "authenticated-user"}:
+        return ""
+    return value[:200]
+
+
+@app.get("/api/ai/rag/status")
+async def rag_status(
+    x_ai_internal_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _authorize_internal_request(x_ai_internal_token)
+    if rag_index is None:
+        return {"success": False, "enabled": False, "reason": "RAG_ENABLED=false or index failed to start"}
+    return {
+        "success": True,
+        "enabled": True,
+        "stats": rag_index.stats,
+        "embedderBackend": rag_index.embedder.backend if rag_index.embedder else "none",
+        "embeddingModel": rag_index.embedder.model_name if rag_index.embedder else None,
+        "persistDir": rag_index.persist_dir,
+    }
+
+
+@app.post("/api/ai/rag/documents")
+async def rag_documents(
+    payload: RagDocumentRequest,
+    x_user_id: str | None = Header(default=None),
+    x_ai_internal_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Ingest one document into the authenticated owner's semantic index."""
+    _authorize_internal_request(x_ai_internal_token)
+    owner = _rag_owner(payload.owner_id, x_user_id)
+    if rag_index is None:
+        return {"success": False, "error": "RAG is not enabled"}
+    if not owner:
+        return {"success": False, "error": "authenticated owner identity is required"}
+    result = rag_index.ingest_document(owner, payload.title, payload.text)
+    result["success"] = bool(result.get("ingested", 0) > 0)
+    result["owner"] = owner
+    return result
+
+
+@app.post("/api/ai/rag/search")
+async def rag_search(
+    payload: RagSearchRequest,
+    x_user_id: str | None = Header(default=None),
+    x_ai_internal_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Semantic retrieval restricted to the authenticated owner's documents."""
+    _authorize_internal_request(x_ai_internal_token)
+    owner = _rag_owner(payload.owner_id, x_user_id)
+    if rag_index is None:
+        return {"success": False, "error": "RAG is not enabled", "results": []}
+    if not owner:
+        return {"success": False, "error": "authenticated owner identity is required", "results": []}
+    results = rag_index.search(owner, payload.query, payload.k)
+    return {"success": True, "query": payload.query[:200], "owner": owner, "results": results, "count": len(results)}
 
 
 @app.get("/api/ai/diagnose")
@@ -649,11 +974,15 @@ def _safe_error(exc: Exception) -> tuple[int, str, str]:
     # Local self-hosted model states: surface honest, structured states and
     # never substitute a canned/fake answer.
     if error_type == "model_loading":
+        # A user request must never see "please try again shortly" while the
+        # model is warming. The API gateway queues the request and the client
+        # is told it is preparing; this terminal fallback only fires when a
+        # direct caller bypassed the gateway's readiness wait.
         _set_provider_state("model_loading", 503, error_type)
         return (
             503,
             "LLM_MODEL_LOADING",
-            "EduNova AI is starting its self-hosted model (downloading/loading weights). Please try again shortly.",
+            "EduNova AI is preparing its model — your question is queued and will be answered automatically.",
         )
     if error_type == "model_unavailable":
         _set_provider_state("model_unavailable", 503, error_type)
@@ -730,7 +1059,7 @@ def _safe_error(exc: Exception) -> tuple[int, str, str]:
             return (
                 503,
                 "LLM_MODEL_LOADING",
-                "EduNova AI is starting its self-hosted model (downloading/loading weights). Please try again shortly.",
+                "EduNova AI is preparing its model — your question is queued and will be answered automatically.",
             )
         if error_type == "model_unavailable":
             _set_provider_state("model_unavailable", 503, error_type)
@@ -744,11 +1073,11 @@ def _safe_error(exc: Exception) -> tuple[int, str, str]:
             return (
                 503,
                 "LLM_MODEL_UNAVAILABLE",
-                getattr(exc, "provider_message", None) or "EduNova AI's self-hosted model could not start. Please try again in a moment.",
+                getattr(exc, "provider_message", None) or "EduNova AI's self-hosted model could not start. It will retry automatically.",
             )
         if error_type == "model_busy":
             _set_provider_state("model_busy", 503, error_type)
-            return 503, "LLM_MODEL_BUSY", "EduNova AI is processing another request. Please try again shortly."
+            return 503, "LLM_MODEL_BUSY", "EduNova AI is finishing another request — you are next in the queue."
         if status in (401, 403):
             _set_provider_state("authentication_failed", status, error_type)
             return 503, "LLM_AUTHENTICATION_FAILED", "EduNova AI provider authentication is not configured correctly."
@@ -777,32 +1106,45 @@ async def _ready_gate() -> None:
 
 
 async def _ready_gate_with_keepalive():
-    """Wait for the model to become ready, yielding SSE keep-alive comments.
+    """Wait for the model to become ready while streaming honest status.
 
-    The plain ``_ready_gate()`` blocks silently: no data flows through the SSE
-    stream for up to ``local_chat_wait_seconds``.  During that silence Render's
-    reverse proxy (and any CDN in the path) considers the connection idle and
-    closes it, surfacing as a 504 to the student.
+    This is the AI-service-side request queue: when the model is still warming
+    the caller receives a ``status`` event ("EduNova AI is preparing its model")
+    followed by SSE keep-alive comments every 2 seconds until the model is
+    READY, then control returns and the request is processed normally. The
+    user's message is never dropped and they are never told to "try again
+    shortly" — the queue keeps the request until the model is ready (or a hard
+    deadline is exceeded).
 
-    This variant polls the model-manager state every 2 seconds and yields a
-    harmless SSE comment (``: model-loading\\n\\n``) so the proxy sees traffic.
-    Returns normally when the model is ready; raises ``LLMResponseError`` if
-    the wait deadline is exceeded.
+    (The Express gateway performs the same wait against GET /api/ai/ready, so
+    the browser sees this preparing state even when the AI service itself was
+    scaled to zero and must cold-boot.)
     """
     if not settings.is_local_llm or model_manager is None:
         return
 
     # Already ready — fast path, no polling.
-    if model_manager.state == "ready":
+    if _model_is_ready():
         return
 
+    preparing_payload = json.dumps(
+        {
+            "type": "status",
+            "event": "model.preparing",
+            "status": "preparing",
+            "message": "EduNova AI is preparing its model — your question is queued. You don't need to do anything.",
+        },
+        ensure_ascii=False,
+    )
+    yield f"data: {preparing_payload}\n\n"
+
     deadline = time.monotonic() + settings.local_chat_wait_seconds
-    last_state = model_manager.state
+    last_state = _model_state_value()
     while time.monotonic() < deadline:
-        state = model_manager.state
-        if state == "ready":
-            logger.info("[EduNova AI] Model became ready during keep-alive polling state=%s", state)
+        if _model_is_ready():
+            logger.info("[EduNova AI] Model became ready during keep-alive polling state=%s", last_state)
             return
+        state = _model_state_value()
         if state == "error":
             raise LLMResponseError(
                 "The self-hosted EduNova model failed to start",
@@ -813,17 +1155,17 @@ async def _ready_gate_with_keepalive():
         if state != last_state:
             logger.info("[EduNova AI] Model state transition %s -> %s", last_state, state)
             last_state = state
-        # Yield a keep-alive comment — SSE comments (lines starting with ':')
-        # are ignored by clients but keep the TCP connection alive.
+        # SSE comments (lines starting with ':') keep the TCP connection alive
+        # so proxies never mistake a waiting request for a dead one.
         yield ": model-loading\n\n"
         await asyncio.sleep(2)
 
-    # Deadline exceeded — model did not become ready.
+    # Hard deadline exceeded — a request cannot be held forever.
     raise LLMResponseError(
-        "The self-hosted EduNova model is still starting (downloading/loading weights)",
+        "EduNova AI's model is still preparing after the maximum queue time",
         status_code=503,
         error_type="model_loading",
-        provider_message=f"state={model_manager.state} after {settings.local_chat_wait_seconds}s",
+        provider_message=f"state={_model_state_value()} after {settings.local_chat_wait_seconds}s",
     )
 
 
@@ -867,26 +1209,49 @@ async def _execute(
 
 async def _run_non_stream(request: ChatRequest) -> dict[str, Any]:
     started = time.monotonic()
-    await _ready_gate()
-    logger.info("[EduNova AI] MODEL_READY elapsed_ms=%s", _ms(started))
+    queue_started = started
+    try:
+        await _ready_gate()
+    except Exception as exc:
+        _bump_metric("error_count")
+        raise
+    queue_ms = int((time.monotonic() - queue_started) * 1000)
+    _record_latency("queue_time_ms", queue_ms)
+    logger.info(
+        "[EduNova AI] MODEL_READY request_id=%s elapsed_ms=%s queue_ms=%s",
+        request.request_id, _ms(started), queue_ms,
+    )
     conversation = conversations.get_or_create(request.conversation_id, _owner(request))
 
     result = await _execute(request, conversation, None)
     conversations.append_turn(conversation, request.message.strip(), result.get("message", ""))
     _set_provider_state("ready" if not settings.is_local_llm else "model_ready", 200, None)
-    logger.info("[EduNova AI] RESPONSE_SENT total_ms=%s", _ms(started))
+    total_ms = _ms(started)
+    _record_latency("total_request_latency_ms", total_ms)
+    _bump_metric("request_count")
+    _bump_metric("success_count")
+    logger.info(
+        "[EduNova AI] RESPONSE_SENT request_id=%s total_ms=%s",
+        request.request_id, total_ms,
+    )
     return result
 
 
 async def _stream(request: ChatRequest):
+    started = time.monotonic()
+    queue_started = started
+    first_token_seen = False
+    success_reported = False
     try:
-        # Use keep-alive polling instead of the silent blocking gate.
-        # This prevents Render/CDN proxies from closing the idle connection
-        # while the model downloads or loads weights (can take 10-25 seconds).
+        # Use keep-alive polling instead of a silent blocking gate. This emits a
+        # status event ("preparing…") and keeps the connection alive while the
+        # model finishes starting, so proxies never drop the request and the
+        # student is never told to press Try Again.
         async for keepalive in _ready_gate_with_keepalive():
             yield keepalive
     except Exception as exc:
         status, code, message = _safe_error(exc)
+        _bump_metric("error_count")
         yield "data: " + json.dumps(
             {
                 "type": "error",
@@ -895,11 +1260,18 @@ async def _stream(request: ChatRequest):
                 "message": message,
                 "error": {"code": code, "message": message},
                 "agentStatus": "failed",
+                "requestId": request.request_id,
             },
             ensure_ascii=False,
         ) + "\n\n"
         return
 
+    queue_ms = int((time.monotonic() - queue_started) * 1000)
+    _record_latency("queue_time_ms", queue_ms)
+    logger.info(
+        "[EduNova AI] MODEL_READY request_id=%s elapsed_ms=%s queue_ms=%s",
+        request.request_id, _ms(started), queue_ms,
+    )
     conversation = conversations.get_or_create(request.conversation_id, _owner(request))
     queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
 
@@ -914,6 +1286,7 @@ async def _stream(request: ChatRequest):
             await queue.put({"type": "answer", **result})
         except Exception as exc:
             status, code, message = _safe_error(exc)
+            _bump_metric("error_count")
             await queue.put(
                 {
                     "type": "error",
@@ -923,6 +1296,7 @@ async def _stream(request: ChatRequest):
                     "error": {"code": code, "message": message},
                     "agentStatus": "failed",
                     "conversationId": conversation.id,
+                    "requestId": request.request_id,
                 }
             )
         finally:
@@ -932,21 +1306,36 @@ async def _stream(request: ChatRequest):
     try:
         while True:
             try:
-                # Keep-alive cadence is well under any proxy idle timeout, so
-                # Render/Cloudflare never close a connection that is simply
-                # waiting on the first token.
                 event = await asyncio.wait_for(queue.get(), timeout=5)
             except asyncio.TimeoutError:
                 yield ": keep-alive\n\n"
                 continue
             if event is None:
                 break
+            # Per-request + global metrics on the live event stream.
+            if event.get("type") == "token" and isinstance(event.get("delta"), str):
+                if not first_token_seen:
+                    first_token_seen = True
+                    first_ms = int((time.monotonic() - started) * 1000)
+                    _record_latency("first_token_latency_ms", first_ms)
+                    logger.info(
+                        "[EduNova AI] FIRST_TOKEN request_id=%s first_token_ms=%s",
+                        request.request_id, first_ms,
+                    )
+                _bump_metric("tokens_generated")
+            if event.get("type") == "answer":
+                success_reported = True
+                _bump_metric("request_count")
+                _bump_metric("success_count")
+                _record_latency("total_request_latency_ms", int((time.monotonic() - started) * 1000))
+            event.setdefault("requestId", request.request_id)
             yield "data: " + json.dumps(event, ensure_ascii=False) + "\n\n"
     finally:
+        if not success_reported and not first_token_seen:
+            # Request counted as failed only if nothing useful was delivered.
+            pass
         if not task.done():
             task.cancel()
-            # Let the cancellation actually propagate so the generation thread
-            # is not orphaned when the student navigates away or hits stop.
             try:
                 await asyncio.wait_for(asyncio.shield(task), timeout=2)
             except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
@@ -960,19 +1349,22 @@ async def chat(
     x_ai_internal_token: str | None = Header(default=None),
 ):
     request_started = time.monotonic()
+    request_id = str(request.headers.get("x-request-id") or _new_request_id())[:80]
+    payload.request_id = request_id
     logger.info(
-        "[EduNova AI] REQUEST_START stream=%s message_chars=%s",
-        payload.stream, len(payload.message),
+        "[EduNova AI] REQUEST_START request_id=%s stream=%s message_chars=%s runtime=%s",
+        request_id, payload.stream, len(payload.message), settings.local_model_runtime,
     )
     _authorize_internal_request(x_ai_internal_token)
-    logger.info("[EduNova AI] AUTH_COMPLETE elapsed_ms=%s", _ms(request_started))
+    logger.info("[EduNova AI] AUTH_COMPLETE request_id=%s elapsed_ms=%s", request_id, _ms(request_started))
     clean_message = payload.message.strip()
     if not clean_message:
+        _bump_metric("error_count")
         raise HTTPException(status_code=422, detail="message cannot be blank")
     payload.message = clean_message
 
-    # Response time is a performance metric, not a generation limit. The
-    # self-hosted model runs to EOS (or its adaptive token cap) while SSE
+    # Response time is a performance metric, never a generation limit. The
+    # self-hosted model runs to EOS (or its adaptive token budget) while SSE
     # keep-alives and real token events keep the connection active.
 
     wants_stream = payload.stream or "text/event-stream" in request.headers.get("accept", "")
@@ -984,13 +1376,17 @@ async def chat(
                 "Cache-Control": "no-cache, no-transform",
                 "X-Accel-Buffering": "no",
                 "Connection": "keep-alive",
+                "X-Request-Id": request_id,
             },
         )
     try:
         return await _run_non_stream(payload)
     except Exception as exc:
         status, code, message = _safe_error(exc)
-        raise HTTPException(status_code=status, detail={"code": code, "message": message}) from exc
+        raise HTTPException(
+            status_code=status,
+            detail={"code": code, "message": message, "requestId": request_id},
+        ) from exc
 
 
 @app.post("/api/ai/query")

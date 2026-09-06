@@ -49,6 +49,13 @@ function startUpstream(behavior) {
       req.on("end", () => {
         state.requests.push({ path: req.url, method: req.method, body: raw });
         state.internalTokens.push(req.headers["x-ai-internal-token"] || null);
+        // The gateway polls the real readiness gate before forwarding SSE
+        // chat. A healthy AI service answers 200 + modelReady:true.
+        if (req.method === "GET" && req.url === "/api/ai/ready") {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ success: true, modelReady: true, modelState: "ready" }));
+          return;
+        }
         behavior(req, res, state, raw);
       });
     });
@@ -190,8 +197,11 @@ describe("Express AI route -> FastAPI integration", () => {
 
   test("cold upstream (Render-style HTML 503) recovers after retry and answers", async () => {
     const upstream = await startUpstreamAt((req, res, state) => {
-      if (state.requests.length <= 2) {
-        // First two hits: Render free-tier "Application loading" page.
+      if (req.method === "POST" && req.url === "/api/ai/chat") {
+        state.chatAttempts = (state.chatAttempts || 0) + 1;
+      }
+      if ((state.chatAttempts || 0) <= 2) {
+        // First two chat POSTs: Render free-tier "Application loading" page.
         res.writeHead(503, { "Content-Type": "text/html" });
         res.end("<!DOCTYPE html><html><body>Render - Application loading</body></html>");
         return;
@@ -218,7 +228,8 @@ describe("Express AI route -> FastAPI integration", () => {
       assert.strictEqual(status, 200);
       const { final } = await readSseFinalAnswer(text);
       assert.strictEqual(final.success, true);
-      assert.strictEqual(upstream.state.requests.length, 3, "should retry until the upstream wakes");
+      const chatPosts = upstream.state.requests.filter((r) => r.path === "/api/ai/chat");
+      assert.strictEqual(chatPosts.length, 3, "should retry the chat POST until the upstream wakes");
     } finally {
       upstream.restoreEnv();
       upstream.server.close();
@@ -233,7 +244,10 @@ describe("Express AI route -> FastAPI integration", () => {
     });
     const app = await listen(makeApp());
     try {
-      const { status, json } = await postChat(app, { token: signToken("cold2-user-0000000001") });
+      const { status, json } = await postChat(app, {
+        token: signToken("cold2-user-0000000001"),
+        accept: "application/json",
+      });
       assert.strictEqual(status, 503);
       assert.strictEqual(json.success, false);
       assert.match(json.error.message, /starting up or temporarily unavailable/i);
@@ -253,7 +267,10 @@ describe("Express AI route -> FastAPI integration", () => {
     });
     const app = await listen(makeApp());
     try {
-      const { status, json } = await postChat(app, { token: signToken("authfail-user-00000001") });
+      const { status, json } = await postChat(app, {
+        token: signToken("authfail-user-00000001"),
+        accept: "application/json",
+      });
       assert.strictEqual(status, 401);
       assert.strictEqual(json.error.message, "AI service authorization failed");
       assert.strictEqual(json.agentStatus, "auth_failed");

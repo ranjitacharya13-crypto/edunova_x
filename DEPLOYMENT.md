@@ -105,34 +105,35 @@ IPs are dynamic, so an IP allowlist will intermittently fail.
 | Type | Web Service |
 | Runtime | Python |
 | **Root Directory** | **`ai_engine`** |
-| Build Command | `pip install -r requirements.txt` |
-| Start Command | `uvicorn main:app --host 0.0.0.0 --port $PORT` |
+| Build Command | `pip install "torch>=2.2,<2.5" --index-url https://download.pytorch.org/whl/cpu && pip install -r requirements.txt` |
+| Start Command | `uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1` |
 | Health Check Path | `/health` |
 
-The AI brain is a **self-hosted, quantized GGUF model running in-process via
-llama.cpp** (`llama-cpp-python`). There are **no external LLM API keys** —
-OpenAI/Groq/Gemini/Anthropic/OpenRouter are not used. The `buildCommand` picks
-up a prebuilt CPU wheel through `PIP_EXTRA_INDEX_URL` (set by `render.yaml`
-and the Dockerfile), so no C++ toolchain is needed.
+The AI brain is a **self-hosted model running in-process via PyTorch +
+HuggingFace Transformers** (`LOCAL_MODEL_RUNTIME=torch`, the default). There
+are **no external LLM API keys** — OpenAI/Groq/Gemini/Anthropic/OpenRouter are
+not used. The build command installs the PyTorch CPU wheel first so Linux never
+pulls CUDA-linked wheels; the legacy llama.cpp/GGUF runtime stays available
+opt-in (`LOCAL_MODEL_RUNTIME=llama_cpp` + `requirements-llamacpp.txt`).
 
 Required agent environment (self-hosted default):
 
 | Variable | Notes |
 |---|---|
 | `LLM_PROVIDER` | `local` (self-hosted in-process model — the default) |
-| `LOCAL_MODEL_REPO` | HF repo id, default `bartowski/Qwen2.5-0.5B-Instruct-GGUF` |
-| `LOCAL_MODEL_FILE` | GGUF filename, default `Qwen2.5-0.5B-Instruct-Q4_K_M.gguf` (~380MB) |
-| `LOCAL_MODEL_URL` | Optional direct download URL (mirror); overrides repo/file |
-| `LOCAL_MODEL_SHA256` | Optional integrity pin for the downloaded weights (recommended) |
-| `LOCAL_MODEL_BYTES` | Optional exact expected size; download is rejected if it differs |
-| `LOCAL_MODEL_MIN_BYTES` | Sanity floor for a real GGUF, default `10485760` (10MB) |
-| `LOCAL_MODEL_DOWNLOAD_RETRIES` | Retries for transient download failures, default `3` (0-8) |
+| `LOCAL_MODEL_RUNTIME` | `torch` (default) or `llama_cpp` (legacy GGUF) |
+| `LOCAL_MODEL_REPO` | HF repo id or local dir; default `Qwen/Qwen2.5-0.5B-Instruct` (safetensors) |
+| `LOCAL_MODEL_DTYPE` | `auto` (default; int8 dynamic quant on low-RAM plans) / `bf16` / `fp32` / `int8` |
+| `LOCAL_MODEL_FILE` | GGUF filename only for `llama_cpp` runtime (e.g. `Qwen2.5-0.5B-Instruct-Q4_K_M.gguf`, ~380MB) |
+| `LOCAL_MODEL_URL` / `LOCAL_MODEL_SHA256` / `LOCAL_MODEL_BYTES` | Legacy llama.cpp download pins (torch runtime fetches the HF snapshot at boot) |
 | `LOCAL_MODEL_DIR` | Weights cache dir; **point at a persistent disk** (blueprint: `/var/data/models`) |
-| `LOCAL_MODEL_CTX` | Context tokens, default `6144` |
-| `LOCAL_MODEL_THREADS` | CPU threads, default `2` |
-| `LOCAL_MODEL_CHAT_FORMAT` | `chatml` (Qwen), also `llama-3`/`mistral`/`gemma` |
-| `LOCAL_PRELOAD_MODEL` | `true` = download+load in background at boot |
-| `LOCAL_CHAT_WAIT_TIMEOUT` | Seconds chat waits for warmup before `503 LLM_MODEL_LOADING`, default `25` |
+| `LOCAL_MODEL_CTX_SIZE` | Context tokens, default `6144` |
+| `LOCAL_MODEL_THREADS` | CPU threads; `0` = auto (default) |
+| `LOCAL_MODEL_DEVICE` | `auto` (CPU fallback when no CUDA) |
+| `LOCAL_PRELOAD_MODEL` | `true` = download+load+warm in background at boot |
+| `LOCAL_CHAT_WAIT_TIMEOUT` | Seconds the AI service holds a queued request while warming, default `180` |
+| `AI_WARM_QUEUE_MAX_MS` | **API service**: how long the gateway keeps a request queued (SSE `model.preparing` + polling), default `600000` |
+| `LOCAL_MODEL_DOWNLOAD_TIMEOUT` | Boot-time weight download budget, default `1800` |
 | `LLM_MAX_OUTPUT_TOKENS` / `LLM_TEMPERATURE` | Default `2048` / `0.2`; routing adaptively uses 128–1800 tokens and never shrinks output based on elapsed time |
 | `APP_BACKEND_URL` | Public HTTPS URL of `edunova-api` (AI service only) |
 | `WEB_SEARCH_API_KEY` | Brave, Tavily, or Serper credential (web data source) |
@@ -142,21 +143,20 @@ Required agent environment (self-hosted default):
 | `MAX_AGENT_ITERATIONS` / `MAX_TOOL_CALLS` | Local defaults `5` / `8` |
 | `WEB_REQUEST_TIMEOUT` / `WEB_MAX_CONTENT_LENGTH` | Defaults `10` / `200000` |
 
-Model sizing guide (pick per Render plan):
+Model sizing guide (PyTorch runtime; pick per Render plan):
 
-| Plan | RAM | Recommended model (set `LOCAL_MODEL_REPO` / `LOCAL_MODEL_FILE`) |
+| Plan | RAM | Recommended model (set `LOCAL_MODEL_REPO`, `LOCAL_MODEL_DTYPE`) |
 |---|---|---|
-| Free / Starter (512MB) | 512MB | **Too small for the default.** Use `bartowski/SmolLM2-360M-Instruct-GGUF` + `SmolLM2-360M-Instruct-Q4_K_M.gguf` (270,590,880 B) with `LOCAL_MODEL_CTX=2048`. Free has no persistent disk, so the weights re-download after every spin-down. |
-| **Standard (2GB / 1 CPU) — blueprint default** | 2GB | `bartowski/Qwen2.5-0.5B-Instruct-GGUF` + `Qwen2.5-0.5B-Instruct-Q4_K_M.gguf` (397,808,192 B). ~380MB weights + ~75MB KV (ctx 6144) + ~150MB compute ≈ 700MB RSS. |
-| Pro (4GB / 2 CPU) | 4GB | `bartowski/Qwen2.5-1.5B-Instruct-GGUF` + `Qwen2.5-1.5B-Instruct-Q4_K_M.gguf` (986,048,768 B), `LOCAL_MODEL_THREADS=2` |
+| Free / Starter (512MB) | 512MB | **Too small for a useful model.** Not recommended; the AI service needs ≥ 2GB. |
+| **Standard (2GB / 1 CPU) — blueprint default** | 2GB | `Qwen/Qwen2.5-0.5B-Instruct` with `LOCAL_MODEL_DTYPE=int8` (dynamic quant keeps RSS ≈ 1.2–1.5GB with runtime). If the measured RSS is too tight, prefer a 4GB instance over dropping quality further. |
+| Pro (4GB / 2 CPU) | 4GB | `Qwen/Qwen2.5-0.5B-Instruct` with `auto` (int8 or bf16) or `Qwen/Qwen2.5-1.5B-Instruct` at int8, `LOCAL_MODEL_THREADS=2`. |
 
-Every filename above was verified to exist and be publicly downloadable from
-Hugging Face; byte sizes are the authoritative values from the HF file tree.
-`bartowski/Qwen2.5-0.5B-Instruct-GGUF` **has never published an `IQ3_XXS`
-quant** — that non-existent filename was the cause of the HTTP 404 at startup.
-Before changing `LOCAL_MODEL_FILE`, confirm the new name with
-`GET /api/ai/model/source-check` (it does a ranged HEAD/GET and reports the
-status, size, and whether the URL is usable) rather than guessing.
+Run `/api/ai/diagnose` and `/api/ai/metrics` after the first deploy to confirm
+cold-start time, RSS and tokens/sec for the actual model before tuning further.
+GGUF/llama.cpp deployments (legacy runtime) keep the old guidance: filename and
+byte-size verification via `GET /api/ai/model/source-check` before changing
+`LOCAL_MODEL_FILE` — `bartowski/Qwen2.5-0.5B-Instruct-GGUF` has never published
+an `IQ3_XXS` quant, so confirm names rather than guessing.
 
 `AGENT_MAX_CONTEXT_CHARS` must fit inside `LOCAL_MODEL_CTX`. Budget roughly
 3 characters per token and leave room for the system prompt plus

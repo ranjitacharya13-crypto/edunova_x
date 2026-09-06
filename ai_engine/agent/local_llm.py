@@ -1397,9 +1397,57 @@ class LocalLlamaLLM:
         )
 
 
+def _torch_runtime_module():
+    try:  # ai_engine/ directory on sys.path (uvicorn/tests/direct runs)
+        from inference import torch_runtime as module  # noqa: PLC0415
+
+        return module
+    except ImportError:
+        from ..inference import torch_runtime as module  # noqa: PLC0415
+
+        return module
+
+
+def runtime_available_for(settings: Settings) -> bool:
+    """Runtime-specific availability probe (torch vs llama.cpp vs external)."""
+    if getattr(settings, "local_model_runtime", "torch") == "torch":
+        try:
+            return bool(_torch_runtime_module().runtime_available())
+        except Exception:
+            return False
+    return runtime_available()
+
+
+def runtime_version_for(settings: Settings) -> str:
+    """Runtime-specific version string."""
+    if getattr(settings, "local_model_runtime", "torch") == "torch":
+        try:
+            return str(_torch_runtime_module().runtime_version() or "")
+        except Exception:
+            return ""
+    return runtime_version() or ""
+
+
 def create_llm(settings: Settings) -> tuple[Any, LocalModelManager | None]:
-    """Factory: returns (llm, local_manager). Keeps legacy providers opt-in."""
+    """Factory: returns (llm, model_manager). Keeps legacy providers opt-in.
+
+    Runtime selection:
+    - LLM_PROVIDER=local + LOCAL_MODEL_RUNTIME=torch (default)  -> PyTorch
+      transformers runtime (``inference.torch_runtime``).
+    - LLM_PROVIDER=local + LOCAL_MODEL_RUNTIME=llama_cpp        -> legacy
+      llama.cpp GGUF runtime.
+    - LLM_PROVIDER=openai[_compatible]                          -> emergency
+      manual override only (never the default).
+    """
     if settings.llm_provider == "local":
+        if getattr(settings, "local_model_runtime", "torch") == "torch":
+            try:  # ai_engine/ directory on sys.path (uvicorn/tests/direct runs)
+                from inference.torch_runtime import TorchChatLLM, TorchModelManager  # noqa: PLC0415
+            except ImportError:  # packaged as ai_engine.agent.local_llm
+                from ..inference.torch_runtime import TorchChatLLM, TorchModelManager  # noqa: PLC0415
+
+            manager = TorchModelManager(settings)
+            return TorchChatLLM(settings, manager), manager
         manager = LocalModelManager(settings)
         return LocalLlamaLLM(settings, manager), manager
     from .llm import OpenAICompatibleLLM  # legacy/manual override only

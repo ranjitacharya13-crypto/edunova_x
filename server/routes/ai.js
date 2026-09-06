@@ -154,6 +154,43 @@ async function postUpstream(url, payload, headers, timeout, signal) {
   return { ok: true, status: response.status, stream: response.data };
 }
 
+async function waitForAiReady(aiBaseUrl, headers, signal) {
+  // Poll the AI service's REAL readiness gate (GET /api/ai/ready → 200 only
+  // when the model is loaded AND warm-up inference succeeded). While waiting we
+  // keep the client's SSE stream alive with status events + keep-alives, so
+  // the student sees "EduNova AI is preparing…" and their message stays queued.
+  const AI_WARM_QUEUE_MAX_MS = Math.max(
+    30_000,
+    Math.min(900_000, Number(process.env.AI_WARM_QUEUE_MAX_MS) || 600_000)
+  );
+  const AI_READY_POLL_MS = 2_000;
+  const queueStarted = Date.now();
+  const deadline = queueStarted + AI_WARM_QUEUE_MAX_MS;
+  while (Date.now() < deadline) {
+    if (signal?.aborted) throw new Error("aborted");
+    try {
+      const response = await axios.get(`${aiBaseUrl}/api/ai/ready`, {
+        headers,
+        timeout: 8_000,
+        signal,
+        validateStatus: () => true,
+      });
+      if (response.status === 200 && response.data?.modelReady === true) {
+        return { waitedMs: Date.now() - queueStarted };
+      }
+      const state = String(response.data?.modelState || response.data?.lifecycle || "starting");
+      console.log(`[agent] warm queue: model ${state}`);
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      console.warn(`[agent] readiness poll failed code=${error.code || error.message}`);
+    }
+    await sleep(AI_READY_POLL_MS);
+  }
+  const error = new Error("AI service model did not become ready within the queue window");
+  error.code = "AI_MODEL_QUEUE_TIMEOUT";
+  throw error;
+}
+
 async function handleAgentChat(req, res) {
   const message = String(req.body?.message || "").trim();
   const conversationId = String(req.body?.conversationId || "").trim() || undefined;
@@ -186,6 +223,8 @@ async function handleAgentChat(req, res) {
   }
 
   const wantsStream = req.path === "/chat" && /text\/event-stream/i.test(req.headers.accept || "");
+  const requestId = String(req.headers["x-request-id"] || "") ||
+    `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   const payload = {
     message,
     conversationId,
@@ -199,14 +238,15 @@ async function handleAgentChat(req, res) {
   const headers = {
     "Content-Type": "application/json",
     Accept: wantsStream ? "text/event-stream" : "application/json",
+    "X-Request-Id": requestId,
   };
   if (process.env.AI_INTERNAL_TOKEN) {
     headers["X-AI-Internal-Token"] = process.env.AI_INTERNAL_TOKEN;
   }
 
   // Network backstop only. This is intentionally much longer than the normal
-  // 10–20 second performance target and never controls answer length. For SSE,
-  // the upstream sends headers immediately and streams genuine model tokens.
+  // 10-20s performance target and never controls answer length. For SSE, the
+  // upstream sends headers immediately and streams genuine model tokens.
   const timeout = Math.max(60_000, Number(process.env.AGENT_REQUEST_TIMEOUT) || 600_000);
   const controller = new AbortController();
   res.on("close", () => {
@@ -214,6 +254,103 @@ async function handleAgentChat(req, res) {
   });
 
   const startedAt = Date.now();
+
+  // -------------------------------------------------------------------------
+  // STREAMING PATH — never drop the message while the model warms.
+  //
+  // The connection is answered immediately (200 + SSE). While the model is
+  // still preparing (cold boot / deploy), the client receives an honest
+  // "preparing" status and keep-alives; the request is forwarded upstream the
+  // moment the model reports READY. The user is never told to "try again
+  // shortly" and their message is never lost to a race.
+  // -------------------------------------------------------------------------
+  if (wantsStream) {
+    res.status(200);
+    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+    res.setHeader("X-Request-Id", requestId);
+    res.flushHeaders?.();
+
+    const sendEvent = (event) => {
+      if (res.writableEnded) return;
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+    };
+    const sendPreparing = () => sendEvent({
+      type: "status",
+      event: "model.preparing",
+      status: "preparing",
+      message: "EduNova AI is preparing its model — your question is queued. You don't need to do anything.",
+      requestId,
+    });
+
+    try {
+      sendPreparing();
+      // Wait for the model to be genuinely ready (loaded + warmed).
+      await waitForAiReady(aiBaseUrl, headers, controller.signal);
+      const waitedMs = Date.now() - startedAt;
+      console.log(`[agent] model ready after warm queue waitedMs=${waitedMs} forwarding request`);
+
+      // Forward the queued request. Transient 502/503/504 from the upstream are
+      // retried on the same backoff schedule as the non-streaming path — the
+      // response body has not started streaming yet, so retrying is safe.
+      const attempts = UPSTREAM_RETRY_DELAYS_MS.length + 1;
+      for (let attempt = 1; attempt <= attempts; attempt++) {
+        const result = await postUpstream(`${aiBaseUrl}/api/ai/chat`, payload, headers, timeout, controller.signal);
+        if (result.ok && result.stream) {
+          console.log(`[agent] forwarding SSE stream (attempt ${attempt})`);
+          return pipeAgentStream(res, result.stream);
+        }
+        const status = result.status || 502;
+        const retryable = RETRYABLE_UPSTREAM_STATUSES.has(status);
+        if (retryable && attempt < attempts) {
+          const delay = UPSTREAM_RETRY_DELAYS_MS[attempt - 1];
+          console.warn(`[agent] upstream chat HTTP ${status} (attempt ${attempt}/${attempts}) retrying in ${delay}ms`);
+          await sleep(delay);
+          continue;
+        }
+        const bodyDetail = typeof result.body === "object" ? result.body.detail || result.body.error : undefined;
+        const detail = typeof bodyDetail === "object" ? bodyDetail?.message : bodyDetail;
+        console.warn(`[agent] upstream rejected chat HTTP ${status} after warm queue`);
+        sendEvent({
+          type: "error",
+          success: false,
+          status,
+          message: detail || upstreamStatusMessage(status),
+          error: { code: "AI_UPSTREAM_REJECTED", message: detail || upstreamStatusMessage(status) },
+          agentStatus: agentStatusFor(status),
+          requestId,
+        });
+        res.end();
+        return;
+      }
+    } catch (error) {
+      if (res.writableEnded) return;
+      console.error(`[agent] streaming chat failed code=${error.code || error.message}`);
+      const queuedTooLong = error.code === "AI_MODEL_QUEUE_TIMEOUT";
+      sendEvent({
+        type: "error",
+        success: false,
+        status: queuedTooLong ? 503 : 502,
+        message: queuedTooLong
+          ? "EduNova AI's model is still preparing after a long wait. The service is booting — your question is safe; try again in a minute or contact support if this persists."
+          : "EduNova AI could not complete this request. Please try again.",
+        error: {
+          code: queuedTooLong ? "AI_MODEL_QUEUE_TIMEOUT" : "AI_UPSTREAM_FAILED",
+          message: error.message,
+        },
+        agentStatus: "failed",
+        requestId,
+      });
+      res.end();
+      return;
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // NON-STREAMING PATH (legacy /query and JSON callers): bounded retry.
+  // -------------------------------------------------------------------------
   const attempts = UPSTREAM_RETRY_DELAYS_MS.length + 1;
   let lastFailure = null;
 
@@ -226,10 +363,6 @@ async function handleAgentChat(req, res) {
         console.log(
           `[agent] upstream ok after ${attempt} attempt(s) stream=${wantsStream} elapsed=${elapsed}ms`
         );
-        if (wantsStream) {
-          console.log(`[agent] piping SSE stream to client (started ${elapsed}ms after first attempt)`);
-          return pipeAgentStream(res, result.stream);
-        }
         const raw = await readLimitedStream(result.stream, 2_097_152);
         const parsed = parseJsonBody(raw);
         if (parsed) return res.status(result.status).json(parsed);
@@ -294,12 +427,16 @@ async function handleAgentChat(req, res) {
 }
 
 function pipeAgentStream(res, upstreamStream) {
-  res.status(200);
-  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
-  res.setHeader("Cache-Control", "no-cache, no-transform");
-  res.setHeader("Connection", "keep-alive");
-  res.setHeader("X-Accel-Buffering", "no");
-  res.flushHeaders?.();
+  // Headers may already be sent when the streaming path answered early with a
+  // "preparing" status while the model was warming.
+  if (!res.headersSent) {
+    res.status(200);
+    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+    res.flushHeaders?.();
+  }
 
   // Idle watchdog, not an overall response deadline. Every keep-alive or real
   // token resets it, so a healthy long answer can finish naturally. It fires

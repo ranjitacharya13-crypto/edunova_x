@@ -106,8 +106,17 @@ class LocalProviderConfigTests(unittest.TestCase):
         self.assertNotIn("user:pass", diag)
         self.assertNotIn("example.com/model.gguf", diag)  # only host + filename
 
-    def test_create_llm_factory_returns_local_stack(self):
-        settings = local_settings()
+    def test_create_llm_factory_defaults_to_pytorch_runtime(self):
+        settings = local_settings()  # default runtime is torch
+        from inference.torch_runtime import TorchChatLLM, TorchModelManager
+
+        llm, manager = create_llm(settings)
+        self.assertIsInstance(llm, TorchChatLLM)
+        self.assertIsInstance(manager, TorchModelManager)
+        self.assertTrue(llm.is_local)
+
+    def test_create_llm_factory_legacy_llama_cpp_runtime(self):
+        settings = local_settings(local_model_runtime="llama_cpp")
         llm, manager = create_llm(settings)
         self.assertIsInstance(llm, LocalLlamaLLM)
         self.assertIsInstance(manager, LocalModelManager)
