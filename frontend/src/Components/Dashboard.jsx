@@ -1,4 +1,4 @@
-import React, { useEffect } from "react";
+import React, { useEffect, lazy, Suspense } from "react";
 import { loginUser } from "../api/api";
 
 import HomeView from "./Views/HomeView";
@@ -10,7 +10,11 @@ import LoginCard from "./LoginCard";
 import AdminDashboard from "./Admin/AdminDashboard";
 import AIChatAssistant from "./AIChatAssistant";
 
-export default function Dashboard({ user, view, setUser, setView }) {
+const ARLessonView = lazy(() => import("./AR/ARLessonView"));
+const QuizView = lazy(() => import("./Views/QuizView"));
+const ProgressView = lazy(() => import("./Views/ProgressView"));
+
+export default function Dashboard({ user, view, setUser, setView, resourceId }) {
   useEffect(() => {
     if (user?.role === "admin" && !String(view || "").startsWith("admin-")) {
       setView("admin-overview");
@@ -137,6 +141,12 @@ export default function Dashboard({ user, view, setUser, setView }) {
           <ContactView />
         </div>
       )}
+
+      <Suspense fallback={<p role="status">Loading learning workspace…</p>}>
+        {user && view === "ar" && <ARLessonView lessonId={resourceId} onExit={() => setView("study")} />}
+        {user && view === "quiz" && <QuizView quizId={resourceId} />}
+        {user && view === "progress" && <ProgressView />}
+      </Suspense>
 
       {view === "ai-assistant" && (
         <div className="page slide-enter-active page-shell">

@@ -84,11 +84,12 @@ def build(target: Path) -> Path:
         sep_token="[SEP]",
         mask_token="[MASK]",
     )
+    torch.manual_seed(7)
     model = BertLMHeadModel(config)
     tokenizer.save_pretrained(str(target))
     config.save_pretrained(str(target))
     # torch.save through transformers save_pretrained (safetensors optional)
-    model.save_pretrained(str(target), safe_serialization=False)
+    model.save_pretrained(str(target), safe_serialization=True)
     return target
 
 

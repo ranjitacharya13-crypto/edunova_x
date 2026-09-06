@@ -17,6 +17,8 @@ const periodSchema = new mongoose.Schema({
 
 const teacherTimetableSchema = new mongoose.Schema(
   {
+    ownerId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null, index: true },
+    classId: { type: String, default: null, index: true },
     Monday: [periodSchema],
     Tuesday: [periodSchema],
     Wednesday: [periodSchema],

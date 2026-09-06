@@ -1,10 +1,12 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import Header from "./Components/Header";
 import Sidebar from "./Components/Sidebar";
 import Dashboard from "./Components/Dashboard";
 import Footer from "./Components/Footer";
 import MobileBottomNav from "./Components/MobileBottomNav";
 import FloatingAIChat from "./Components/FloatingAIChat";
+
+import { validDestination } from "./features/navigation";
 
 const THEME_STORAGE_KEY = "theme";
 
@@ -19,7 +21,19 @@ function getInitialTheme() {
 
 export default function App() {
   const [user, setUser] = useState(null);
-  const [view, setView] = useState("welcome");
+  const [view, updateView] = useState("welcome");
+  const [resourceId, setResourceId] = useState(null);
+  const setView = useCallback((next) => { setResourceId(null); updateView(next); }, []);
+  useEffect(() => {
+    const onNavigate = (event) => {
+      if (!user || !validDestination(event.detail)) return;
+      const aliases = { timetable: "home", assignments: "live", "study-plans": "progress" };
+      setResourceId(event.detail.id || null);
+      updateView(aliases[event.detail.view] || event.detail.view);
+    };
+    window.addEventListener("edunova:navigate", onNavigate);
+    return () => window.removeEventListener("edunova:navigate", onNavigate);
+  }, [user]);
   const [token, setToken] = useState(localStorage.getItem("token"));
   const [theme, setTheme] = useState(getInitialTheme);
 
@@ -61,6 +75,7 @@ export default function App() {
               <Dashboard
                 user={user}
                 view={view}
+                resourceId={resourceId}
                 setView={setView}
                 setUser={setUser}
               />

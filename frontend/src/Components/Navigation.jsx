@@ -6,6 +6,9 @@ export default function Navigation({ setView }) {
     { id: "syllabus", label: "Syllabus" },
     { id: "study", label: "Study Material" },
     { id: "live", label: "Live Classes" },
+    { id: "quiz", label: "Practice Quiz" },
+    { id: "progress", label: "Progress & Plans" },
+    { id: "ai-assistant", label: "EduNova AI" },
     { id: "contact", label: "Contact" },
   ];
 

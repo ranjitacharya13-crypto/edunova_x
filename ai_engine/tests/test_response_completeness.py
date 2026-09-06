@@ -40,6 +40,7 @@ def _manager_with(llama):
     manager = LocalModelManager(load_settings())
     manager._llama = llama
     manager.state = "ready"
+    manager.last_self_test = {"ok": True}
     return manager
 
 
@@ -80,19 +81,19 @@ def test_adaptive_budget_gives_simple_explanations_room_to_be_complete():
     assert _answer_token_budget(settings, "what is ML?", base=640) >= 512
 
 
-def test_adaptive_budget_gives_coding_more_room_than_simple_questions():
+def test_coding_and_simple_questions_can_run_to_eos_with_full_capacity():
     settings = load_settings()
     simple = _answer_token_budget(settings, "what is ML?", base=640)
     coding = _answer_token_budget(settings, "write a Python program for binary search", base=640)
     assert coding >= 1500
-    assert coding > simple
+    assert coding == simple == settings.llm_max_output_tokens
 
 
-def test_greetings_remain_concise_without_forcing_all_answers_to_be_tiny():
+def test_output_capacity_does_not_force_a_greeting_to_hit_an_artificial_cap():
     settings = load_settings()
     greeting = _answer_token_budget(settings, "hello", base=0)
     explanation = _answer_token_budget(settings, "explain recursion in detail", base=0)
-    assert greeting == 128
+    assert greeting == settings.llm_max_output_tokens
     assert explanation >= 1500
 
 

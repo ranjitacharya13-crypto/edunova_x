@@ -1,39 +1,22 @@
+// Persistent AI stays behind the API. Edge streams bytes, never loads weights.
 export default {
-  async fetch(request, env, ctx) {
+  async fetch(request, env) {
     const url = new URL(request.url);
-
-    // Optional API proxying if BACKEND_URL, API_URL, or VITE_API_URL is configured in Cloudflare environment
-    const backendUrl = env.BACKEND_URL || env.API_URL || env.VITE_API_URL;
-    if (backendUrl && (url.pathname.startsWith('/api') || url.pathname.startsWith('/socket.io'))) {
+    if (url.pathname === '/api' || url.pathname.startsWith('/api/') || url.pathname.startsWith('/socket.io')) {
+      const backend = env.BACKEND_URL || env.API_URL;
+      if (!backend) return Response.json({ success: false, error: { code: 'API_NOT_CONFIGURED', message: 'API proxy is not configured' } }, { status: 503 });
       try {
-        const target = new URL(backendUrl);
-        const targetPath = url.pathname.startsWith('/api') && target.pathname.endsWith('/api')
-          ? url.pathname.replace(/^\/api/, '')
-          : url.pathname;
-        const proxyUrl = new URL(target.pathname.replace(/\/+$/, '') + targetPath + url.search, target.origin);
-        const newReq = new Request(proxyUrl.toString(), request);
-        return await fetch(newReq);
-      } catch (e) {
-        return new Response(JSON.stringify({ error: 'Proxy error', message: e.message }), {
-          status: 502,
-          headers: { 'content-type': 'application/json' }
-        });
+        const target = new URL(backend);
+        const path = target.pathname.replace(/\/+$/, '');
+        const relative = path.endsWith('/api') && url.pathname.startsWith('/api/') ? url.pathname.slice(4) : url.pathname;
+        const upstream = new URL(path + relative + url.search, target.origin);
+        // Streaming body passes through unchanged (including SSE keep-alives).
+        return await fetch(new Request(upstream, request));
+      } catch {
+        return Response.json({ success: false, error: { code: 'UPSTREAM_UNREACHABLE', message: 'EduNova API could not be reached' } }, { status: 502 });
       }
     }
-
-    // Serve static assets with SPA single-page-application fallback
-    if (env.ASSETS) {
-      const response = await env.ASSETS.fetch(request);
-      if (response.status === 404 && !url.pathname.includes('.') && request.method === 'GET') {
-        const indexRequest = new Request(new URL('/index.html', request.url), request);
-        return await env.ASSETS.fetch(indexRequest);
-      }
-      return response;
-    }
-
-    return new Response('EduNova X is running.', {
-      status: 200,
-      headers: { 'content-type': 'text/plain' }
-    });
+    if (!env.ASSETS) return new Response('Assets unavailable', { status: 503 });
+    return env.ASSETS.fetch(request);
   }
 };

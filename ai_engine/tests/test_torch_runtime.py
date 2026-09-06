@@ -28,7 +28,7 @@ _TINY_DIR = Path(__file__).resolve().parent / "tmp_tiny_torch"
 def _tiny_settings(**overrides) -> Settings:
     from tests.tools.make_tiny_torch import build as build_tiny
 
-    if not _TINY_DIR.exists():
+    if not (_TINY_DIR / "model.safetensors").exists():
         build_tiny(_TINY_DIR)
     base = dict(
         llm_provider="local",
@@ -124,8 +124,7 @@ class RagIndexTests(unittest.TestCase):
         from inference.rag import Embedder, RagIndex
 
         # Force the deterministic lexical embedder (no downloads in tests).
-        embedder = Embedder("__lexical_only__")
-        embedder.backend = "lexical"
+        embedder = Embedder("lexical")
         return RagIndex(embedder=embedder, persist_dir=str(tmp))
 
     def test_chunking_and_search_isolation_between_owners(self):
@@ -149,7 +148,8 @@ class RagIndexTests(unittest.TestCase):
             # Owner B must never see Owner A's chunks.
             for result in results_b:
                 self.assertNotIn("neural network", result["text"])
-            self.assertEqual(index.count("user-a"), len(index._by_owner["user-a"]))
+            self.assertGreater(index.count("user-a"), 0)
+            self.assertEqual(index.count("missing-user"), 0)
 
     def test_lifecycle_state_machine(self):
         from inference.lifecycle import ModelLifecycle

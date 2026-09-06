@@ -1,3 +1,4 @@
+const { prepareMetadata } = require("../services/learningMaterials");
 // server/routes/study.js
 const express = require("express");
 const multer = require("multer");
@@ -168,6 +169,7 @@ router.post("/", auth, teacherOrAdmin, upload.single("file"), async (req, res) =
     const uploadStream = bucket.openUploadStream(file.originalname, {
       contentType,
       metadata: {
+        ...await prepareMetadata(file, req.user, req.body),
         uploadedBy: req.user.email,
         role: req.user.role,
         originalname: file.originalname,
@@ -226,7 +228,7 @@ router.get("/", async (req, res) => {
       contentType: f.contentType,
       uploadDate: f.uploadDate,
       length: f.length,
-      metadata: f.metadata,
+      metadata: { subject: f.metadata?.subject, topic: f.metadata?.topic, textStatus: f.metadata?.textStatus },
     }));
     res.json(list);
   } catch (e) {

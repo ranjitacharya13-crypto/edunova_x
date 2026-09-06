@@ -1,0 +1,65 @@
+[
+  {
+    "slug": "human-eye",
+    "subjectId": "physics",
+    "subject": "Physics",
+    "syllabusTopicId": "human-eye",
+    "topic": "Human Eye",
+    "title": "Human Eye: light to sight",
+    "description": "Explore how light enters the eye, is focused by the lens, and reaches the retina. This enlarged low-poly cutaway is a teaching schematic, not a medical or anatomically scaled model.",
+    "modelUrl": "/ar-assets/human-eye.glb",
+    "fallbackImage": "/ar-assets/human-eye.svg",
+    "assetBytes": 15652,
+    "learningObjectives": [
+      "Trace light from the pupil through the lens to the retina.",
+      "Explain how the lens focuses light.",
+      "Distinguish the retina and optic nerve."
+    ],
+    "hotspots": [
+      {
+        "id": "retina",
+        "label": "Retina",
+        "position": [
+          -0.1,
+          0.07,
+          0.03
+        ],
+        "description": "Light-sensitive tissue at the back of the eye. Photoreceptors convert light into signals that travel through retinal circuits.",
+        "aiContext": "Explain rods and cones, light detection and how signals reach the optic nerve."
+      },
+      {
+        "id": "lens",
+        "label": "Lens",
+        "position": [
+          0.065,
+          0.065,
+          0.045
+        ],
+        "description": "The transparent lens changes shape to help focus light on the retina.",
+        "aiContext": "Explain refraction, accommodation, and focusing near or distant objects."
+      },
+      {
+        "id": "pupil",
+        "label": "Pupil",
+        "position": [
+          0.127,
+          0.012,
+          0.025
+        ],
+        "description": "The opening in the iris through which light enters the eye. The iris changes its size.",
+        "aiContext": "Distinguish the pupil (opening) from the iris (muscular tissue)."
+      },
+      {
+        "id": "optic-nerve",
+        "label": "Optic nerve",
+        "position": [
+          -0.2,
+          -0.005,
+          0.015
+        ],
+        "description": "Axons of retinal ganglion cells carry visual signals from the eye toward the brain.",
+        "aiContext": "Photoreceptors detect light; the optic nerve transmits signals, not light rays."
+      }
+    ]
+  }
+]

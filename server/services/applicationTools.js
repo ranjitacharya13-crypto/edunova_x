@@ -24,6 +24,34 @@ const Attendance = require("../models/Attendance");
 const StudentProgress = require("../models/StudentProgress");
 const StudyPlan = require("../models/StudyPlan");
 const AiAuditLog = require("../models/AiAuditLog");
+const { assignmentAccess, roomsFor, identity, legacyShared, escapeRegex, httpError, materialAccess } = require("./access");
+const { validateToolArguments } = require("./toolValidation");
+const { createPracticeQuiz, performanceSummary } = require("./quizService");
+const { learningDocuments } = require("./learningMaterials");
+const { listLessons, educationalContext, getLesson } = require("./arLessons");
+
+async function openFeature(user, args) {
+  const allowed = ["home", "syllabus", "study", "live", "quiz", "progress", "study-plans", "ar", "timetable", "assignments"];
+  if (!allowed.includes(args.view)) throw httpError("INVALID_INPUT", "Unknown application destination");
+  if (args.id) {
+    if (args.view === "ar") await getLesson(user, args.id);
+    else if (["quiz", "assignments"].includes(args.view)) await require("./quizService").findQuiz(user, args.id);
+    else throw httpError("INVALID_INPUT", "This destination does not accept an id");
+  }
+  return { navigate: { view: args.view, ...(args.id ? { id: args.id } : {}) }, message: `Open ${args.view}` };
+}
+
+
+async function scopedTimetable(user) {
+  const model = user.role === "teacher" ? TeacherTimetable : Timetable;
+  const own = await model.findOne({ ownerId: identity(user) });
+  if (own) return { doc: own, scope: "user" };
+  const enrolled = roomsFor(user);
+  const classroom = enrolled.length ? await model.findOne({ ownerId: null, classId: { $in: enrolled } }) : null;
+  if (classroom) return { doc: classroom, scope: "class" };
+  return { doc: await model.findOne(legacyShared), scope: "shared-school" };
+}
+
 
 const PERIOD_TIMES = {
   1: "9:30 - 10:15",
@@ -48,8 +76,10 @@ const pendingActions = new Map();
 const PENDING_ACTION_TTL_MS = 10 * 60 * 1000;
 
 function preparePendingAction(toolName, args, userId, conversationId) {
+  for (const [key, value] of pendingActions) if (value.expiresAt < Date.now()) pendingActions.delete(key);
+  if (pendingActions.size >= 1000) throw httpError("CAPACITY_LIMIT", "Action confirmation capacity reached", 429);
   const token = crypto.randomBytes(24).toString("base64url");
-  pendingActions.set(token, { toolName, args, userId: String(userId), conversationId, expiresAt: Date.now() + PENDING_ACTION_TTL_MS });
+  pendingActions.set(token, { toolName, args: structuredClone(args), userId: String(userId), conversationId, expiresAt: Date.now() + PENDING_ACTION_TTL_MS });
   return {
     success: true,
     sourceType: "application",
@@ -59,6 +89,7 @@ function preparePendingAction(toolName, args, userId, conversationId) {
       requiresConfirmation: true,
       confirmationToken: token,
       toolName,
+      preview: args,
       message: `Confirm to apply ${toolName.replaceAll("_", " ")} to EduNova.`,
     },
   };
@@ -67,7 +98,7 @@ function preparePendingAction(toolName, args, userId, conversationId) {
 async function confirmApplicationTool(token, userId) {
   const pending = pendingActions.get(String(token || ""));
   if (!pending || pending.expiresAt < Date.now() || pending.userId !== String(userId)) {
-    pendingActions.delete(String(token || ""));
+    if (pending?.expiresAt < Date.now()) pendingActions.delete(String(token || ""));
     return { success: false, error: "Confirmation is invalid or expired." };
   }
   pendingActions.delete(String(token));
@@ -116,7 +147,7 @@ async function getStudentProfile(user) {
 async function getSubjects(user) {
   let subjects = user.subjects || [];
   if (!subjects.length && isDbConnected()) {
-    const timetable = await Timetable.findOne({});
+    const { doc: timetable } = await scopedTimetable(user);
     if (timetable) {
       const set = new Set();
       for (const day of ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]) {
@@ -138,8 +169,7 @@ async function getTimetable(user, args = {}) {
   const isTeacher = user.role === "teacher";
   let doc = null;
   if (isDbConnected()) {
-    const model = isTeacher ? TeacherTimetable : Timetable;
-    doc = await model.findOne({});
+    ({ doc } = await scopedTimetable(user));
   }
 
   const dayFilter = args.day ? String(args.day).trim() : null;
@@ -161,20 +191,20 @@ async function getTimetable(user, args = {}) {
 
   return {
     type: isTeacher ? "teacher" : "student",
+    scope: doc?.ownerId ? "user" : doc?.classId ? "class" : "shared-school",
     schedule,
     hasEntries: Object.values(schedule).some((list) => list.length > 0),
   };
 }
 
 async function getTodaySchedule(user) {
-  const today = DAYS_OF_WEEK[new Date().getDay()];
+  const today = new Intl.DateTimeFormat("en-US", { weekday: "long", timeZone: user.timezone || "UTC" }).format(new Date());
   const isTeacher = user.role === "teacher";
   let timetableDoc = null;
   let liveSessions = [];
 
   if (isDbConnected()) {
-    const model = isTeacher ? TeacherTimetable : Timetable;
-    timetableDoc = await model.findOne({});
+    ({ doc: timetableDoc } = await scopedTimetable(user));
 
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
@@ -183,6 +213,7 @@ async function getTodaySchedule(user) {
 
     liveSessions = await LiveSession.find({
       date: { $gte: startOfDay, $lt: endOfDay },
+      ...(user.role === "teacher" ? { teacherId: identity(user) } : { roomId: { $in: roomsFor(user) } }),
     })
       .sort({ createdAt: 1 })
       .lean();
@@ -220,7 +251,7 @@ async function getTodaySchedule(user) {
 }
 
 async function getUpcomingClasses(user) {
-  const today = DAYS_OF_WEEK[new Date().getDay()];
+  const today = new Intl.DateTimeFormat("en-US", { weekday: "long", timeZone: user.timezone || "UTC" }).format(new Date());
   const scheduleRes = await getTodaySchedule(user);
 
   return {
@@ -235,8 +266,9 @@ async function getSyllabus(user, args = {}) {
   if (isDbConnected() && mongoose.connection.db) {
     files = await mongoose.connection.db
       .collection("syllabus_files.files")
-      .find({})
+      .find(materialAccess(user))
       .sort({ uploadDate: -1 })
+      .limit(100)
       .toArray();
   }
 
@@ -247,7 +279,7 @@ async function getSyllabus(user, args = {}) {
     contentType: f.contentType,
     uploadDate: f.uploadDate,
     sizeBytes: f.length,
-    metadata: f.metadata || {},
+    metadata: { subject: f.metadata?.subject || "", topic: f.metadata?.topic || "", textStatus: f.metadata?.textStatus || "not_indexed" },
   }));
 
   if (subjectFilter) {
@@ -271,11 +303,12 @@ async function getLearningMaterials(user, args = {}) {
   if (isDbConnected() && mongoose.connection.db) {
     files = await mongoose.connection.db
       .collection("study_files.files")
-      .find({})
+      .find(materialAccess(user))
       .sort({ uploadDate: -1 })
+      .limit(100)
       .toArray();
 
-    recordings = await Recording.find({})
+    recordings = await Recording.find({ room: { $in: roomsFor(user) } })
       .sort({ createdAt: -1 })
       .limit(5)
       .lean();
@@ -288,7 +321,7 @@ async function getLearningMaterials(user, args = {}) {
     contentType: f.contentType,
     uploadDate: f.uploadDate,
     sizeBytes: f.length,
-    metadata: f.metadata || {},
+    metadata: { subject: f.metadata?.subject || "", topic: f.metadata?.topic || "", textStatus: f.metadata?.textStatus || "not_indexed" },
   }));
 
   if (query) {
@@ -317,7 +350,8 @@ async function getProgress(user, args = {}) {
   }
 
   if (!progress) {
-    return { hasProgress: false, overallProgressPercent: null, studyStreakDays: 0, totalStudyMinutes: 0, subjects: [] };
+    const quizPerformance = await performanceSummary(user);
+    return { hasProgress: quizPerformance.length > 0, overallProgressPercent: null, subjects: [], quizPerformance };
   }
 
   const subjectFilter = args.subject ? String(args.subject).toLowerCase().trim() : null;
@@ -326,6 +360,7 @@ async function getProgress(user, args = {}) {
     : progress.subjects;
 
   return {
+    quizPerformance: await performanceSummary(user),
     overallProgressPercent: progress.overallProgressPercent,
     studyStreakDays: progress.studyStreakDays,
     totalStudyMinutes: progress.totalStudyMinutes,
@@ -338,7 +373,7 @@ async function getStudyHistory(user, args = {}) {
   if (isDbConnected() && user._id) {
     const limit = Math.max(1, Math.min(Number(args.limit) || 10, 30));
     const filter = { userId: user._id };
-    if (args.subject) filter.subject = new RegExp(String(args.subject).trim(), "i");
+    if (args.subject) filter.subject = new RegExp(escapeRegex(String(args.subject).trim()), "i");
     sessions = await StudySession.find(filter).sort({ date: -1, createdAt: -1 }).limit(limit).lean();
   }
 
@@ -361,7 +396,7 @@ async function getQuizHistory(user, args = {}) {
   if (isDbConnected() && user._id) {
     const limit = Math.max(1, Math.min(Number(args.limit) || 10, 30));
     const filter = { userId: user._id };
-    if (args.subject) filter.subject = new RegExp(String(args.subject).trim(), "i");
+    if (args.subject) filter.subject = new RegExp(escapeRegex(String(args.subject).trim()), "i");
     attempts = await QuizAttempt.find(filter).sort({ createdAt: -1 }).limit(limit).lean();
   }
 
@@ -387,7 +422,7 @@ async function getQuizResults(user, args = {}) {
     if (args.quizId && mongoose.Types.ObjectId.isValid(args.quizId)) {
       filter._id = args.quizId;
     } else if (args.subject) {
-      filter.subject = new RegExp(String(args.subject).trim(), "i");
+      filter.subject = new RegExp(escapeRegex(String(args.subject).trim()), "i");
     }
     attempt = await QuizAttempt.findOne(filter).sort({ createdAt: -1 }).lean();
   }
@@ -420,7 +455,7 @@ async function getQuizResults(user, args = {}) {
 async function getAssignments(user, args = {}) {
   let assignments = [];
   if (isDbConnected()) {
-    const filter = {};
+    const filter = assignmentAccess(user);
     if (args.room) filter.room = String(args.room).toLowerCase().trim();
     assignments = await Assignment.find(filter).sort({ createdAt: -1 }).limit(10).lean();
   }
@@ -442,9 +477,9 @@ async function getAssignments(user, args = {}) {
 async function getExams(user, args = {}) {
   let exams = [];
   if (isDbConnected()) {
-    const filter = {};
-    if (args.subject) filter.subject = new RegExp(String(args.subject).trim(), "i");
-    exams = await Exam.find(filter).sort({ date: 1 }).lean();
+    const filter = { $or: [{ userId: user._id }, { userId: null, room: { $in: [...roomsFor(user), "", "general"] } }] };
+    if (args.subject) filter.subject = new RegExp(escapeRegex(String(args.subject).trim()), "i");
+    exams = await Exam.find(filter).sort({ date: 1 }).limit(50).lean();
   }
 
   return {
@@ -493,11 +528,11 @@ async function getNotes(user, args = {}) {
   return {
     totalNotes: notes.length,
     notes: notes.map((n) => ({
-      id: n._id || "n1",
+      id: n._id,
       title: n.title,
       content: n.content,
       subject: n.subject,
-      createdAt: n.createdAt || new Date(),
+      createdAt: n.createdAt || null,
     })),
   };
 }
@@ -505,7 +540,7 @@ async function getNotes(user, args = {}) {
 async function getGoals(user) {
   return {
     goals: (user.goals || []).map((g) => ({
-      id: g._id || "g1",
+      id: g._id,
       title: g.title,
       subject: g.subject,
       targetDate: g.targetDate,
@@ -535,21 +570,11 @@ async function getNotifications(user) {
 // ---------------------------------------------------------------------------
 
 async function createTimetable(user, args = {}) {
-  const timetableData = args.timetable || args.schedule || {};
-  let docId = "timetable-doc";
-
-  if (isDbConnected()) {
-    const isTeacher = user.role === "teacher";
-    const model = isTeacher ? TeacherTimetable : Timetable;
-    const doc = await model.findOneAndUpdate({}, { $set: timetableData }, { upsert: true, new: true });
-    docId = doc._id;
-  }
-
-  return {
-    success: true,
-    message: "Timetable updated successfully.",
-    timetableId: docId,
-  };
+  if (!["admin", "teacher"].includes(user.role)) throw httpError("PERMISSION_DENIED", "Only teachers or admins can change timetables", 403);
+  const model = user.role === "teacher" ? TeacherTimetable : Timetable;
+  const filter = user.role === "admin" ? legacyShared : { ownerId: user._id };
+  const doc = await model.findOneAndUpdate(filter, { $set: args.schedule }, { upsert: true, new: true, runValidators: true });
+  return { success: true, timetableId: doc._id, message: "Timetable updated successfully." };
 }
 
 async function updateTimetable(user, args = {}) {
@@ -564,7 +589,7 @@ async function createStudySession(user, args = {}) {
   }
 
   const durationMinutes = Math.max(5, Math.min(Number(args.durationMinutes) || 30, 360));
-  let sessionId = "session-" + Date.now();
+  let sessionId;
 
   if (isDbConnected() && user._id) {
     const session = await StudySession.create({
@@ -590,75 +615,14 @@ async function createStudySession(user, args = {}) {
 }
 
 async function markStudyComplete(user, args = {}) {
-  const sessionId = args.sessionId;
-  if (!sessionId) {
-    throw new Error("Valid sessionId is required");
-  }
-
-  if (isDbConnected() && mongoose.Types.ObjectId.isValid(sessionId) && user._id) {
-    const session = await StudySession.findOne({ _id: sessionId, userId: user._id });
-    if (session) {
-      session.completed = true;
-      await session.save();
-    }
-  }
-
-  return {
-    success: true,
-    sessionId,
-    message: "Study session marked as completed.",
-  };
+  if (!mongoose.isValidObjectId(args.sessionId)) throw httpError("INVALID_INPUT", "Invalid sessionId");
+  const session = await StudySession.findOneAndUpdate({ _id: args.sessionId, userId: user._id }, { $set: { completed: true } }, { new: true });
+  if (!session) throw httpError("NOT_FOUND", "Study session not found", 404);
+  return { success: true, sessionId: String(session._id), message: "Study session marked as completed." };
 }
 
 async function createQuiz(user, args = {}) {
-  const title = String(args.title || "").trim();
-  const subject = String(args.subject || "").trim();
-  const questions = Array.isArray(args.questions) ? args.questions : [];
-
-  if (!title || !subject || !questions.length) {
-    throw new Error("title, subject, and at least one question are required to create a quiz");
-  }
-
-  const validatedQuestions = questions.map((q, idx) => {
-    if (!q.question || !Array.isArray(q.options) || q.options.length < 2) {
-      throw new Error(`Invalid format for question ${idx + 1}`);
-    }
-    const answerIndex = Number(q.answerIndex) >= 0 ? Number(q.answerIndex) : 0;
-    return {
-      question: String(q.question).trim(),
-      options: q.options.map((opt) => String(opt).trim()),
-      answerIndex,
-    };
-  });
-
-  const room = String(args.room || subject).toLowerCase().replace(/[^a-z0-9]+/g, "-");
-  let quizId = "quiz-" + Date.now();
-
-  if (isDbConnected() && user._id) {
-    const assignment = await Assignment.create({
-      room,
-      title,
-      fileId: new mongoose.Types.ObjectId(),
-      filename: `${title.replace(/[^a-z0-9]/gi, "_")}.pdf`,
-      createdBy: {
-        id: user._id,
-        name: user.name || "AI Instructor",
-        role: user.role || "teacher",
-        email: user.email,
-      },
-      quiz: validatedQuestions,
-    });
-    quizId = assignment._id;
-  }
-
-  return {
-    success: true,
-    quizId,
-    title,
-    room,
-    totalQuestions: validatedQuestions.length,
-    message: `Quiz "${title}" created with ${validatedQuestions.length} questions.`,
-  };
+  return createPracticeQuiz(user, args);
 }
 
 async function saveQuiz(user, args = {}) {
@@ -666,58 +630,14 @@ async function saveQuiz(user, args = {}) {
 }
 
 async function markAssignmentComplete(user, args = {}) {
-  const assignmentId = args.assignmentId;
-  if (!assignmentId) {
-    throw new Error("assignmentId is required");
-  }
-
-  return {
-    success: true,
-    assignmentId,
-    message: "Assignment marked as completed.",
-  };
+  if (!mongoose.isValidObjectId(args.assignmentId)) throw httpError("INVALID_INPUT", "Invalid assignmentId");
+  const doc = await Assignment.findOneAndUpdate({ $and: [{ _id: args.assignmentId }, assignmentAccess(user)] }, { $addToSet: { completedBy: user._id } }, { new: true });
+  if (!doc) throw httpError("NOT_FOUND", "Assignment not found", 404);
+  return { success: true, assignmentId: String(doc._id), message: "Assignment marked as completed." };
 }
 
-async function updateProgress(user, args = {}) {
-  const subject = String(args.subject || "").trim();
-  if (!subject) throw new Error("subject is required");
-
-  const progressPercent = Math.max(0, Math.min(Number(args.progressPercent) || 0, 100));
-
-  if (isDbConnected() && user._id) {
-    let progress = await StudentProgress.findOne({ userId: user._id });
-    if (!progress) {
-      progress = new StudentProgress({ userId: user._id, overallProgressPercent: progressPercent, subjects: [] });
-    }
-
-    const existingSubj = progress.subjects.find((s) => s.subject.toLowerCase() === subject.toLowerCase());
-    if (existingSubj) {
-      existingSubj.overallProgressPercent = progressPercent;
-      if (args.weakTopics) existingSubj.weakTopics = args.weakTopics;
-      if (args.strongTopics) existingSubj.strongTopics = args.strongTopics;
-    } else {
-      progress.subjects.push({
-        subject,
-        overallProgressPercent: progressPercent,
-        weakTopics: args.weakTopics || [],
-        strongTopics: args.strongTopics || [],
-        completedModules: 1,
-        totalModules: 10,
-      });
-    }
-
-    progress.overallProgressPercent = Math.round(
-      progress.subjects.reduce((acc, s) => acc + s.overallProgressPercent, 0) / progress.subjects.length
-    );
-    await progress.save();
-  }
-
-  return {
-    success: true,
-    subject,
-    overallProgressPercent: progressPercent,
-    message: `Progress for ${subject} updated to ${progressPercent}%.`,
-  };
+async function updateProgress() {
+  throw httpError("PERMISSION_DENIED", "Progress is calculated from quiz attempts and completed study sessions, not AI-assigned scores", 403);
 }
 
 async function createNote(user, args = {}) {
@@ -772,7 +692,7 @@ async function createStudyPlan(user, args = {}) {
     throw new Error("schedule items are required for creating a study plan");
   }
 
-  let planId = "plan-" + Date.now();
+  let planId;
   if (isDbConnected() && user._id) {
     const plan = await StudyPlan.create({
       userId: user._id,
@@ -780,11 +700,11 @@ async function createStudyPlan(user, args = {}) {
       subject,
       targetExamDate,
       schedule: schedule.map((item) => ({
-        day: String(item.day || "Day 1"),
-        time: String(item.time || "17:00 - 18:30"),
-        subject: String(item.subject || subject || "General"),
-        topic: String(item.topic || "Topic Review"),
-        task: String(item.task || "Study and practice problems"),
+        day: item.day,
+        time: item.time,
+        subject: item.subject,
+        topic: item.topic,
+        task: item.task,
         completed: false,
       })),
       status: "active",
@@ -797,6 +717,7 @@ async function createStudyPlan(user, args = {}) {
     planId,
     title,
     totalSessions: schedule.length,
+    navigate: { view: "progress" },
     message: `Study plan "${title}" created with ${schedule.length} sessions.`,
   };
 }
@@ -806,7 +727,12 @@ async function createStudyPlan(user, args = {}) {
 // ---------------------------------------------------------------------------
 
 const TOOL_HANDLERS = {
+  get_ar_lessons: { handler: listLessons, sourceType: "database", isWrite: false },
+  get_ar_context: { handler: educationalContext, sourceType: "database", isWrite: false },
+  open_feature: { handler: openFeature, sourceType: "application", isWrite: false },
   // Read Tools
+  get_learning_documents: { handler: learningDocuments, sourceType: "database", isWrite: false },
+  get_classes: { handler: getUpcomingClasses, sourceType: "database", isWrite: false },
   get_student_profile: { handler: getStudentProfile, sourceType: "database", isWrite: false },
   get_subjects: { handler: getSubjects, sourceType: "database", isWrite: false },
   get_timetable: { handler: getTimetable, sourceType: "database", isWrite: false },
@@ -860,23 +786,16 @@ async function executeApplicationTool(toolName, rawArgs = {}, userId, conversati
     };
   }
 
-  if (!isDbConnected()) {
-    return { success: false, error: "EduNova database is unavailable." };
-  }
-  if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
-    return { success: false, error: "Authenticated user identity is invalid." };
-  }
-  const user = await User.findById(userId);
-  if (!user || user.isBlocked) {
-    return { success: false, error: "Authenticated user was not found or is blocked." };
-  }
-
-  if (toolEntry.isWrite && !options.confirmed) {
-    return preparePendingAction(toolName, rawArgs, userId, conversationId);
-  }
-
-
+  let user;
   try {
+    if (!isDbConnected()) throw httpError("DATABASE_FAILED", "EduNova database is unavailable", 503);
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) throw httpError("AUTH_FAILED", "Authenticated user identity is invalid", 401);
+    user = await User.findById(userId);
+    if (!user || user.isBlocked) throw httpError("AUTH_FAILED", "Authenticated user was not found or is blocked", 401);
+    rawArgs = validateToolArguments(toolName, rawArgs);
+    if (["create_timetable", "update_timetable"].includes(toolName) && !["teacher", "admin"].includes(user.role)) throw httpError("PERMISSION_DENIED", "Only teachers or admins can change timetables", 403);
+    if (toolName === "update_progress") throw httpError("PERMISSION_DENIED", "Progress is derived from scored attempts, not assigned by AI", 403);
+    if (toolEntry.isWrite && !options.confirmed) return preparePendingAction(toolName, rawArgs, userId, conversationId);
     const result = await toolEntry.handler(user, rawArgs);
     const durationMs = Date.now() - started;
 
@@ -899,18 +818,20 @@ async function executeApplicationTool(toolName, rawArgs = {}, userId, conversati
   } catch (err) {
     const durationMs = Date.now() - started;
     await recordAuditLog({
-      userId: String(user._id),
+      userId: String(user?._id || userId),
       conversationId,
       toolName,
       sourceType: toolEntry.sourceType,
       success: false,
       durationMs,
-      error: err.message,
+      error: err.code || err.name,
     });
 
     return {
       success: false,
-      error: err.message || "Tool execution failed",
+      code: err.code || "DATABASE_FAILED",
+      status: err.status || 500,
+      error: err.code ? err.message : "EduNova database operation failed",
       durationMs,
     };
   }
@@ -921,4 +842,5 @@ module.exports = {
   TOOL_HANDLERS,
   recordAuditLog,
   confirmApplicationTool,
+  scopedTimetable,
 };

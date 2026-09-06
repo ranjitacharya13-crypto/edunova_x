@@ -5,9 +5,18 @@
   "assets": {
     "directory": "./dist",
     "html_handling": "none",
-    "not_found_handling": "single-page-application"
+    "not_found_handling": "single-page-application",
+    "binding": "ASSETS",
+    "run_worker_first": [
+      "/api/*",
+      "/socket.io/*"
+    ]
   },
   "build": {
     "command": "npm run build"
+  },
+  "main": "frontend/public/_worker.js",
+  "vars": {
+    "BACKEND_URL": "https://edunova-api-y3rx.onrender.com"
   }
 }

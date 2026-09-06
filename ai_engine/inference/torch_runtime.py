@@ -715,6 +715,7 @@ class TorchModelManager:
                 device_map=None,
                 trust_remote_code=self.settings.local_model_trust_remote_code,
                 low_cpu_mem_usage=True,
+                use_safetensors=True,
                 local_files_only=offline,
             )
         except Exception as exc:
@@ -1178,7 +1179,8 @@ class TorchModelManager:
                         break
 
                     generated_ids.append(next_id)
-                    piece = tokenizer.decode([next_id], skip_special_tokens=True)
+                    decoded = tokenizer.decode(generated_ids, skip_special_tokens=True)
+                    piece = decoded[len(text):] if not decoded.endswith("\ufffd") else ""
                     if piece:
                         pieces.append(piece)
                         text += piece
@@ -1187,8 +1189,10 @@ class TorchModelManager:
                         if on_token is not None:
                             try:
                                 on_token(piece)
-                            except Exception as tok_err:  # noqa: BLE001
-                                logger.warning("TORCH_ON_TOKEN_CALLBACK_ERROR %s", str(tok_err)[:120])
+                            except LLMResponseError:
+                                raise
+                            except Exception as tok_err:
+                                raise RuntimeError("Token consumer disconnected") from tok_err
 
                     # Detect stop strings that span multiple tokens.
                     tail = text[-32:]
@@ -1230,6 +1234,7 @@ class TorchModelManager:
         self._record_throughput(generated_tokens, generation_seconds)
         self.last_generation_metrics = {
             "tokens": generated_tokens,
+            "finishReason": "length" if generated_tokens >= max_tokens else "stop",
             "promptTokens": int(len(input_ids[0])),
             "durationMs": int(generation_seconds * 1000),
             "tokensPerSecond": round(generated_tokens / generation_seconds, 2),

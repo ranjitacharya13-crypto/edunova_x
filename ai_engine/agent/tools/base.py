@@ -22,41 +22,11 @@ class ToolSchemaError(ValueError):
 
 
 def _validate_input(schema: dict[str, Any], arguments: dict[str, Any]) -> None:
-    """Validate the JSON-Schema subset used by registered tools."""
-    if not isinstance(arguments, dict):
-        raise ToolSchemaError("Tool input must be an object")
-    if not schema or schema.get("type") != "object":
-        return
-    properties = schema.get("properties", {})
-    for required in schema.get("required", []):
-        if required not in arguments:
-            raise ToolSchemaError(f"Missing required tool input: {required}")
-    if schema.get("additionalProperties") is False:
-        unexpected = set(arguments) - set(properties)
-        if unexpected:
-            raise ToolSchemaError(f"Unexpected tool input: {sorted(unexpected)[0]}")
-    for name, value in arguments.items():
-        rule = properties.get(name)
-        if not isinstance(rule, dict):
-            continue
-        expected = rule.get("type")
-        if expected == "string" and not isinstance(value, str):
-            raise ToolSchemaError(f"{name} must be a string")
-        if expected == "integer" and (not isinstance(value, int) or isinstance(value, bool)):
-            raise ToolSchemaError(f"{name} must be an integer")
-        if expected == "array" and not isinstance(value, list):
-            raise ToolSchemaError(f"{name} must be an array")
-        if expected == "boolean" and not isinstance(value, bool):
-            raise ToolSchemaError(f"{name} must be a boolean")
-        if expected == "object" and not isinstance(value, dict):
-            raise ToolSchemaError(f"{name} must be an object")
-        if isinstance(value, str) and len(value) > int(rule.get("maxLength", len(value))):
-            raise ToolSchemaError(f"{name} is too long")
-        if isinstance(value, int) and not isinstance(value, bool):
-            if "minimum" in rule and value < rule["minimum"]:
-                raise ToolSchemaError(f"{name} is below the minimum")
-            if "maximum" in rule and value > rule["maximum"]:
-                raise ToolSchemaError(f"{name} exceeds the maximum")
+    """Full nested JSON-schema validation, not just top-level type checks."""
+    from jsonschema import Draft202012Validator
+    errors = sorted(Draft202012Validator(schema).iter_errors(arguments), key=lambda e: str(e.path))
+    if errors:
+        raise ToolSchemaError(f"Invalid tool input at {'.'.join(map(str, errors[0].path)) or 'arguments'}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,7 +112,13 @@ class ToolRegistry:
                 task = tool.executor(arguments)
 
             result = await asyncio.wait_for(task, timeout=tool.timeout_seconds)
+            if not isinstance(result, dict):
+                raise ToolSchemaError("Tool returned an invalid result")
+            if result.get("success") is False or result.get("error"):
+                raise RuntimeError(str(result.get("error") or "Tool returned failure")[:300])
             duration = int((monotonic() - started) * 1000)
+            from inference.telemetry import tool as record_tool
+            record_tool(name, source_type, duration, True, result)
             observation = Observation(
                 tool=name,
                 success=True,
@@ -168,7 +144,7 @@ class ToolRegistry:
                 name, arguments, started, "TOOL_TIMEOUT", "Tool execution timed out", source_type
             )
         except Exception as exc:
-            code = str(getattr(exc, "code", "TOOL_ERROR"))[:80]
+            code = str(getattr(exc, "error_type", None) or getattr(exc, "code", "TOOL_ERROR"))[:80]
             safe_message = str(exc)[:500] or "Tool execution failed"
             return self._failure(name, arguments, started, code, safe_message, source_type)
 
@@ -182,6 +158,8 @@ class ToolRegistry:
         source_type: str = "database",
     ) -> tuple[Observation, ToolCallRecord]:
         duration = int((monotonic() - started) * 1000)
+        from inference.telemetry import tool as record_tool
+        record_tool(name, source_type, duration, False, code=code)
         observation = Observation(
             tool=name,
             success=False,

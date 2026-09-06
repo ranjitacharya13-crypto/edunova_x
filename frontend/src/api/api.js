@@ -24,7 +24,7 @@ import axios from "axios";
 // never lets a Cloudflare build silently dial the visitor's own origin for
 // /api. Local development is unaffected: in dev mode it still defaults to
 // "/api", which the Vite dev proxy forwards to the local backend on port 4000.
-const DEFAULT_PROD_API_URL = "https://edunova-api-y3rx.onrender.com/api";
+const DEFAULT_PROD_API_URL = "/api";
 
 let baseURL =
   import.meta.env.VITE_API_URL ||
@@ -41,12 +41,6 @@ if (import.meta.env.PROD) {
     console.error(
       `[EduNova] VITE_API_URL points at ${baseURL} in a production build. ` +
         "It must be the public HTTPS URL of the Render API."
-    );
-  } else if (baseURL === "/api") {
-    console.error(
-      "[EduNova] VITE_API_URL was not set at build time. The app will call the " +
-        "site's own origin for /api, which has no backend. Set VITE_API_URL in " +
-        "the Cloudflare dashboard and redeploy."
     );
   }
 }
@@ -349,14 +343,15 @@ const AI_STATUS_LABELS = {
 export const aiStatusLabel = (status) =>
   AI_STATUS_LABELS[status] || AI_STATUS_LABELS[AI_STATUS.UNKNOWN];
 
-function classifyAIHealth(body, httpStatus) {
+export function classifyAIHealth(body, httpStatus) {
   if (!body || typeof body !== "object") {
-    return httpStatus === 503 ? AI_STATUS.STARTING : AI_STATUS.UNKNOWN;
+    return AI_STATUS.UNAVAILABLE;
   }
   // modelReady is the authoritative signal (model + tokenizer + warm-up all OK).
   // `success` alone is NOT sufficient: the health endpoint answers success for a
   // live *process* whose model may still be loading or may have failed.
-  if (body.modelReady === true) return AI_STATUS.READY;
+  if (body.modelReady === true && httpStatus < 400) return AI_STATUS.READY;
+  if (body.permanentFailure || body.model?.permanentFailure) return AI_STATUS.UNAVAILABLE;
 
   const state = String(body.modelState || body.lifecycle || body.status || "").toLowerCase();
   if (["error", "failed", "model_unavailable", "missing_config"].includes(state)) {
@@ -367,7 +362,7 @@ function classifyAIHealth(body, httpStatus) {
     return AI_STATUS.LOADING;
   }
   if (["busy"].includes(state)) return AI_STATUS.BUSY;
-  if (["ready", "model_ready", "degraded"].includes(state)) return AI_STATUS.READY;
+  if (["ready", "model_ready", "degraded"].includes(state)) return AI_STATUS.UNAVAILABLE;
   if (state) return AI_STATUS.UNAVAILABLE;
   return AI_STATUS.UNKNOWN;
 }
@@ -525,12 +520,13 @@ export const streamAIEngine = async ({
     }
     onEvent?.(event);
     if (event.type === "answer") finalAnswer = event;
-    if (event.type === "error") throw new Error(event.message || "EduNova AI request failed");
+    if (event.type === "error") throw new Error(`${event.error?.code || "INFERENCE_FAILED"}: ${event.message || "EduNova AI request failed"}`);
   };
 
   try {
     while (true) {
       const { value, done } = await reader.read();
+      if (buffer.length > 1000000 || streamedText.length > 100000) throw new Error("AI response exceeds safe client capacity");
       buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
       const blocks = buffer.split(/\r?\n\r?\n/);
       buffer = blocks.pop() || "";
@@ -555,7 +551,7 @@ export const streamAIEngine = async ({
   if (!finalAnswer) {
     // Partial tokens are never promoted to a successful answer. A healthy
     // stream always ends with the authoritative, complete answer event.
-    throw new Error("EduNova AI is temporarily unavailable. Please try again.");
+    throw new Error("STREAM_INTERRUPTED: The answer did not finish. Partial output is not a complete response.");
   }
   return finalAnswer;
 };

@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import AIAction from "./AIAction";
 import { confirmAIAction, streamAIEngine } from "../api/api";
 import EduNovaAIAvatar from "./EduNovaAIAvatar";
 import useAIStatus from "../hooks/useAIStatus";
@@ -324,7 +325,7 @@ export default function FloatingAIChat({ feature = "dashboard" }) {
       setMessages((items) => items.map((item) => item.id !== messageId ? item : {
         ...item,
         actions: item.actions.map((action, actionIndex) => actionIndex === index
-          ? { ...action, message: response?.data?.message || "Saved to EduNova", data: { ...action.data, pending: false, requiresConfirmation: false } }
+          ? { ...action, message: response?.data?.message || "Saved to EduNova", data: { ...response.data, pending: false, requiresConfirmation: false } }
           : action),
       }));
     } catch {
@@ -782,7 +783,7 @@ function ChatMessage({ message, onRetry, onConfirmAction, retryDisabled }) {
         {!isError && Array.isArray(message.actions) && message.actions.length > 0 && (
           <div className="mt-2.5 border-t border-slate-200/80 pt-2 dark:border-white/10">
             <p className="mb-1 text-[10px] font-bold uppercase tracking-[0.14em] text-emerald-600 dark:text-emerald-300">
-              Actions Saved
+              Application actions
             </p>
             <div className="space-y-1">
               {message.actions.map((act, i) => (
@@ -790,11 +791,7 @@ function ChatMessage({ message, onRetry, onConfirmAction, retryDisabled }) {
                   key={`msg-act-${i}`}
                   className="rounded bg-emerald-50 px-2 py-1 text-[11px] font-medium text-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-200"
                 >
-                  {act.data?.requiresConfirmation ? (
-                    <button type="button" onClick={() => onConfirmAction(message.id, i, act.data.confirmationToken)} className="font-bold underline">
-                      Confirm: {act.message || act.tool}
-                    </button>
-                  ) : `✓ ${act.message || act.tool}`}
+                  <AIAction action={act} onConfirm={(token) => onConfirmAction(message.id, i, token)} />
                 </div>
               ))}
             </div>

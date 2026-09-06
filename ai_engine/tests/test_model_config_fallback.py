@@ -77,7 +77,8 @@ class _RecordingManager(LocalModelManager):
 
     async def _load_model(self) -> None:  # noqa: D102 - test stub
         self.load_calls += 1
-        self._llama = object()
+        from types import SimpleNamespace
+        self._llama = SimpleNamespace(create_completion=lambda **kwargs: {"choices": [{"text": "4", "finish_reason": "stop"}]})
 
 
 class OverrideFallbackTests(unittest.TestCase):

@@ -1,7 +1,9 @@
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { confirmAIAction, streamAIEngine } from "../api/api";
 import EduNovaAIAvatar from "./EduNovaAIAvatar";
 import useAIStatus from "../hooks/useAIStatus";
+
+import AIAction from "./AIAction";
 
 const ASSISTANT_NAME = "EduNova AI";
 const ASSISTANT_SUBTITLE = "Unified Data-Aware Learning & Academic Assistant";
@@ -13,8 +15,11 @@ const QUICK_PROMPTS = [
   "Make me a study plan for next week's exam",
 ];
 
-export default function AIChatAssistant({ feature = "ai" }) {
-  const [message, setMessage] = useState("");
+export default function AIChatAssistant({ feature = "ai", initialPrompt = "", applicationContext = {} }) {
+  const [message, setMessage] = useState(initialPrompt);
+  const abortRef = useRef(null);
+  useEffect(() => { if (initialPrompt) setMessage(initialPrompt); }, [initialPrompt]);
+  useEffect(() => () => abortRef.current?.abort(), []);
   const [loading, setLoading] = useState(false);
   const [agentStatus, setAgentStatus] = useState("");
   const [streamingText, setStreamingText] = useState("");
@@ -36,10 +41,13 @@ export default function AIChatAssistant({ feature = "ai" }) {
     setResult(null);
 
     try {
+      abortRef.current?.abort();
+      abortRef.current = new AbortController();
       const res = await streamAIEngine({
+        signal: abortRef.current.signal,
         message: cleanMessage,
         conversationId: conversationIdRef.current,
-        applicationContext: { route: window.location.pathname, feature },
+        applicationContext: { route: window.location.pathname, feature, context: applicationContext },
         onEvent: (eventData) => {
           if (eventData?.type === "token") {
             setStreamingText(eventData.text || "");
@@ -79,7 +87,7 @@ export default function AIChatAssistant({ feature = "ai" }) {
       setResult((current) => ({
         ...current,
         actions: current.actions.map((action, actionIndex) => actionIndex === index
-          ? { ...action, message: response?.data?.message || "Saved to EduNova", data: { ...action.data, pending: false, requiresConfirmation: false } }
+          ? { ...action, message: response?.data?.message || "Saved to EduNova", data: { ...response.data, pending: false, requiresConfirmation: false } }
           : action),
       }));
     } catch {
@@ -224,7 +232,7 @@ export default function AIChatAssistant({ feature = "ai" }) {
                   {Array.isArray(result.actions) && result.actions.length > 0 && (
                     <div className="mt-3 border-t border-slate-200 pt-3 dark:border-white/10">
                       <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.14em] text-emerald-600 dark:text-emerald-300">
-                        Application Actions Saved
+                        Application actions
                       </p>
                       <div className="space-y-1">
                         {result.actions.map((act, i) => (
@@ -232,11 +240,7 @@ export default function AIChatAssistant({ feature = "ai" }) {
                             key={`act-${i}`}
                             className="rounded-lg bg-emerald-50 px-2.5 py-1.5 text-xs font-medium text-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-200"
                           >
-                            {act.data?.requiresConfirmation ? (
-                              <button type="button" onClick={() => confirmAction(i, act.data.confirmationToken)} className="font-bold underline">
-                                Confirm: {act.message || act.tool}
-                              </button>
-                            ) : `✓ ${act.message || act.tool}`}
+                            <AIAction action={act} onConfirm={(token) => confirmAction(i, token)} />
                           </div>
                         ))}
                       </div>

@@ -1,9 +1,15 @@
 #:schema node_modules/wrangler/config-schema.json
 name = "edunova-x"
 compatibility_date = "2026-07-28"
+main = "frontend/public/_worker.js"
 
 # Cloudflare Static Assets (SPA)
+[vars]
+BACKEND_URL = "https://edunova-api-y3rx.onrender.com"
+
 [assets]
+binding = "ASSETS"
+run_worker_first = ["/api/*", "/socket.io/*"]
 directory = "./dist"
 html_handling = "none"
 not_found_handling = "single-page-application"

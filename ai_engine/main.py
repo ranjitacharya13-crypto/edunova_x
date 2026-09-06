@@ -323,6 +323,10 @@ if settings.rag_enabled:
         logger.error("RAG_INDEX_UNAVAILABLE reason=%s", str(exc)[:200])
 
 
+from agent.tools.retrieval import build_retrieval_tool
+registry.register(build_retrieval_tool(settings, rag_index))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # The model lifecycle starts HERE, before any user traffic: the weights are
@@ -331,22 +335,26 @@ async def lifespan(app: FastAPI):
     # therefore never triggers a download/load — if it arrives during this
     # boot window it is queued (with an honest "preparing" status) until the
     # model becomes READY, then processed. See /api/ai/ready + /health.
-    if model_manager is not None and settings.local_preload_model:
-        if not runtime_available_for(settings):
-            logger.error(
-                "LOCAL_MODEL_RUNTIME_MISSING runtime=%s hint=install the runtime for this "
-                "provider (LOCAL_MODEL_RUNTIME=%s): pip install -r ai_engine/requirements.txt",
-                settings.local_model_runtime,
-                settings.local_model_runtime,
-            )
-        else:
-            logger.info(
-                "LOCAL_MODEL_RUNTIME runtime=%s version=%s",
-                settings.local_model_runtime,
-                runtime_version_for(settings),
-            )
+    if model_manager is not None:
         model_manager.ensure_loading()
-    yield
+    async def prepare_embeddings():
+        if rag_index is None or not hasattr(model_manager, "_ready_event"):
+            return
+        await model_manager._ready_event.wait()
+        if not model_manager.is_ready():
+            return
+        try:
+            await asyncio.wait_for(asyncio.to_thread(rag_index.embedder.load), timeout=120)
+        except Exception as exc:
+            logger.error("RAG_STARTUP_FAILED type=%s", type(exc).__name__)
+    embedding_task = asyncio.create_task(prepare_embeddings())
+    try:
+        yield
+    finally:
+        embedding_task.cancel()
+        await asyncio.gather(embedding_task, return_exceptions=True)
+        if model_manager is not None and hasattr(model_manager, "close"):
+            await model_manager.close()
 
 
 app = FastAPI(
@@ -591,6 +599,12 @@ async def model_status() -> dict[str, Any]:
     return {
         "status": "ready" if ready else lifecycle.lower(),
         "lifecycle": lifecycle,
+        "state": snap.get("phase") or _model_lifecycle_value(),
+        "runtime": settings.local_model_runtime,
+        "inference_test": bool(snap.get("inferenceTest")),
+        "history": snap.get("history", []),
+        "startup_duration_ms": snap.get("startupDurationMs"),
+        "memory": snap.get("resources", {}),
         "model_loaded": bool(snap.get("modelLoaded")),
         "tokenizer_loaded": bool(snap.get("tokenizerLoaded")),
         "warmup_complete": bool(snap.get("warmupComplete")),
@@ -659,7 +673,7 @@ async def ai_health(
     if settings.is_local_llm:
         model_ready = (
             model_manager is not None
-            and model_manager.state == "ready"
+            and _model_is_ready()
             and (probe_state != "error")
         )
         model_status = model_manager.state if model_manager is not None else "missing_manager"
@@ -767,22 +781,8 @@ async def ai_ready(
     keep the user's request queued instead of dropping it with a vague error.
     """
     _authorize_internal_request(x_ai_internal_token)
-    # A readiness poll is also the wake-up signal: when the model is simply not
-    # scheduled yet (cold, scale-to-zero or preload=false), kick the single-
-    # flight load pipeline so the gateway's request queue does not deadlock
-    # waiting for a model nobody started. The poll still answers 503 until the
-    # model is actually READY (loaded + warmed), so the queue keeps polling.
-    if settings.is_local_llm and model_manager is not None:
-        # Force the wake even with preload disabled (torch runtime); the llama
-        # runtime's ensure_loading takes no arguments and starts on its own.
-        # ensure_loading() is single-flight AND backoff-guarded in the runtime,
-        # so this poll can no longer relaunch a failed load pipeline every 2
-        # seconds (which previously turned one startup fault into an endless
-        # load/OOM thrash that never converged on READY).
-        if settings.local_model_runtime == "torch":
-            model_manager.ensure_loading(force=True)
-        else:
-            model_manager.ensure_loading()
+    # Readiness is observational. Starting/retrying here caused the production
+    # reload loop and negative startup durations. Only lifespan starts the model.
     ready = _model_is_ready()
     snap = model_manager.snapshot() if (settings.is_local_llm and model_manager) else {}
     payload: dict[str, Any] = {
@@ -824,7 +824,7 @@ async def ai_metrics(
     snap = model_manager.snapshot() if (settings.is_local_llm and model_manager) else {}
     generation = snap.get("lastGeneration") or {}
     metrics: dict[str, Any] = dict(_METRICS)
-    metrics["model_load_time_ms"] = snap.get("coldStartMs") or snap.get("lastSelfTest", {}).get("durationMs")
+    metrics["model_load_time_ms"] = snap.get("modelLoadMs")
     metrics["cold_start_time_ms"] = snap.get("coldStartMs")
     metrics["first_token_latency_ms"] = (
         _METRICS.get("first_token_latency_ms")
@@ -866,7 +866,7 @@ class RagSearchRequest(BaseModel):
 
 def _rag_owner(payload_owner: str | None, header_owner: str | None) -> str:
     """The authenticated server decides the owner — never the model."""
-    value = str(payload_owner or header_owner or "").strip()
+    value = str(header_owner or "").strip()
     if not value or value in {"anonymous", "null", "undefined", "authenticated-user"}:
         return ""
     return value[:200]
@@ -885,7 +885,8 @@ async def rag_status(
         "stats": rag_index.stats,
         "embedderBackend": rag_index.embedder.backend if rag_index.embedder else "none",
         "embeddingModel": rag_index.embedder.model_name if rag_index.embedder else None,
-        "persistDir": rag_index.persist_dir,
+        "ready": rag_index.embedder.is_ready(),
+        "lastError": rag_index.embedder._load_error,
     }
 
 
@@ -902,7 +903,7 @@ async def rag_documents(
         return {"success": False, "error": "RAG is not enabled"}
     if not owner:
         return {"success": False, "error": "authenticated owner identity is required"}
-    result = rag_index.ingest_document(owner, payload.title, payload.text)
+    result = await asyncio.to_thread(rag_index.ingest_document, owner, payload.title, payload.text)
     result["success"] = bool(result.get("ingested", 0) > 0)
     result["owner"] = owner
     return result
@@ -921,7 +922,7 @@ async def rag_search(
         return {"success": False, "error": "RAG is not enabled", "results": []}
     if not owner:
         return {"success": False, "error": "authenticated owner identity is required", "results": []}
-    results = rag_index.search(owner, payload.query, payload.k)
+    results = await asyncio.to_thread(rag_index.search, owner, payload.query, payload.k)
     return {"success": True, "query": payload.query[:200], "owner": owner, "results": results, "count": len(results)}
 
 
@@ -1066,203 +1067,29 @@ def _sanitize_provider_message_for_user(text: str, limit: int = 180) -> str:
 
 
 def _safe_error(exc: Exception) -> tuple[int, str, str]:
-    error_type = str(getattr(exc, "error_type", "") or "")
-    # Local self-hosted model states: surface honest, structured states and
-    # never substitute a canned/fake answer.
-    if error_type == "model_loading":
-        # A user request must never see "please try again shortly" while the
-        # model is warming. The API gateway queues the request and the client
-        # is told it is preparing; this terminal fallback only fires when a
-        # direct caller bypassed the gateway's readiness wait.
-        _set_provider_state("model_loading", 503, error_type)
-        return (
-            503,
-            "LLM_MODEL_LOADING",
-            "EduNova AI is preparing its model — your question is queued and will be answered automatically.",
-        )
-    if error_type == "model_unavailable":
-        _set_provider_state("model_unavailable", 503, error_type)
-        # Full, structured diagnostics stay in the backend log (they name the
-        # model, the URL and the HTTP status). The browser gets a clean,
-        # non-technical sentence — never a raw provider/download error string.
-        report = model_manager.error_report if (model_manager is not None) else None
-        if report:
-            logger.error(
-                "MODEL_STARTUP_ERROR model=%s url=%s status=%s stage=%s reason=%s",
-                report.get("model"),
-                report.get("url"),
-                report.get("status"),
-                report.get("stage"),
-                report.get("reason"),
-            )
-        else:
-            logger.error(
-                "MODEL_STARTUP_ERROR model=%s url=%s reason=%s",
-                settings.local_model_id,
-                settings.local_model_safe_url,
-                _sanitize_provider_message_for_user(getattr(exc, "provider_message", "")),
-            )
-        permanent = bool(report.get("permanent")) if report else False
-        if permanent:
-            return (
-                503,
-                "LLM_MODEL_UNAVAILABLE",
-                "EduNova AI's self-hosted model is not available on the server. "
-                "An administrator needs to check the AI service model configuration.",
-            )
-        return (
-            503,
-            "LLM_MODEL_UNAVAILABLE",
-            "EduNova AI's self-hosted model could not start. It will retry automatically — "
-            "please try again in a moment.",
-        )
-    if error_type == "deadline_exceeded":
-        _set_provider_state("deadline_exceeded", 504, error_type)
-        return (
-            504,
-            "AI_REQUEST_DEADLINE_EXCEEDED",
-            "EduNova AI is temporarily unavailable. Please try again.",
-        )
-    if isinstance(exc, asyncio.TimeoutError):
-        _set_provider_state("provider_unavailable", 504, "timeout")
-        return (
-            504,
-            "AI_REQUEST_DEADLINE_EXCEEDED",
-            "EduNova AI is temporarily unavailable. Please try again.",
-        )
-    if isinstance(exc, LLMConfigurationError):
-        _set_provider_state("missing_config", None, settings.llm_configuration_error or "missing_config")
-        logger.error(
-            "AI_PROVIDER_CONFIGURATION_ERROR provider=%s model=%s host=%s reason=%s",
-            settings.llm_provider,
-            settings.local_model_id if settings.is_local_llm else settings.llm_model,
-            _provider_log_host(settings),
-            settings.llm_configuration_error,
-        )
-        return 503, "LLM_MISSING_CONFIG", "EduNova AI is not configured correctly."
-    if isinstance(exc, LLMResponseError):
-        status = getattr(exc, "status_code", None)
-        logger.error(
-            "AI_PROVIDER_ERROR provider=%s model=%s host=%s status=%s type=%s",
-            settings.llm_provider,
-            settings.local_model_id if settings.is_local_llm else settings.llm_model,
-            _provider_log_host(settings),
-            status,
-            error_type,
-        )
-        if error_type == "model_loading":
-            _set_provider_state("model_loading", 503, error_type)
-            return (
-                503,
-                "LLM_MODEL_LOADING",
-                "EduNova AI is preparing its model — your question is queued and will be answered automatically.",
-            )
-        if error_type == "model_unavailable":
-            _set_provider_state("model_unavailable", 503, error_type)
-            report = model_manager.error_report if (model_manager is not None) else None
-            if report:
-                logger.error(
-                    "MODEL_STARTUP_ERROR model=%s url=%s status=%s stage=%s reason=%s",
-                    report.get("model"), report.get("url"), report.get("status"),
-                    report.get("stage"), report.get("reason"),
-                )
-            return (
-                503,
-                "LLM_MODEL_UNAVAILABLE",
-                getattr(exc, "provider_message", None) or "EduNova AI's self-hosted model could not start. It will retry automatically.",
-            )
-        if error_type == "model_busy":
-            _set_provider_state("model_busy", 503, error_type)
-            return 503, "LLM_MODEL_BUSY", "EduNova AI is finishing another request — you are next in the queue."
-        if status in (401, 403):
-            _set_provider_state("authentication_failed", status, error_type)
-            return 503, "LLM_AUTHENTICATION_FAILED", "EduNova AI provider authentication is not configured correctly."
-        if status == 404 or error_type in {"not_found", "model_not_found"}:
-            _set_provider_state("model_not_found", status, error_type)
-            return 503, "LLM_MODEL_NOT_FOUND", "The configured AI model is unavailable."
-        if status == 429 or error_type == "rate_limit":
-            _set_provider_state("rate_limited", 429, error_type)
-            return 429, "LLM_RATE_LIMITED", "EduNova AI is rate limited. Please try again shortly."
-        if status in (408, 504) or error_type == "timeout":
-            _set_provider_state("provider_unavailable", status or 504, error_type)
-            return 504, "LLM_TIMEOUT", "EduNova AI is temporarily unavailable. Please try again."
-        if status == 400:
-            _set_provider_state("provider_unavailable", status, error_type)
-            return 502, "LLM_INVALID_REQUEST", "The AI provider rejected the request."
-        _set_provider_state("provider_unavailable", status, error_type)
-        return 502, "LLM_PROVIDER_UNAVAILABLE", "The AI model is temporarily unavailable. Please try again."
-    logger.exception("Agent request failed")
-    return 500, "LLM_INTERNAL_ERROR", "EduNova AI could not complete this request. Please try again."
+    from inference.manager import safe_error
+    raw = str(getattr(exc, "error_type", None) or getattr(exc, "code", "") or "")
+    aliases = {"model_loading": "MODEL_NOT_READY", "model_unavailable": "MODEL_STARTUP_FAILED",
+               "invalid_response": "INVALID_MODEL_OUTPUT", "model_busy": "MODEL_BUSY",
+               "provider_error": "INFERENCE_FAILED", "timeout": "UPSTREAM_TIMEOUT"}
+    code = aliases.get(raw, raw.upper()) or ("CONFIG_FAILED" if isinstance(exc, LLMConfigurationError) else "INFERENCE_FAILED")
+    status = getattr(exc, "status_code", None) or (504 if isinstance(exc, asyncio.TimeoutError) else 503)
+    message = safe_error(exc) or code
+    logger.error("AI_FAILURE code=%s type=%s reason=%s", code, type(exc).__name__, message)
+    return status, code, message
 
 
 async def _ready_gate() -> None:
-    """Ensure the model is usable before any chat work; raises honest errors."""
-    if settings.is_local_llm and model_manager is not None:
-        await model_manager.wait_ready(timeout=settings.local_chat_wait_seconds)
+    if model_manager is None:
+        raise LLMConfigurationError("Self-hosted model manager is missing")
+    await model_manager.wait_ready(0)
 
 
 async def _ready_gate_with_keepalive():
-    """Wait for the model to become ready while streaming honest status.
-
-    This is the AI-service-side request queue: when the model is still warming
-    the caller receives a ``status`` event ("EduNova AI is preparing its model")
-    followed by SSE keep-alive comments every 2 seconds until the model is
-    READY, then control returns and the request is processed normally. The
-    user's message is never dropped and they are never told to "try again
-    shortly" — the queue keeps the request until the model is ready (or a hard
-    deadline is exceeded).
-
-    (The Express gateway performs the same wait against GET /api/ai/ready, so
-    the browser sees this preparing state even when the AI service itself was
-    scaled to zero and must cold-boot.)
-    """
-    if not settings.is_local_llm or model_manager is None:
-        return
-
-    # Already ready — fast path, no polling.
-    if _model_is_ready():
-        return
-
-    preparing_payload = json.dumps(
-        {
-            "type": "status",
-            "event": "model.preparing",
-            "status": "preparing",
-            "message": "EduNova AI is preparing its model — your question is queued. You don't need to do anything.",
-        },
-        ensure_ascii=False,
-    )
-    yield f"data: {preparing_payload}\n\n"
-
-    deadline = time.monotonic() + settings.local_chat_wait_seconds
-    last_state = _model_state_value()
-    while time.monotonic() < deadline:
-        if _model_is_ready():
-            logger.info("[EduNova AI] Model became ready during keep-alive polling state=%s", last_state)
-            return
-        state = _model_state_value()
-        if state == "error":
-            raise LLMResponseError(
-                "The self-hosted EduNova model failed to start",
-                status_code=503,
-                error_type="model_unavailable",
-                provider_message=model_manager.last_error or "model load failed",
-            )
-        if state != last_state:
-            logger.info("[EduNova AI] Model state transition %s -> %s", last_state, state)
-            last_state = state
-        # SSE comments (lines starting with ':') keep the TCP connection alive
-        # so proxies never mistake a waiting request for a dead one.
-        yield ": model-loading\n\n"
-        await asyncio.sleep(2)
-
-    # Hard deadline exceeded — a request cannot be held forever.
-    raise LLMResponseError(
-        "EduNova AI's model is still preparing after the maximum queue time",
-        status_code=503,
-        error_type="model_loading",
-        provider_message=f"state={_model_state_value()} after {settings.local_chat_wait_seconds}s",
-    )
+    await _ready_gate()
+    # Compatibility with the async-generator caller. There is no warm queue.
+    if False:
+        yield ""
 
 
 async def _execute(
@@ -1283,24 +1110,23 @@ async def _execute(
         user_role=str(request.user_role or "student"),
         user_name=str(request.user_name or "Student"),
         user_email=str(request.user_email or request.email or ""),
-        application_context=request.application_context,
+        application_context={**request.application_context, "requestId": request.request_id},
         event_callback=event_callback,
     )
-    if decision.intent != "complex":
-        logger.info(
-            "[EduNova AI] ROUTE_SELECTED intent=%s tools=%s reason=%s",
-            decision.intent, ",".join(decision.tools) or "-", decision.reason,
-        )
-        return await run_fast_path(
-            settings=settings,
-            llm=llm,
-            registry=registry,
-            decision=decision,
-            **common,
-        )
-    logger.info("[EduNova AI] ROUTE_SELECTED intent=complex reason=%s", decision.reason)
-    result = await agent.run(**common)
-    return result.public()
+    from inference.telemetry import begin, finish
+    metric = begin(request.request_id, common["user_id"], decision.intent)
+    try:
+        logger.info("ROUTE_SELECTED request_id=%s intent=%s tools=%s", request.request_id, decision.intent, ",".join(decision.tools))
+        if decision.intent != "complex":
+            result = await run_fast_path(settings=settings, llm=llm, registry=registry, decision=decision, **common)
+        else:
+            result = (await agent.run(**common)).public()
+        result["performance"] = finish(metric, getattr(model_manager, "last_generation_metrics", None))
+        result["requestId"] = request.request_id
+        return result
+    except Exception as exc:
+        finish(metric, failure=getattr(exc, "error_type", type(exc).__name__))
+        raise
 
 
 async def _run_non_stream(request: ChatRequest) -> dict[str, Any]:
@@ -1319,7 +1145,8 @@ async def _run_non_stream(request: ChatRequest) -> dict[str, Any]:
     )
     conversation = conversations.get_or_create(request.conversation_id, _owner(request))
 
-    result = await _execute(request, conversation, None)
+    async with conversation.lock:
+        result = await _execute(request, conversation, None)
     conversations.append_turn(conversation, request.message.strip(), result.get("message", ""))
     _set_provider_state("ready" if not settings.is_local_llm else "model_ready", 200, None)
     total_ms = _ms(started)
@@ -1376,7 +1203,8 @@ async def _stream(request: ChatRequest):
 
     async def runner() -> None:
         try:
-            result = await _execute(request, conversation, event_callback)
+            async with conversation.lock:
+                result = await _execute(request, conversation, event_callback)
             conversations.append_turn(conversation, request.message.strip(), result.get("message", ""))
             _set_provider_state("ready" if not settings.is_local_llm else "model_ready", 200, None)
             await queue.put({"type": "answer", **result})
@@ -1452,6 +1280,8 @@ async def chat(
         request_id, payload.stream, len(payload.message), settings.local_model_runtime,
     )
     _authorize_internal_request(x_ai_internal_token)
+    if not payload.owner_id:
+        raise HTTPException(status_code=401, detail={"code": "AUTH_FAILED", "message": "Authenticated owner is required"})
     logger.info("[EduNova AI] AUTH_COMPLETE request_id=%s elapsed_ms=%s", request_id, _ms(request_started))
     clean_message = payload.message.strip()
     if not clean_message:

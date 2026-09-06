@@ -81,7 +81,7 @@ router.post("/register", async (req, res) => {
 router.post("/login", async (req, res) => {
   try {
     const { email, password } = req.body;
-    console.log("LOGIN INPUT:", email);
+
 
     if (!email || !password) {
       return res.status(400).json({ error: "Missing email or password" });
@@ -92,7 +92,7 @@ router.post("/login", async (req, res) => {
       $or: [{ email: email }, { username: email }]
     });
 
-    if (!user) {
+    if (!user || user.isBlocked) {
       return res.status(400).json({ error: "Invalid credentials" });
     }
 

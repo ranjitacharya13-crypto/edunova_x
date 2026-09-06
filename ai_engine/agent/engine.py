@@ -160,7 +160,7 @@ class ObservationManager:
                     tool=tool,
                 )
                 data["sourceId"] = source_id
-            elif tool.startswith("get_"):
+            elif tool.startswith("get_") or tool == "retrieve_learning_materials":
                 state.used_internal_db = True
                 summary = ""
                 if isinstance(data, dict):
@@ -171,7 +171,7 @@ class ObservationManager:
                     elif "periods" in data:
                         summary = f"{len(data.get('periods', []))} periods for {data.get('day', 'today')}"
                 source_manager.add_internal(tool=tool, title=f"EduNova {tool[4:].replace('_', ' ').capitalize()}", summary=summary)
-            elif tool.startswith(("create_", "save_", "mark_", "update_", "set_")):
+            elif tool == "open_feature" or tool.startswith(("create_", "save_", "mark_", "update_", "set_")):
                 state.used_internal_db = True
                 if isinstance(data, dict):
                     state.executed_actions.append({

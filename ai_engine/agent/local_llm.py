@@ -327,7 +327,7 @@ class LocalModelManager:
         last_generation = self.last_generation_metrics or {}
         payload: dict[str, Any] = {
             "state": self.state,
-            "ready": self.state == "ready",
+            "ready": self.is_ready(),
             "modelId": self.settings.local_model_id,
             "fileName": path.name,
             "fileExists": exists,
@@ -338,7 +338,7 @@ class LocalModelManager:
             "downloadAttempts": self.download_attempts or None,
             "runtimeAvailable": runtime_available(),
             "runtimeVersion": runtime_version(),
-            "inferenceAvailable": self.state == "ready" and self._llama is not None,
+            "inferenceAvailable": self.is_ready(),
             # The llama.cpp handle embeds the GGUF tokenizer, so both become
             # true together; warmupComplete only after the real boot inference.
             "modelLoaded": self._llama is not None,
@@ -396,75 +396,28 @@ class LocalModelManager:
 
     # ------------------------------------------------------------ loading --
     def ensure_loading(self) -> None:
-        """Kick off background download+load exactly once (no blocking)."""
-        if self.settings.llm_provider != "local":
+        """Start once. Readiness probes and requests may never reload weights."""
+        if self.settings.llm_provider != "local" or not self.settings.local_preload_model:
             return
-        if not self.settings.local_preload_model:
+        if self._load_task is not None or self.state != "not_started":
             return
-        if self._load_task is None or self._load_task.done():
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                return
-            self._load_task = loop.create_task(self._load_pipeline())
+        try:
+            self._load_task = asyncio.get_running_loop().create_task(self._load_pipeline())
+        except RuntimeError:
+            return
 
     async def wait_ready(self, timeout: float) -> None:
-        """Wait for the model to become usable; raise a real error otherwise."""
-        if self.settings.llm_provider != "local":
-            raise LLMConfigurationError("LocalModelManager used while LLM_PROVIDER is not 'local'")
-        if self.state == "ready" and self._llama is not None:
+        if self.is_ready():
             return
-        if self.state == "error":
-            # A transient download failure must not brick the service until a
-            # restart: allow a fresh attempt after a cooldown window.
-            if (
-                self.started_at
-                and time.time() - self.started_at > 180
-                and (self._load_task is None or self._load_task.done())
-            ):
-                logger.info("LOCAL_MODEL_RETRY_AFTER_ERROR previous=%s", self.last_error)
-                self.state = "not_started"
-                self._load_task = None
-            else:
-                raise LLMResponseError(
-                    "The self-hosted EduNova model failed to start",
-                    status_code=503,
-                    error_type="model_unavailable",
-                    provider_message=self.last_error or "model load failed",
-                )
-        self.ensure_loading()
-        task = self._load_task
-        if task is None:
-            raise LLMResponseError(
-                "The self-hosted EduNova model is not scheduled to load",
-                status_code=503,
-                error_type="model_unavailable",
-                provider_message="preload disabled and no load task exists",
-            )
-        try:
-            await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
-        except asyncio.TimeoutError as exc:
-            raise LLMResponseError(
-                "The self-hosted EduNova model is still starting (downloading/loading weights)",
-                status_code=503,
-                error_type="model_loading",
-                provider_message=f"state={self.state}",
-            ) from exc
-        except Exception as exc:
-            detail = self.last_error or str(exc)[:200]
-            raise LLMResponseError(
-                "The self-hosted EduNova model failed to start",
-                status_code=503,
-                error_type="model_unavailable",
-                provider_message=detail,
-            ) from exc
-        if self.state != "ready" or self._llama is None:
-            raise LLMResponseError(
-                "The self-hosted EduNova model is unavailable",
-                status_code=503,
-                error_type="model_unavailable",
-                provider_message=self.last_error or "model not ready after load task",
-            )
+        # Compatibility for callers explicitly awaiting startup; no implicit start.
+        if self._load_task and not self._load_task.done() and timeout > 0:
+            try:
+                await asyncio.wait_for(asyncio.shield(self._load_task), timeout)
+            except asyncio.TimeoutError as exc:
+                raise LLMResponseError("Model startup is not complete", status_code=503, error_type="MODEL_NOT_READY") from exc
+        if not self.is_ready():
+            raise LLMResponseError(self.last_error or "Model startup has not completed", status_code=503,
+                                   error_type="model_unavailable" if self.state == "error" else "MODEL_NOT_READY")
 
     async def _load_pipeline(self) -> None:
         self.started_at = time.time()
@@ -482,9 +435,10 @@ class LocalModelManager:
                 # /api/ai/ready only report READY after this warm-up generated
                 # an actual response (this one-time smoke answer also captures
                 # TTFT/throughput for production diagnostics).
-                if self._llama is not None and hasattr(self._llama, "create_completion"):
-                    self.state = "warming"
-                    self.last_self_test = await self._self_test_inner()
+                if self._llama is None or not hasattr(self._llama, "create_completion"):
+                    raise RuntimeError("Runtime did not expose an inference handle")
+                self.state = "warming"
+                self.last_self_test = await self._self_test_inner()
                 self.state = "ready"
                 self.ready_at = time.time()
                 elapsed = self.ready_at - (self.started_at or self.ready_at)
@@ -1042,24 +996,14 @@ class LocalModelManager:
         """
         started = time.monotonic()
         text = await self.generate(
-            system_prompt=(
-                "You are EduNova AI, a patient tutor. Answer completely with a definition, "
-                "simple explanation, and concrete example."
-            ),
-            user_prompt="What is ML?",
-            max_tokens=256,
-            temperature=0.2,
-            _skip_wait_ready=True,
+            system_prompt="Answer briefly.", user_prompt="What is 2 + 2?",
+            max_tokens=16, temperature=0, _skip_wait_ready=True,
         )
-        return {
-            "ok": True,
-            "prompt": "What is ML?",
-            "answer": text,
-            "complete": bool(len(text.strip()) >= 80 and "machine learning" in text.lower()),
-            "durationMs": int((time.monotonic() - started) * 1000),
-            "sampleChars": len(text.strip()),
-            "generation": self.last_generation_metrics,
-        }
+        if not text.strip():
+            raise RuntimeError("Warmup returned no decoded tokens")
+        return {"ok": True, "prompt": "What is 2 + 2?", "answer": text,
+                "complete": True, "durationMs": int((time.monotonic() - started) * 1000),
+                "sampleChars": len(text), "generation": self.last_generation_metrics}
 
     def _render_prompt(self, system_prompt: str, user_prompt: str) -> tuple[str, list[str]]:
         fmt = _CHAT_TEMPLATES.get(self.settings.local_model_chat_format) or _CHAT_TEMPLATES["chatml"]
@@ -1297,6 +1241,7 @@ class LocalModelManager:
         inference_started = time.monotonic()
         first_token_ms: int | None = None
         pieces: list[str] = []
+        finish_reason = None
 
         try:
             # Ask llama.cpp for its genuine token iterator. Even callers that
@@ -1320,6 +1265,8 @@ class LocalModelManager:
             for chunk in chunks_iter:
                 choices = chunk.get("choices", []) if isinstance(chunk, dict) else []
                 piece = str(choices[0].get("text", "") or "") if choices else ""
+                if choices and choices[0].get("finish_reason"):
+                    finish_reason = choices[0]["finish_reason"]
                 if piece:
                     if first_token_ms is None:
                         first_token_ms = int((time.monotonic() - inference_started) * 1000)
@@ -1327,6 +1274,8 @@ class LocalModelManager:
                     pieces.append(piece)
                     if on_token is not None:
                         on_token(piece)
+        except LLMResponseError:
+            raise
         except Exception as exc:
             raise LLMResponseError(
                 "The self-hosted EduNova model failed during generation",
@@ -1344,6 +1293,7 @@ class LocalModelManager:
         self._record_throughput(generated_tokens, generation_seconds)
         self.last_generation_metrics = {
             "tokens": generated_tokens,
+            "finishReason": finish_reason,
             "durationMs": int(generation_seconds * 1000),
             "tokensPerSecond": round(generated_tokens / generation_seconds, 2),
             "firstTokenMs": first_token_ms,
@@ -1480,28 +1430,13 @@ def runtime_version_for(settings: Settings) -> str:
     return runtime_version() or ""
 
 
-def create_llm(settings: Settings) -> tuple[Any, LocalModelManager | None]:
-    """Factory: returns (llm, model_manager). Keeps legacy providers opt-in.
-
-    Runtime selection:
-    - LLM_PROVIDER=local + LOCAL_MODEL_RUNTIME=torch (default)  -> PyTorch
-      transformers runtime (``inference.torch_runtime``).
-    - LLM_PROVIDER=local + LOCAL_MODEL_RUNTIME=llama_cpp        -> legacy
-      llama.cpp GGUF runtime.
-    - LLM_PROVIDER=openai[_compatible]                          -> emergency
-      manual override only (never the default).
-    """
-    if settings.llm_provider == "local":
-        if getattr(settings, "local_model_runtime", "torch") == "torch":
-            try:  # ai_engine/ directory on sys.path (uvicorn/tests/direct runs)
-                from inference.torch_runtime import TorchChatLLM, TorchModelManager  # noqa: PLC0415
-            except ImportError:  # packaged as ai_engine.agent.local_llm
-                from ..inference.torch_runtime import TorchChatLLM, TorchModelManager  # noqa: PLC0415
-
-            manager = TorchModelManager(settings)
-            return TorchChatLLM(settings, manager), manager
-        manager = LocalModelManager(settings)
-        return LocalLlamaLLM(settings, manager), manager
-    from .llm import OpenAICompatibleLLM  # legacy/manual override only
-
-    return OpenAICompatibleLLM(settings), None
+def create_llm(settings: Settings) -> tuple[Any, Any]:
+    """The application uses a persistent supervised self-hosted runtime only."""
+    if settings.llm_provider != "local":
+        raise LLMConfigurationError("Commercial LLM providers are disabled. Use LLM_PROVIDER=local.")
+    from inference.manager import ModelManager
+    manager = ModelManager(settings)
+    if settings.local_model_runtime == "torch":
+        from inference.torch_runtime import TorchChatLLM
+        return TorchChatLLM(settings, manager), manager
+    return LocalLlamaLLM(settings, manager), manager

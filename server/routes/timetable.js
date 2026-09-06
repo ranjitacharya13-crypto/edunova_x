@@ -90,7 +90,7 @@ router.get("/today", async (req, res) => {
     ];
 
     const today = days[new Date().getDay()];
-    const timetableDoc = await Timetable.findOne({});
+    const timetableDoc = await Timetable.findOne({ ownerId: null, classId: null });
 
     if (!timetableDoc || !timetableDoc[today]) {
       return res.json({

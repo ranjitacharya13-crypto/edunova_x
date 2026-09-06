@@ -15,7 +15,7 @@ router.get("/today", async (req, res) => {
     ];
 
     const today = days[new Date().getDay()];
-    const data = await TeacherTimetable.findOne({});
+    const data = await TeacherTimetable.findOne({ ownerId: null, classId: null });
 
     if (!data || !data[today]) {
       return res.json({ day: today, timetable: [] });

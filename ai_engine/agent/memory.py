@@ -8,6 +8,7 @@ the agent engine interface.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import asyncio
 from time import monotonic
 from typing import Any
 import re
@@ -22,6 +23,7 @@ class Conversation:
     owner_id: str
     messages: list[dict[str, str]] = field(default_factory=list)
     touched_at: float = field(default_factory=monotonic)
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 class ConversationStore:
@@ -40,6 +42,9 @@ class ConversationStore:
 
         new_id = uuid.uuid4().hex
         conversation = Conversation(id=new_id, owner_id=owner_id)
+        if len(self._items) >= 500:
+            oldest = min(self._items, key=lambda k: self._items[k].touched_at)
+            self._items.pop(oldest, None)
         self._items[new_id] = conversation
         return conversation
 
@@ -52,6 +57,8 @@ class ConversationStore:
         )
         if len(conversation.messages) > self.max_messages:
             del conversation.messages[: len(conversation.messages) - self.max_messages]
+        while len(conversation.messages) > 2 and sum(len(m["content"]) for m in conversation.messages) > 64000:
+            del conversation.messages[:2]
         conversation.touched_at = monotonic()
 
     def _prune(self) -> None:
