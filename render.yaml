@@ -30,6 +30,7 @@
 #   edunova-inference  model 397 MB + runtime          ~1.3 GiB  -> 2 GB plan REQUIRED
 #
 # NOTES
+#   - Blueprint auto-syncs from the main branch of this GitHub repository.
 #   - There is NO Render static-site frontend. The frontend stays on Cloudflare.
 #   - The API service also hosts Socket.IO signaling + live-class chat, so the
 #     standalone `signaling/` service is NOT deployed by default. It remains in
