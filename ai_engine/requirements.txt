@@ -20,10 +20,19 @@ python-dotenv>=1.0.0,<2.0.0
 httpx>=0.27.0,<1.0.0
 beautifulsoup4>=4.12.0,<5.0.0
 
-# PyTorch-first inference stack
-transformers>=4.44.0,<5.0.0
+# PyTorch-first inference stack.
+#
+# VERSION PINS ARE LOAD-BEARING — do not loosen them without testing a real
+# model load. `transformers>=4.56` refuses to load ANY .bin checkpoint unless
+# torch>=2.6 is installed ("Due to a serious vulnerability issue in
+# torch.load ... we now require users to upgrade torch to at least v2.6"), and
+# transformers 5.x renamed/removed `torch_dtype=`. With the previous open range
+# (`>=4.44,<5`) every rebuild silently resolved to the newest 4.5x release
+# against torch 2.4 and the model failed at from_pretrained -> the service
+# never reached READY. Upper bounds keep the deployed matrix reproducible.
+transformers>=4.44.0,<4.56.0
 safetensors>=0.4.3
-accelerate>=0.33.0
+accelerate>=0.33.0,<2.0.0
 sentencepiece>=0.2.0
-tokenizers>=0.19.0
-huggingface-hub>=0.23.0
+tokenizers>=0.19.0,<0.22.0
+huggingface-hub>=0.23.0,<1.0.0

@@ -128,6 +128,15 @@ services:
   #    Runtime: PyTorch CPU + transformers + tokenizer (~0.9 GB baseline)
   #             + weights (int8 ≈ 0.5 GB / bf16 ≈ 1 GB) + KV cache.
   #
+  #    PEAK-MEMORY NOTE (this is what previously OOM-killed the service):
+  #    `LOCAL_MODEL_DTYPE=auto` selects int8 because int8 FITS in 2 GB, but the
+  #    runtime used to hand torch.float32 to from_pretrained, so it actually
+  #    tried to materialize ~2.7 GB of fp32 weights on a 2 GB box and was
+  #    OOM-killed mid-load — the model never reached READY and every chat
+  #    request queued until it timed out. Weights are now loaded in bfloat16
+  #    (2 B/param) and quantized to int8 one Linear at a time, so PEAK memory
+  #    is the bf16 footprint (~1 GB), not the fp32 one.
+  #
   #    Render instance types:  Free 512 MB / 0.1 CPU  •  Starter 512 MB / 0.5 CPU
   #                            Standard 2 GB / 1 CPU  •  Pro 4 GB / 2 CPU
   #
@@ -157,7 +166,13 @@ services:
     # CPU wheels for PyTorch are installed from the official CPU index BEFORE
     # requirements.txt so pip never resolves the default (CUDA, ~3GB) wheel.
     # (The legacy llama.cpp runtime is optional: ai_engine/requirements-llamacpp.txt.)
-    buildCommand: pip install "torch>=2.2,<2.5" --index-url https://download.pytorch.org/whl/cpu && pip install -r requirements.txt
+    # torch is pinned to a CPU wheel that matches the transformers pin in
+    # requirements.txt. This pair is load-bearing: transformers>=4.56 refuses
+    # to load .bin checkpoints unless torch>=2.6, and transformers 5.x dropped
+    # `torch_dtype=`. The previous open ranges let a rebuild silently resolve a
+    # newer transformers against torch 2.4, which broke from_pretrained and
+    # left the model permanently un-READY.
+    buildCommand: pip install "torch==2.4.1" --index-url https://download.pytorch.org/whl/cpu && pip install -r requirements.txt
     # $PORT is injected by Render; binding 0.0.0.0 is required.
     # Exactly ONE uvicorn worker: the PyTorch model lives in this process and
     # generation is single-flight. A second worker would double the RAM.

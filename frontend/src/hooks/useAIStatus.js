@@ -52,7 +52,12 @@ export default function useAIStatus({ enabled = true } = {}) {
   return {
     ...state,
     isReady: state.status === AI_STATUS.READY,
-    isStarting: state.status === AI_STATUS.STARTING,
+    // STARTING and LOADING are both "coming up" as far as the UI is concerned;
+    // they are distinct states so the label can be honest about which one.
+    isStarting:
+      state.status === AI_STATUS.STARTING || state.status === AI_STATUS.LOADING,
+    isLoading: state.status === AI_STATUS.LOADING,
+    isBusy: state.status === AI_STATUS.BUSY,
     isUnavailable: state.status === AI_STATUS.UNAVAILABLE,
     refresh,
   };

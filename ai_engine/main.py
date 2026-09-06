@@ -424,9 +424,23 @@ def _model_lifecycle_value() -> str:
 
 
 def _model_is_ready() -> bool:
-    """True only when the model is READY *and* a live runtime handle exists."""
+    """True only when the model is READY *and* a live runtime handle exists.
+
+    Prefers the runtime's authoritative ``is_ready()`` (set only after a
+    successful warm-up inference). The previous ``state == "ready"`` check was
+    unreliable: the generation path resets ``state`` to "ready" around every
+    call, so a model whose warm-up had FAILED still reported ready here — which
+    is precisely how /api/ai/ready returned 200 for a model that could not
+    answer, and why the gateway forwarded requests that then timed out.
+    """
     if not settings.is_local_llm or model_manager is None:
         return provider_runtime["state"] == "ready"
+    is_ready = getattr(model_manager, "is_ready", None)
+    if callable(is_ready):
+        try:
+            return bool(is_ready())
+        except Exception:  # noqa: BLE001 — never let a probe break health
+            return False
     return (
         getattr(model_manager, "state", "") == "ready"
         and (
@@ -479,11 +493,17 @@ def _readiness() -> dict[str, Any]:
             "inferenceAvailable": provider_runtime["state"] == "ready",
         }
     snap = model_manager.snapshot()
+    ready = _model_is_ready()
     return {
         "modelFileExists": bool(snap.get("fileExists")),
         "runtimeAvailable": bool(snap.get("runtimeAvailable")),
-        "modelInitialized": snap.get("state") == "ready",
-        "inferenceAvailable": bool(snap.get("inferenceAvailable")),
+        # Both derive from the manager's authoritative readiness flag, never
+        # from the coarse `state` string (which the generation path mutates).
+        "modelInitialized": ready,
+        "inferenceAvailable": ready,
+        "tokenizerLoaded": bool(snap.get("tokenizerLoaded")),
+        "modelLoaded": bool(snap.get("modelLoaded")),
+        "warmupComplete": bool(snap.get("warmupComplete")),
     }
 
 
@@ -536,6 +556,64 @@ async def health() -> dict[str, Any]:
     }
     payload.update(_model_health_block())
     return payload
+
+
+@app.get("/ready")
+async def ready() -> Any:
+    """Kubernetes/Render-style readiness probe (unauthenticated, minimal).
+
+    ``{"ready": true}`` with HTTP 200 **only** when the model is loaded, the
+    tokenizer is loaded and the warm-up inference succeeded. Anything else is
+    HTTP 503 — this endpoint must never claim readiness for a model that cannot
+    actually serve a request.
+    """
+    is_ready = _model_is_ready()
+    if is_ready:
+        return {"ready": True}
+    return JSONResponse(status_code=503, content={"ready": False, "state": _model_state_value()})
+
+
+@app.get("/model/status")
+async def model_status() -> dict[str, Any]:
+    """Detailed, honest model lifecycle status (safe for operators/UI)."""
+    if not settings.is_local_llm or model_manager is None:
+        return {
+            "status": "external_provider",
+            "model_loaded": provider_runtime["state"] == "ready",
+            "tokenizer_loaded": False,
+            "warmup_complete": provider_runtime["state"] == "ready",
+        }
+    snap = model_manager.snapshot()
+    ready = _model_is_ready()
+    lifecycle = _model_lifecycle_value()
+    return {
+        "status": "ready" if ready else lifecycle.lower(),
+        "lifecycle": lifecycle,
+        "model_loaded": bool(snap.get("modelLoaded")),
+        "tokenizer_loaded": bool(snap.get("tokenizerLoaded")),
+        "warmup_complete": bool(snap.get("warmupComplete")),
+        "model": settings.local_model_id,
+        "runtime": settings.local_model_runtime,
+        "dtype": snap.get("dtype"),
+        "device": snap.get("device"),
+        "modelLoadMs": snap.get("modelLoadMs"),
+        "warmupMs": snap.get("warmupMs"),
+        "coldStartMs": snap.get("coldStartMs"),
+        "tokensPerSecond": snap.get("tokensPerSecond"),
+        "parameterEstimate": snap.get("parameterEstimate"),
+        "resources": _runtime_resources(),
+        # Honest failure reporting — never hidden behind a generic message.
+        "error": None if ready else (snap.get("lastError") or None),
+        "errorStage": None if ready else (snap.get("errorDetail") or None),
+        "retryInSeconds": snap.get("retryInSeconds"),
+        "loadFailures": snap.get("loadFailures"),
+    }
+
+
+@app.get("/api/ai/model/status")
+async def api_model_status() -> dict[str, Any]:
+    """Namespaced alias of /model/status (same payload)."""
+    return await model_status()
 
 
 @app.get("/api/ai/health")
@@ -695,6 +773,10 @@ async def ai_ready(
     if settings.is_local_llm and model_manager is not None:
         # Force the wake even with preload disabled (torch runtime); the llama
         # runtime's ensure_loading takes no arguments and starts on its own.
+        # ensure_loading() is single-flight AND backoff-guarded in the runtime,
+        # so this poll can no longer relaunch a failed load pipeline every 2
+        # seconds (which previously turned one startup fault into an endless
+        # load/OOM thrash that never converged on READY).
         if settings.local_model_runtime == "torch":
             model_manager.ensure_loading(force=True)
         else:
@@ -712,6 +794,18 @@ async def ai_ready(
         "coldStartMs": snap.get("coldStartMs"),
         "lastSelfTest": snap.get("lastSelfTest"),
         "lastError": snap.get("lastError") if not ready else None,
+        # Lets the gateway distinguish "still warming, keep queueing" from
+        # "startup failed, stop pretending" instead of polling for 10 minutes.
+        "errorStage": snap.get("errorDetail") if not ready else None,
+        "retryInSeconds": snap.get("retryInSeconds") if not ready else None,
+        "permanentFailure": bool(
+            not ready
+            and isinstance(getattr(model_manager, "error_report", None), dict)
+            and model_manager.error_report.get("permanent")
+        ),
+        "modelLoaded": bool(snap.get("modelLoaded")),
+        "tokenizerLoaded": bool(snap.get("tokenizerLoaded")),
+        "warmupComplete": bool(snap.get("warmupComplete")),
     }
     if ready:
         return payload

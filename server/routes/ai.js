@@ -178,6 +178,18 @@ async function waitForAiReady(aiBaseUrl, headers, signal) {
       if (response.status === 200 && response.data?.modelReady === true) {
         return { waitedMs: Date.now() - queueStarted };
       }
+      // A permanently failed model (missing/gated repo, incompatible runtime)
+      // will NEVER become ready. Queueing the student for ten minutes and then
+      // telling them to "try again in a minute" hides a real outage — fail fast
+      // and honestly instead.
+      if (response.data?.permanentFailure === true) {
+        const failure = new Error(
+          String(response.data?.lastError || "model startup failed permanently").slice(0, 300)
+        );
+        failure.code = "AI_MODEL_STARTUP_FAILED";
+        failure.stage = String(response.data?.errorStage || "load_failed");
+        throw failure;
+      }
       const state = String(response.data?.modelState || response.data?.lifecycle || "starting");
       console.log(`[agent] warm queue: model ${state}`);
     } catch (error) {
@@ -328,19 +340,40 @@ async function handleAgentChat(req, res) {
     } catch (error) {
       if (res.writableEnded) return;
       console.error(`[agent] streaming chat failed code=${error.code || error.message}`);
+      const startupFailed = error.code === "AI_MODEL_STARTUP_FAILED";
       const queuedTooLong = error.code === "AI_MODEL_QUEUE_TIMEOUT";
+
+      // Report the ACTUAL condition. A permanently broken model service is an
+      // outage, not a "try again in a minute" — telling a student to retry
+      // forever is what hid this failure in production.
+      let message = "EduNova AI could not complete this request. Please try again.";
+      if (startupFailed) {
+        message =
+          "EduNova AI is temporarily unavailable — the AI model service failed to start. " +
+          "This is a server-side problem and retrying will not help; it has been logged for the administrator.";
+      } else if (queuedTooLong) {
+        message =
+          "EduNova AI is temporarily unavailable — the model did not finish starting in time. " +
+          "This has been logged for the administrator.";
+      }
+      if (startupFailed) {
+        console.error(`[agent] MODEL STARTUP FAILED stage=${error.stage || "unknown"} reason=${error.message}`);
+      }
       sendEvent({
         type: "error",
         success: false,
-        status: queuedTooLong ? 503 : 502,
-        message: queuedTooLong
-          ? "EduNova AI's model is still preparing after a long wait. The service is booting — your question is safe; try again in a minute or contact support if this persists."
-          : "EduNova AI could not complete this request. Please try again.",
+        status: 503,
+        message,
         error: {
-          code: queuedTooLong ? "AI_MODEL_QUEUE_TIMEOUT" : "AI_UPSTREAM_FAILED",
+          code: startupFailed
+            ? "AI_MODEL_STARTUP_FAILED"
+            : queuedTooLong
+              ? "AI_MODEL_QUEUE_TIMEOUT"
+              : "AI_UPSTREAM_FAILED",
           message: error.message,
+          stage: error.stage,
         },
-        agentStatus: "failed",
+        agentStatus: startupFailed ? "unavailable" : "failed",
         requestId,
       });
       res.end();

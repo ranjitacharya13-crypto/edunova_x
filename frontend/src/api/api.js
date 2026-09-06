@@ -328,15 +328,22 @@ export const confirmAIAction = async (confirmationToken) => {
 export const AI_STATUS = {
   UNKNOWN: "unknown",
   STARTING: "starting",
+  LOADING: "loading",
   READY: "ready",
+  BUSY: "busy",
   UNAVAILABLE: "unavailable",
 };
 
+// "Ready to help" is shown ONLY when the model can genuinely answer. Every
+// other state says what is actually happening — never an optimistic label over
+// a model that is still loading or has failed.
 const AI_STATUS_LABELS = {
   [AI_STATUS.UNKNOWN]: "Checking AI model...",
-  [AI_STATUS.STARTING]: "EduNova AI is preparing...",
+  [AI_STATUS.STARTING]: "EduNova AI is starting...",
+  [AI_STATUS.LOADING]: "EduNova AI is loading its model...",
   [AI_STATUS.READY]: "Ready to help",
-  [AI_STATUS.UNAVAILABLE]: "AI model unavailable",
+  [AI_STATUS.BUSY]: "EduNova AI is answering...",
+  [AI_STATUS.UNAVAILABLE]: "EduNova AI is temporarily unavailable.",
 };
 
 export const aiStatusLabel = (status) =>
@@ -346,13 +353,21 @@ function classifyAIHealth(body, httpStatus) {
   if (!body || typeof body !== "object") {
     return httpStatus === 503 ? AI_STATUS.STARTING : AI_STATUS.UNKNOWN;
   }
-  if (body.modelReady === true || body.success === true) return AI_STATUS.READY;
-  const state = String(body.modelState || body.status || body.lifecycle || "").toLowerCase();
-  if (["not_started", "starting", "downloading", "loading", "warming", "model_loading", "cold"].includes(state)) {
-    return AI_STATUS.STARTING;
+  // modelReady is the authoritative signal (model + tokenizer + warm-up all OK).
+  // `success` alone is NOT sufficient: the health endpoint answers success for a
+  // live *process* whose model may still be loading or may have failed.
+  if (body.modelReady === true) return AI_STATUS.READY;
+
+  const state = String(body.modelState || body.lifecycle || body.status || "").toLowerCase();
+  if (["error", "failed", "model_unavailable", "missing_config"].includes(state)) {
+    return AI_STATUS.UNAVAILABLE;
   }
-  if (["ready", "model_ready"].includes(state)) return AI_STATUS.READY;
-  if (["busy", "degraded"].includes(state)) return AI_STATUS.READY;
+  if (["not_started", "starting", "cold"].includes(state)) return AI_STATUS.STARTING;
+  if (["downloading", "loading", "warming", "model_loading"].includes(state)) {
+    return AI_STATUS.LOADING;
+  }
+  if (["busy"].includes(state)) return AI_STATUS.BUSY;
+  if (["ready", "model_ready", "degraded"].includes(state)) return AI_STATUS.READY;
   if (state) return AI_STATUS.UNAVAILABLE;
   return AI_STATUS.UNKNOWN;
 }
@@ -389,6 +404,12 @@ function describeModelProgress(model) {
     return "Downloading model";
   }
   if (model.state === "loading") return "Loading model into memory";
+  if (model.state === "warming") return "Warming up the model";
+  if (model.state === "error") {
+    // Surface the real stage so an operator can act instead of guessing.
+    const stage = String(model.errorDetail || "").replace(/_/g, " ").trim();
+    return stage ? `Model startup failed (${stage})` : "Model startup failed";
+  }
   return "";
 }
 
