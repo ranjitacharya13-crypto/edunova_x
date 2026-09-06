@@ -353,12 +353,14 @@ app = FastAPI(
     title="EduNova AI Agent",
     version="4.0.0",
     description=(
-        "Self-hosted unified data-aware learning and research agent. PyTorch-first "
-        "inference runtime (torch.inference_mode + transformers, quantized when "
-        "appropriate) reasoning over the EduNova database, web research, RAG "
-        "retrieval and conversation memory. The model is downloaded and warmed to "
-        "READY at service startup; user requests are queued during warm-up and "
-        "never trigger a model download."
+        "Self-hosted unified data-aware learning and research agent. Runs a "
+        "quantized open-source model in-process with the runtime matched to the "
+        "model format: llama.cpp/GGUF (LOCAL_MODEL_RUNTIME=llama_cpp, the "
+        "production runtime) or PyTorch + transformers for safetensors "
+        "(LOCAL_MODEL_RUNTIME=torch). Reasons over the EduNova database, web "
+        "research, RAG retrieval and conversation memory. The model is "
+        "downloaded and warmed to READY at service startup; user requests are "
+        "queued during warm-up and never trigger a model download."
     ),
     lifespan=lifespan,
 )
