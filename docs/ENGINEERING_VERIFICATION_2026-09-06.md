@@ -92,7 +92,7 @@ The new implementation identifies itself as **v5.0.0** in AI/API health and the 
 | Live web research and mixed student/current answers | UNVERIFIED | Code/regression contracts are not verified live results |
 | Physical WebXR camera / 2-GB phone | UNVERIFIED | Browser capability/fallback paths are tested; actual phone/camera is unavailable |
 | Deployed AI/DB/RAG/AR combined acceptance | BLOCKED | No authenticated production test session/deployment credentials; inadequate observed AI capacity |
-| GitHub push / merge | PUSHED; merge pending | [PR #57](https://github.com/ranjitacharya13-crypto/edunova_x/pull/57); updated below after merge |
+| GitHub push / merge | PARTIAL / BLOCKED | Initial revision `6880de9` pushed and [PR #57](https://github.com/ranjitacharya13-crypto/edunova_x/pull/57) opened. Final implementation commit `4edf724` is local; GitHub authentication expired before its push. PR is NOT merged. |
 
 ## Deployment boundaries
 
@@ -116,3 +116,11 @@ No new production account or demo data has been inserted. Tests never operate on
 - Strict schema checks validate quiz structure, not the educational correctness of every generated answer. Actual learning quality, saved-quiz round trips on production Mongo, mixed current-data research and authenticated live conversations remain unverified.
 - Physical camera/WebXR behavior and performance on an actual 2-GB phone remain unverified; desktop Chromium emulates low-memory hints and mobile viewport for fallback checks.
 - A merge is a repository operation, not a passed deployment. The observed AI hardware and failed deployment checks still require operator attention; no paid resource changes or credential-dependent provider actions were performed.
+
+## Repository operation outcome
+
+1. Initial push of the active GitHub workflow was rejected because the installed GitHub App lacks `workflows` permission. That unpushed commit was amended to store an inactive CI template instead.
+2. Commit `6880de9` was successfully pushed to `arena/01a07641-edunova-x`. PR **#57** was opened against `main`.
+3. Final implementation/verification fixes are committed locally as **`4edf724`**. Its push failed: `could not read Username for https://github.com: terminal prompts disabled`.
+4. `gh auth status` then explicitly reported that the configured token is no longer valid, and the repository API returned **401 Bad credentials**. No credentials are requested or stored in this report/chat.
+5. **The final changes have not been pushed, and the PR has not been merged.** Reconnect GitHub in Arena to resume the authorized push/merge. Application changes and verification evidence are preserved locally on the same session branch.
