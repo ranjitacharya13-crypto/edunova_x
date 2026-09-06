@@ -92,7 +92,7 @@ The new implementation identifies itself as **v5.0.0** in AI/API health and the 
 | Live web research and mixed student/current answers | UNVERIFIED | Code/regression contracts are not verified live results |
 | Physical WebXR camera / 2-GB phone | UNVERIFIED | Browser capability/fallback paths are tested; actual phone/camera is unavailable |
 | Deployed AI/DB/RAG/AR combined acceptance | BLOCKED | No authenticated production test session/deployment credentials; inadequate observed AI capacity |
-| GitHub push / merge | PARTIAL / BLOCKED | Initial revision `6880de9` pushed and [PR #57](https://github.com/ranjitacharya13-crypto/edunova_x/pull/57) opened. Final implementation commit `4edf724` is local; GitHub authentication expired before its push. PR is NOT merged. |
+| GitHub push / merge | FINAL IMPLEMENTATION PUSHED | Authentication was restored. Commits `4edf724` and `bdab788` are pushed to the session branch; [PR #57](https://github.com/ranjitacharya13-crypto/edunova_x/pull/57) records the authoritative merge outcome. Production acceptance is separate. |
 
 ## Deployment boundaries
 
@@ -123,4 +123,5 @@ No new production account or demo data has been inserted. Tests never operate on
 2. Commit `6880de9` was successfully pushed to `arena/01a07641-edunova-x`. PR **#57** was opened against `main`.
 3. Final implementation/verification fixes are committed locally as **`4edf724`**. Its push failed: `could not read Username for https://github.com: terminal prompts disabled`.
 4. `gh auth status` then explicitly reported that the configured token is no longer valid, and the repository API returned **401 Bad credentials**. No credentials are requested or stored in this report/chat.
-5. **The final changes have not been pushed, and the PR has not been merged.** Reconnect GitHub in Arena to resume the authorized push/merge. Application changes and verification evidence are preserved locally on the same session branch.
+5. At that point the final changes were not pushed and the PR was unmerged; all changes were preserved locally on the same session branch.
+6. **The user reconnected GitHub in Arena.** Authentication was re-verified, and the final implementation commit `4edf724` plus report commit `bdab788` were successfully pushed to `arena/01a07641-edunova-x`. The requested merge is tracked by PR #57; no deployment pass is implied by that repository operation.
