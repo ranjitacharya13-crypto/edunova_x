@@ -182,8 +182,14 @@ services:
       - key: WEB_SEARCH_PROVIDER
         value: brave
       # Public HTTPS URL of edunova-api, required for real authenticated tools.
+      # Auto-wired via fromService + RENDER_EXTERNAL_URL so the orchestrator can
+      # reach edunova-api's public URL for authenticated ToolRegistry calls —
+      # no manual value and no guessed hostname.
       - key: APP_BACKEND_URL
-        sync: false
+        fromService:
+          name: edunova-api
+          type: web
+          envVarKey: RENDER_EXTERNAL_URL
       # Required: same random value on edunova-api, edunova-ai, edunova-inference.
       - key: AI_INTERNAL_TOKEN
         sync: false
