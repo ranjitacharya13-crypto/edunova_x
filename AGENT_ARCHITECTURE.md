@@ -6,16 +6,22 @@ EduNova AI operates as a **UNIFIED DATA-AWARE AGENT** capable of intelligently c
 3. **CONVERSATION CONTEXT** (Multi-turn topic resolution & memory)
 4. **MODEL KNOWLEDGE** (General educational & scientific concepts)
 
-> **Self-hosted since v3.0; PyTorch-first since v4.** The AI brain is an
-> open-source model running **in-process via PyTorch + HuggingFace Transformers**
-> (`inference/torch_runtime.py`) inside the `ai_engine` FastAPI service — no
-> OpenAI/Groq/Gemini/Anthropic/OpenRouter calls are made. Default model:
-> **Qwen2.5-0.5B-Instruct** (safetensors, `LOCAL_MODEL_RUNTIME=torch`), loaded
-> and warmed **at boot**; the legacy llama.cpp/GGUF runtime remains available
-> opt-in (`LOCAL_MODEL_RUNTIME=llama_cpp`). Web search remains an external
-> *data source*; all reasoning and answer generation is done by the local
-> model. See `docs/AI_ARCHITECTURE_REPORT.md` for measured latency/load data
-> and the warm-start request-queue design.
+> **Self-hosted since v3.0.** The AI brain is an open-source model running
+> **in-process** inside the `ai_engine` FastAPI service — no
+> OpenAI/Groq/Gemini/Anthropic/OpenRouter calls are made. The runtime follows
+> the model format in use: **llama.cpp/GGUF** (`LOCAL_MODEL_RUNTIME=llama_cpp`,
+> the production runtime, `agent/local_llm.py`) for GGUF files, and **PyTorch +
+> HuggingFace Transformers** (`LOCAL_MODEL_RUNTIME=torch`,
+> `inference/torch_runtime.py`) for safetensors models. Both stacks are
+> installed from the single `ai_engine/requirements.txt`
+> (`llama-cpp-python` ships as a prebuilt CPU wheel from the extra index
+> declared in that file — no C++ compile at deploy time). Production runs
+> **Qwen2.5-0.5B-Instruct GGUF Q4_K_M**
+> (`bartowski/Qwen2.5-0.5B-Instruct-GGUF`, integrity-pinned in `config.py`),
+> loaded and warmed **at boot**. Web search remains an external *data source*;
+> all reasoning and answer generation is done by the local model. See
+> `docs/AI_ARCHITECTURE_REPORT.md` for measured latency/load data and the
+> warm-start request-queue design.
 
 ```text
                                 USER

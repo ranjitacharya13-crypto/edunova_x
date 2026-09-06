@@ -105,31 +105,45 @@ IPs are dynamic, so an IP allowlist will intermittently fail.
 | Type | Web Service |
 | Runtime | Python |
 | **Root Directory** | **`ai_engine`** |
-| Build Command | `pip install "torch>=2.2,<2.5" --index-url https://download.pytorch.org/whl/cpu && pip install -r requirements.txt` |
-| Start Command | `uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1` |
+| Build Command | `pip install "torch==2.4.1" --index-url https://download.pytorch.org/whl/cpu && pip install -r requirements.txt && python -c "import llama_cpp; print('llama_cpp runtime OK')"` |
+| Start Command | `python -c "import llama_cpp; print('llama_cpp runtime OK')" && uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1` |
 | Health Check Path | `/health` |
 
-The AI brain is a **self-hosted model running in-process via PyTorch +
-HuggingFace Transformers** (`LOCAL_MODEL_RUNTIME=torch`, the default). There
+The AI brain is a **self-hosted quantized GGUF model running in-process via
+llama.cpp** (`LOCAL_MODEL_RUNTIME=llama_cpp`, the production runtime). There
 are **no external LLM API keys** — OpenAI/Groq/Gemini/Anthropic/OpenRouter are
-not used. The build command installs the PyTorch CPU wheel first so Linux never
-pulls CUDA-linked wheels; the legacy llama.cpp/GGUF runtime stays available
-opt-in (`LOCAL_MODEL_RUNTIME=llama_cpp` + `requirements-llamacpp.txt`).
+not used.
+
+Dependency install (this is the root-cause fix for the
+`LOCAL_MODEL_RUNTIME_MISSING runtime=llama_cpp` production error):
+`llama-cpp-python` is part of **`ai_engine/requirements.txt`**, so the single
+`pip install -r requirements.txt` step every deployment runs installs the
+llama.cpp runtime. It is pinned to `0.3.35`, whose **prebuilt CPU wheel** is
+served by the `--extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu`
+declared in that file (`--prefer-binary`), so no C++/cmake compile happens at
+deploy time. Both the Render build command and the start command then verify
+`import llama_cpp` and fail loudly if it is missing, so a deployment can never
+again serve the runtime-missing error.
+
+The PyTorch CPU wheel is still installed first from the official CPU index
+(never the ~3GB CUDA wheel from PyPI) so the optional
+`LOCAL_MODEL_RUNTIME=torch` path (`Qwen/Qwen2.5-0.5B-Instruct`, safetensors +
+transformers) works without a rebuild; the GGUF model is always loaded by
+llama.cpp, never by PyTorch.
 
 Required agent environment (self-hosted default):
 
 | Variable | Notes |
 |---|---|
 | `LLM_PROVIDER` | `local` (self-hosted in-process model — the default) |
-| `LOCAL_MODEL_RUNTIME` | `torch` (default) or `llama_cpp` (legacy GGUF) |
-| `LOCAL_MODEL_REPO` | HF repo id or local dir; default `Qwen/Qwen2.5-0.5B-Instruct` (safetensors) |
-| `LOCAL_MODEL_DTYPE` | `auto` (default; int8 dynamic quant on low-RAM plans) / `bf16` / `fp32` / `int8` |
-| `LOCAL_MODEL_FILE` | GGUF filename only for `llama_cpp` runtime (e.g. `Qwen2.5-0.5B-Instruct-Q4_K_M.gguf`, ~380MB) |
-| `LOCAL_MODEL_URL` / `LOCAL_MODEL_SHA256` / `LOCAL_MODEL_BYTES` | Legacy llama.cpp download pins (torch runtime fetches the HF snapshot at boot) |
+| `LOCAL_MODEL_RUNTIME` | `llama_cpp` (GGUF — the production runtime) or `torch` (optional safetensors runtime) |
+| `LOCAL_MODEL_REPO` | GGUF repo; default `bartowski/Qwen2.5-0.5B-Instruct-GGUF` (verified catalogue entry) |
+| `LOCAL_MODEL_FILE` | GGUF filename, e.g. `Qwen2.5-0.5B-Instruct-Q4_K_M.gguf` (~380MB; verified in `config.py -> KNOWN_MODELS` with size + sha256) |
 | `LOCAL_MODEL_DIR` | Weights cache dir; **point at a persistent disk** (blueprint: `/var/data/models`) |
-| `LOCAL_MODEL_CTX_SIZE` | Context tokens, default `6144` |
-| `LOCAL_MODEL_THREADS` | CPU threads; `0` = auto (default) |
-| `LOCAL_MODEL_DEVICE` | `auto` (CPU fallback when no CUDA) |
+| `LOCAL_MODEL_CTX_SIZE` | Context tokens, default `6144` (auto-lowered to `4096` on ≤768MB containers) |
+| `LOCAL_MODEL_THREADS` | llama.cpp CPU threads (blueprint: `2`) |
+| `LOCAL_MODEL_URL` / `LOCAL_MODEL_SHA256` / `LOCAL_MODEL_BYTES` | Optional download pins for a model outside the verified catalogue |
+| `LOCAL_MODEL_DTYPE` / `LOCAL_MODEL_DEVICE` | Used only by the optional `torch` runtime (`auto` defaults) |
 | `LOCAL_PRELOAD_MODEL` | `true` = download+load+warm in background at boot |
 | `LOCAL_CHAT_WAIT_TIMEOUT` | Seconds the AI service holds a queued request while warming, default `180` |
 | `AI_WARM_QUEUE_MAX_MS` | **API service**: how long the gateway keeps a request queued (SSE `model.preparing` + polling), default `600000` |
@@ -143,20 +157,19 @@ Required agent environment (self-hosted default):
 | `MAX_AGENT_ITERATIONS` / `MAX_TOOL_CALLS` | Local defaults `5` / `8` |
 | `WEB_REQUEST_TIMEOUT` / `WEB_MAX_CONTENT_LENGTH` | Defaults `10` / `200000` |
 
-Model sizing guide (PyTorch runtime; pick per Render plan):
+Model sizing guide (llama.cpp GGUF runtime; pick per Render plan):
 
-| Plan | RAM | Recommended model (set `LOCAL_MODEL_REPO`, `LOCAL_MODEL_DTYPE`) |
+| Plan | RAM | Recommended model (set `LOCAL_MODEL_REPO`, `LOCAL_MODEL_FILE`) |
 |---|---|---|
-| Free / Starter (512MB) | 512MB | **Too small for a useful model.** Not recommended; the AI service needs ≥ 2GB. |
-| **Standard (2GB / 1 CPU) — blueprint default** | 2GB | `Qwen/Qwen2.5-0.5B-Instruct` with `LOCAL_MODEL_DTYPE=int8` (dynamic quant keeps RSS ≈ 1.2–1.5GB with runtime). If the measured RSS is too tight, prefer a 4GB instance over dropping quality further. |
-| Pro (4GB / 2 CPU) | 4GB | `Qwen/Qwen2.5-0.5B-Instruct` with `auto` (int8 or bf16) or `Qwen/Qwen2.5-1.5B-Instruct` at int8, `LOCAL_MODEL_THREADS=2`. |
+| Free / Starter (512MB) | 512MB | Auto-lowered context (4096) fits `Qwen2.5-0.5B-Instruct-Q4_K_M.gguf` with little OOM headroom; for comfortable 512MB operation use the catalogue's `bartowski/SmolLM2-360M-Instruct-GGUF` option. |
+| **Standard (2GB / 1 CPU) — blueprint default** | 2GB | `bartowski/Qwen2.5-0.5B-Instruct-GGUF` + `Qwen2.5-0.5B-Instruct-Q4_K_M.gguf` at `LOCAL_MODEL_CTX=6144` (RSS ≈ 700MB — comfortable headroom). |
+| Pro (4GB / 2 CPU) | 4GB | Same model at full context, or move up to the catalogue's `bartowski/Qwen2.5-1.5B-Instruct-GGUF` entry (~1.5GB RSS). |
 
 Run `/api/ai/diagnose` and `/api/ai/metrics` after the first deploy to confirm
 cold-start time, RSS and tokens/sec for the actual model before tuning further.
-GGUF/llama.cpp deployments (legacy runtime) keep the old guidance: filename and
-byte-size verification via `GET /api/ai/model/source-check` before changing
-`LOCAL_MODEL_FILE` — `bartowski/Qwen2.5-0.5B-Instruct-GGUF` has never published
-an `IQ3_XXS` quant, so confirm names rather than guessing.
+Filename and byte-size verification via `GET /api/ai/model/source-check` before
+changing `LOCAL_MODEL_FILE` — `bartowski/Qwen2.5-0.5B-Instruct-GGUF` has never
+published an `IQ3_XXS` quant, so confirm names rather than guessing.
 
 `AGENT_MAX_CONTEXT_CHARS` must fit inside `LOCAL_MODEL_CTX`. Budget roughly
 3 characters per token and leave room for the system prompt plus
@@ -404,6 +417,23 @@ bundle. Open the browser console: the app logs an explicit error when
 **CORS errors in the browser**
 Set `CORS_ORIGIN` on the API service to the exact frontend origin (no trailing
 slash). The Cloudflare Workers production URL is always allowed as a fallback.
+
+**`LOCAL_MODEL_RUNTIME_MISSING runtime=llama_cpp`**
+The llama.cpp runtime (`llama-cpp-python`) is not importable in the deployed
+environment even though `LOCAL_MODEL_RUNTIME=llama_cpp` is configured. Root
+cause (fixed in this repo): the dependency used to live only in an optional
+`requirements-llamacpp.txt` that deployments never installed. Verify the fix by
+confirming the deploy ran the full install + verification:
+
+- Build command must include `pip install -r requirements.txt` (which now
+  contains `llama-cpp-python==0.3.35`) **and** the trailing
+  `python -c "import llama_cpp; print('llama_cpp runtime OK')"` gate;
+- Start command must include the same import check before `uvicorn`;
+- `/health` should then show `"runtimeAvailable": true`,
+  `"runtimeVersion": "0.3.35"`, and (after boot) `"state": "ready"`.
+
+If a rebuild did not pick up the new build/start command, trigger
+**Manual Deploy → Deploy latest commit** on the `edunova-ai` service.
 
 ---
 

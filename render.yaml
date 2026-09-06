@@ -118,33 +118,40 @@ services:
   # 2) edunova-ai — FastAPI autonomous learning/research agent
   #    rootDir: ai_engine  ->  `main:app` resolves to ai_engine/main.py
   #
-  #    SELF-HOSTED MODEL: the service runs a quantized open-source PyTorch
-  #    model in-process (torch.inference_mode + transformers, adaptive
-  #    int8/bf16/fp32 via LOCAL_MODEL_DTYPE=auto). No OpenAI/Groq/Gemini/
-  #    Anthropic/OpenRouter keys are used — the reasoning model is self-hosted.
+  #    SELF-HOSTED MODEL: a quantized open-source GGUF model (Qwen2.5-0.5B-
+  #    Instruct Q4_K_M, Apache-2.0) runs in-process through llama.cpp
+  #    (llama-cpp-python) — LOCAL_MODEL_RUNTIME=llama_cpp. No OpenAI/Groq/
+  #    Gemini/Anthropic/OpenRouter keys are used — the reasoning model is
+  #    self-hosted. The PyTorch CPU wheel is still installed by the build
+  #    command so the optional LOCAL_MODEL_RUNTIME=torch path works without a
+  #    rebuild, but the GGUF model is always loaded by llama.cpp, never by
+  #    PyTorch.
+  #
+  #    RUNTIME-MISSING INCIDENT (fixed here): the deployed service was failing
+  #    with `LOCAL_MODEL_RUNTIME_MISSING runtime=llama_cpp` because the
+  #    llama.cpp runtime lived in an OPTIONAL requirements-llamacpp.txt file
+  #    that the deployment never installed, while requirements.txt did not
+  #    contain llama-cpp-python. llama-cpp-python is now part of the base
+  #    ai_engine/requirements.txt (pinned to a version with a PREBUILT CPU
+  #    wheel on the abetlen extra index — no C++ compile at deploy time), the
+  #    build command below fails loudly if `import llama_cpp` does not work,
+  #    and the start command re-verifies it before uvicorn binds.
   #
   #    ---- SIZING (read before changing `plan`) --------------------------------
-  #    Model:   Qwen2.5-0.5B-Instruct  (~0.49B params, Apache-2.0)
-  #    Runtime: PyTorch CPU + transformers + tokenizer (~0.9 GB baseline)
-  #             + weights (int8 ≈ 0.5 GB / bf16 ≈ 1 GB) + KV cache.
-  #
-  #    PEAK-MEMORY NOTE (this is what previously OOM-killed the service):
-  #    `LOCAL_MODEL_DTYPE=auto` selects int8 because int8 FITS in 2 GB, but the
-  #    runtime used to hand torch.float32 to from_pretrained, so it actually
-  #    tried to materialize ~2.7 GB of fp32 weights on a 2 GB box and was
-  #    OOM-killed mid-load — the model never reached READY and every chat
-  #    request queued until it timed out. Weights are now loaded in bfloat16
-  #    (2 B/param) and quantized to int8 one Linear at a time, so PEAK memory
-  #    is the bf16 footprint (~1 GB), not the fp32 one.
+  #    Model:   Qwen2.5-0.5B-Instruct GGUF Q4_K_M (~397 MB file, Apache-2.0)
+  #    Runtime: llama.cpp CPU (mmap; weights are never duplicated in RAM).
+  #             Estimated RSS ≈ 700 MB at LOCAL_MODEL_CTX=6144 (weights + KV
+  #             cache + compute buffers). The service auto-lowers context to
+  #             4096 when the container has <=768 MB so a small plan still
+  #             boots.
   #
   #    Render instance types:  Free 512 MB / 0.1 CPU  •  Starter 512 MB / 0.5 CPU
   #                            Standard 2 GB / 1 CPU  •  Pro 4 GB / 2 CPU
   #
-  #    => The FREE and STARTER plans (512 MB) CANNOT run a PyTorch runtime: the
-  #       process is OOM-killed during load. STANDARD (2 GB / 1 CPU) is the
-  #       MINIMUM; PRO (4 GB / 2 CPU) is recommended for headroom and lets you
-  #       move up to Qwen2.5-1.5B-Instruct. Reported RAM required: >=2 GB
-  #       (int8), ~4 GB recommended.
+  #    => STANDARD (2 GB / 1 CPU) is the safe minimum for Qwen2.5-0.5B at full
+  #       context; on 512 MB plans the auto-lowered 4096 context fits but has
+  #       little OOM headroom (use the SmolLM2-360M catalogue option instead
+  #       for comfortable 512 MB operation).
   #
   #    PERSISTENT DISK: the weights are cached on the disk mounted below, so
   #    the download happens ONCE (first boot) instead of on every restart or
@@ -165,18 +172,25 @@ services:
     rootDir: ai_engine
     # CPU wheels for PyTorch are installed from the official CPU index BEFORE
     # requirements.txt so pip never resolves the default (CUDA, ~3GB) wheel.
-    # (The legacy llama.cpp runtime is optional: ai_engine/requirements-llamacpp.txt.)
+    # The llama.cpp runtime (llama-cpp-python, prebuilt CPU wheel) comes from
+    # requirements.txt itself, so `pip install -r requirements.txt` is the
+    # single install step that makes BOTH runtimes available.
     # torch is pinned to a CPU wheel that matches the transformers pin in
     # requirements.txt. This pair is load-bearing: transformers>=4.56 refuses
     # to load .bin checkpoints unless torch>=2.6, and transformers 5.x dropped
     # `torch_dtype=`. The previous open ranges let a rebuild silently resolve a
     # newer transformers against torch 2.4, which broke from_pretrained and
     # left the model permanently un-READY.
-    buildCommand: pip install "torch==2.4.1" --index-url https://download.pytorch.org/whl/cpu && pip install -r requirements.txt
+    # The trailing `python -c "import llama_cpp; ..."` is the deployment's
+    # runtime verification: a build where llama-cpp-python failed to install
+    # (or resolved to a source build that produced no importable module) fails
+    # HERE, loudly, instead of serving LOCAL_MODEL_RUNTIME_MISSING at runtime.
+    buildCommand: pip install "torch==2.4.1" --index-url https://download.pytorch.org/whl/cpu && pip install -r requirements.txt && python -c "import llama_cpp; print('llama_cpp runtime OK', getattr(llama_cpp, '__version__', ''))"
     # $PORT is injected by Render; binding 0.0.0.0 is required.
-    # Exactly ONE uvicorn worker: the PyTorch model lives in this process and
+    # Exactly ONE uvicorn worker: the llama.cpp model lives in this process and
     # generation is single-flight. A second worker would double the RAM.
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
+    # The start command re-verifies the runtime import before serving traffic.
+    startCommand: python -c "import llama_cpp; print('llama_cpp runtime OK')" && uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
     healthCheckPath: /health
     autoDeploy: true
     disk:
@@ -194,26 +208,33 @@ services:
       - key: LLM_PROVIDER
         value: local
       - key: LOCAL_MODEL_RUNTIME
-        value: torch
-      # PyTorch-first runtime. Qwen2.5-0.5B-Instruct: Apache-2.0, ChatML +
-      # tool-calling + multilingual (incl. Tamil/Hindi), 32k native context.
-      # The model is downloaded ONCE at service startup (never during a user
-      # request) and warmed to READY before /api/ai/ready returns 200.
+        value: llama_cpp
+      # llama.cpp GGUF runtime. The (repo, file) pair below is a VERIFIED
+      # catalogue entry (ai_engine/config.py -> KNOWN_MODELS): the file exists
+      # on HuggingFace, size + sha256 are integrity-pinned, chat format is
+      # ChatML. The GGUF is downloaded ONCE at service startup into the
+      # persistent disk below (never during a user request) and warmed to
+      # READY with a real inference before /api/ai/ready returns 200.
       - key: LOCAL_MODEL_REPO
-        value: Qwen/Qwen2.5-0.5B-Instruct
-      # auto => adaptive compute picks int8/bf16/fp32 from real container RAM.
-      - key: LOCAL_MODEL_DTYPE
-        value: auto
-      - key: LOCAL_MODEL_DEVICE
-        value: auto
-      # Weights + HF snapshot cache on the persistent disk.
+        value: bartowski/Qwen2.5-0.5B-Instruct-GGUF
+      - key: LOCAL_MODEL_FILE
+        value: Qwen2.5-0.5B-Instruct-Q4_K_M.gguf
+      # Used only by a LOCAL_MODEL_RUNTIME=torch deployment (ignored by
+      # llama_cpp): auto => adaptive compute picks int8/bf16/fp32 from the
+      # real container RAM.
+      # - key: LOCAL_MODEL_DTYPE
+      #   value: auto
+      # - key: LOCAL_MODEL_DEVICE
+      #   value: auto
+      # GGUF weights cache on the persistent disk.
       - key: LOCAL_MODEL_DIR
         value: /var/data/models
       - key: LOCAL_MODEL_CTX
         value: "6144"
-      # 0 => adaptive thread count (min(4, allocated CPU cores)).
+      # llama.cpp CPU threads. The code auto-lowers context to 4096 on
+      # <=768 MB containers and clamps threads to sane bounds at runtime.
       - key: LOCAL_MODEL_THREADS
-        value: "0"
+        value: "2"
       - key: LOCAL_PRELOAD_MODEL
         value: "true"
       # AI-service-side queue budget while the model warms. It never cuts an

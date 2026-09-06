@@ -1,18 +1,42 @@
-# EduNova AI engine — PyTorch-first self-hosted inference runtime.
+# EduNova AI engine — self-hosted inference runtime.
 #
-# PyTorch is intentionally NOT listed here: the CPU wheel comes from the
-# official PyTorch CPU index in the deployment build command
-# (render.yaml / DEPLOYMENT.md):
+# SINGLE SOURCE OF TRUTH for AI-service dependencies. Every deployment path
+# (Render python service in render.yaml, ai_engine/Dockerfile, local setup.sh)
+# installs exactly this file:
 #
-#   pip install "torch>=2.2,<2.5" --index-url https://download.pytorch.org/whl/cpu
-#   pip install -r requirements.txt
+#   pip install -r ai_engine/requirements.txt
 #
-# This keeps pip from ever resolving the default CUDA torch wheel from PyPI
-# (~3 GB of nvidia deps on Linux x86_64).
+# -----------------------------------------------------------------------------
+# Runtime install notes
+# -----------------------------------------------------------------------------
+# 1) llama.cpp GGUF runtime (LOCAL_MODEL_RUNTIME=llama_cpp — the production
+#    runtime): `llama-cpp-python` below. PyPI ships llama-cpp-python as a
+#    SOURCE distribution only, so the official prebuilt CPU wheels from the
+#    extra index below are used instead — this is what keeps a deploy from
+#    falling into a slow C++/cmake build. The version is pinned to one whose
+#    manylinux2014_x86_64 wheel (py3-none = Python 3.8+ incl. 3.11) is
+#    published on that index.
+# 2) PyTorch runtime (LOCAL_MODEL_RUNTIME=torch, optional): PyTorch is
+#    intentionally NOT listed here; the CPU wheel comes from the official
+#    PyTorch CPU index in the deployment build command
+#    (render.yaml / DEPLOYMENT.md):
 #
-# The legacy llama.cpp GGUF runtime is optional and lives in
-# `requirements-llamacpp.txt` (LOCAL_MODEL_RUNTIME=llama_cpp).
-# ----------------------------------------------------------------------------
+#      pip install "torch==2.4.1" --index-url https://download.pytorch.org/whl/cpu
+#      pip install -r requirements.txt
+#
+#    This keeps pip from ever resolving the default CUDA torch wheel from PyPI
+#    (~3 GB of nvidia deps on Linux x86_64).
+#
+# The llama.cpp and PyTorch stacks deliberately coexist in one deployment so
+# the operator can point LOCAL_MODEL_RUNTIME at whichever runtime matches the
+# model format in use (GGUF -> llama_cpp, safetensors -> torch) without
+# rebuilding the service.
+# -----------------------------------------------------------------------------
+--extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+--prefer-binary
+
+llama-cpp-python==0.3.35
+
 fastapi>=0.115.0,<1.0.0
 uvicorn[standard]>=0.30.0,<1.0.0
 pydantic>=2.8.0,<3.0.0
@@ -20,7 +44,7 @@ python-dotenv>=1.0.0,<2.0.0
 httpx>=0.27.0,<1.0.0
 beautifulsoup4>=4.12.0,<5.0.0
 
-# PyTorch-first inference stack.
+# PyTorch-first inference stack (used only when LOCAL_MODEL_RUNTIME=torch).
 #
 # VERSION PINS ARE LOAD-BEARING — do not loosen them without testing a real
 # model load. `transformers>=4.56` refuses to load ANY .bin checkpoint unless

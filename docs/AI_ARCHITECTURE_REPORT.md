@@ -65,12 +65,12 @@ Design rules enforced by the implementation:
 
 | Item | Value |
 |---|---|
-| Default repository | `Qwen/Qwen2.5-0.5B-Instruct` (catalogue-backed, torch) |
-| Runtime | PyTorch + HuggingFace Transformers (`LOCAL_MODEL_RUNTIME=torch`) |
-| Legacy fallback | llama.cpp GGUF runtime kept opt-in (`LOCAL_MODEL_RUNTIME=llama_cpp`, `requirements-llamacpp.txt`) |
-| Dtype | `LOCAL_MODEL_DTYPE=auto` → int8 (dynamic quantize) when RAM-constrained, else bf16/fp32 |
-| Context | `LOCAL_MODEL_CTX_SIZE=6144` (Render), model max-position handled gracefully |
-| Download | boot-time snapshot into `/var/data/models/hf`, `LOCAL_MODEL_DOWNLOAD_TIMEOUT=1800` |
+| Default repository (llama.cpp production) | `bartowski/Qwen2.5-0.5B-Instruct-GGUF` + `Qwen2.5-0.5B-Instruct-Q4_K_M.gguf` (catalogue-backed, size + sha256 pinned) |
+| Production runtime | llama.cpp / GGUF — `LOCAL_MODEL_RUNTIME=llama_cpp` (`agent/local_llm.py`); runtime installed from `requirements.txt` (`llama-cpp-python==0.3.35`, prebuilt CPU wheel from the abetlen extra index, no C++ compile) |
+| Optional runtime | PyTorch + HuggingFace Transformers — `LOCAL_MODEL_RUNTIME=torch` (`inference/torch_runtime.py`) for safetensors models; torch CPU wheel installed first from the official CPU index in the Render build command |
+| Dtype | GGUF quants are fixed in-file (Q4_K_M); `LOCAL_MODEL_DTYPE=auto` applies only to the optional torch runtime |
+| Context | `LOCAL_MODEL_CTX_SIZE=6144` (Render; auto-lowered to 4096 on ≤768 MB containers) |
+| Download | boot-time GGUF download into `/var/data/models`, `LOCAL_MODEL_DOWNLOAD_TIMEOUT=1800` |
 | Verified live model | `tests/tmp_tiny_torch` — a real locally-generated `BertLMHeadModel` (65 vocab, ~80k params) used for offline/live pipeline verification because huggingface.co is unreachable from this sandbox |
 
 **Model-size policy.** Intelligence is provided by tools/RAG/memory/workflows on
@@ -195,12 +195,17 @@ alive instead of dropping it. Metrics endpoint live-observed: 142 requests,
 
 ## DEPLOYMENT
 
-`render.yaml`: `edunova-ai` runs `uvicorn main:app` (workers=1), PyTorch CPU
-build, `LOCAL_PRELOAD_MODEL=true`, 2 GB RAM plan (4 GB recommended once the
-real 0.5B model is measured), 4 GB disk for `/var/data/models`; `edunova-api`
-gets `AI_WARM_QUEUE_MAX_MS=600000`. Requirements split into
-`requirements.txt` (torch-first core) and `requirements-llamacpp.txt` (legacy
-GGUF). Merging to `main` triggers Render auto-deploy of both services.
+`render.yaml`: `edunova-ai` runs `uvicorn main:app` (workers=1), build =
+`pip install "torch==2.4.1" --index-url https://download.pytorch.org/whl/cpu &&
+pip install -r requirements.txt && python -c "import llama_cpp; print('llama_cpp runtime OK')"`,
+`LOCAL_PRELOAD_MODEL=true`, 2 GB RAM plan (4 GB recommended once the real 0.5B
+model is measured), 4 GB disk for `/var/data/models`; `edunova-api` gets
+`AI_WARM_QUEUE_MAX_MS=600000`. `ai_engine/requirements.txt` is the single
+dependency file — it installs `llama-cpp-python==0.3.35` (prebuilt CPU wheel
+from the abetlen extra index, no C++ compile) plus the torch transformers
+stack, so `LOCAL_MODEL_RUNTIME=llama_cpp` (GGUF, production) and
+`LOCAL_MODEL_RUNTIME=torch` (safetensors) both work from one install. Merging
+to `main` triggers Render auto-deploy of both services.
 
 ## KNOWN LIMITATIONS / HONEST STATUS
 
