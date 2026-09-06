@@ -96,32 +96,71 @@ def test_rag_owner_cache_is_bounded():
         index.sync_documents(str(i), [{'id': 'one', 'title': 'lesson', 'text': 'physics optics learning'}])
     assert len(index._owners) <= MAX_OWNERS
 
+def _real_model_settings(**overrides):
+    """Real llama.cpp run against a locally provided GGUF (EDUNOVA_TEST_GGUF)."""
+    import os
+    path = os.getenv("EDUNOVA_TEST_GGUF", "")
+    if not path or not Path(path).is_file():
+        pytest.skip("EDUNOVA_TEST_GGUF not set to a local GGUF file")
+    file = Path(path)
+    return replace(Settings(), llm_provider="local", local_model_repo="local", local_model_file=file.name,
+                   local_model_dir=str(file.parent), local_model_ctx_size=1024, local_model_threads=2,
+                   rag_enabled=False, **overrides)
+
+
 @pytest.mark.asyncio
-async def test_actual_tiny_pytorch_inference_uses_supervisor_and_cancellation_retains_worker():
-    # Real tensor operations/native worker with a random 30k-parameter fixture.
-    # This tests mechanics, not whether a pretrained tutor answers correctly.
-    from tests.test_torch_runtime import _tiny_settings
-    manager = ModelManager(_tiny_settings(local_model_startup_timeout=30))
+async def test_actual_llama_cpp_inference_uses_supervisor_and_cancellation_retains_worker():
+    # Real native worker + real tokens. Tests lifecycle mechanics, not tutor quality.
+    manager = ModelManager(_real_model_settings(local_model_startup_timeout=120))
     manager.ensure_loading()
     try:
-        await asyncio.wait_for(manager._ready_event.wait(), 35)
+        await asyncio.wait_for(manager._ready_event.wait(), 120)
         assert manager.is_ready(), manager.snapshot(include_source=True)
+        assert manager.public_state == "MODEL_READY"
         pid = manager._process.pid
         pieces = []
         with pytest.raises(LLMResponseError) as error:
-            await manager.generate(system_prompt='answer', user_prompt='hello', max_tokens=8, temperature=0, on_token=pieces.append)
+            await manager.generate(system_prompt='answer', user_prompt='Write a long essay about oceans.', max_tokens=4, temperature=0, on_token=pieces.append)
         assert error.value.error_type == 'OUTPUT_LIMIT_REACHED'
         assert pieces and manager.last_generation_metrics['tokens'] > 0
         assert manager.is_ready() and manager._process.pid == pid
         first_token = asyncio.Event()
-        task = asyncio.create_task(manager.generate(system_prompt='answer', user_prompt='hello', max_tokens=200, temperature=0, on_token=lambda _: first_token.set()))
-        await asyncio.wait_for(first_token.wait(), 5)
+        task = asyncio.create_task(manager.generate(system_prompt='answer', user_prompt='Write a long essay about oceans.', max_tokens=400, temperature=0, on_token=lambda _: first_token.set()))
+        await asyncio.wait_for(first_token.wait(), 30)
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         assert manager.is_ready() and manager._process.pid == pid
         states = [row['state'] for row in manager.history]
-        for state in ['CONFIG_LOADED', 'MODEL_VALID', 'MODEL_LOADED', 'WARMUP_SUCCESS', 'INFERENCE_TEST_SUCCESS', 'READY', 'SERVING']:
+        for state in ['CONFIG_LOADED', 'RESOURCES_CHECKED', 'MODEL_VALID', 'MODEL_LOADED', 'WARMUP_SUCCESS', 'INFERENCE_TEST_SUCCESS', 'READY', 'SERVING']:
             assert state in states
+        assert manager.snapshot()["lastSelfTest"]["prompt"] == "What is 2 + 2?"
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_resource_insufficient_fails_fast_with_numbers(monkeypatch):
+    # The production incident: model + server need > container memory.
+    monkeypatch.setenv("AI_MEMORY_LIMIT_MB", "512")
+    manager = ModelManager(Settings())
+    manager.ensure_loading()
+    try:
+        await asyncio.wait_for(manager._ready_event.wait(), 10)
+        assert manager.phase == "MODEL_RESOURCE_INSUFFICIENT"
+        assert manager.public_state == "MODEL_FAILED"
+        assert manager._process is None, "no worker may be spawned for a model that cannot fit"
+        report = manager.error_report
+        assert report["code"] == "MODEL_RESOURCE_INSUFFICIENT"
+        assert report["available_mb"] == 512
+        assert report["required_mb"] > 512
+        assert report["recommended_mb"] >= report["required_mb"]
+        with pytest.raises(LLMResponseError) as exc:
+            await manager.generate(system_prompt="s", user_prompt="u", max_tokens=8)
+        assert exc.value.error_type == "MODEL_RESOURCE_INSUFFICIENT"
+        assert exc.value.status_code == 503
+        # Stays terminal: readiness reads never restart it.
+        manager.ensure_loading()
+        assert manager._process is None
     finally:
         await manager.close()
 
@@ -147,38 +186,80 @@ async def test_actual_worker_startup_deadline_terminates_native_process():
 
 @pytest.mark.asyncio
 async def test_commercial_configuration_fails_with_diagnostics_instead_of_an_external_call():
-    from agent.local_llm import create_llm
-    llm, manager = create_llm(replace(Settings(), llm_provider='openai'))
+    manager = ModelManager(replace(Settings(), llm_provider='openai'))
     manager.ensure_loading()
     try:
-        await asyncio.wait_for(manager._ready_event.wait(), 5)
+        await asyncio.wait_for(manager._ready_event.wait(), 20)
         assert manager.phase == 'CONFIG_FAILED'
         assert not manager.is_ready()
-        assert llm.is_local
     finally:
         await manager.close()
 
+
 @pytest.mark.asyncio
 async def test_http_health_ready_and_status_are_observations_only():
+    """Orchestrator endpoints only OBSERVE the inference service (never start a model)."""
     import httpx
     import main
-    original = main.model_manager
-    manager = ModelManager(Settings())
-    main.model_manager = manager
+    from agent.remote_llm import RemoteInferenceLLM
+
+    def inference_handler(request):
+        assert request.url.path == "/model/status"
+        return httpx.Response(200, json={"state": "MODEL_LOADING", "lifecycle": "MODEL_LOADING", "model_loaded": False})
+
+    fake_settings = replace(main.settings, inference_url="http://inference.test")
+    original = main.llm
+    main.llm = RemoteInferenceLLM(fake_settings, client=httpx.AsyncClient(transport=httpx.MockTransport(inference_handler)))
     try:
         headers = {'X-AI-Internal-Token': main.settings.ai_internal_token} if main.settings.ai_internal_token else {}
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url='http://test', headers=headers) as client:
             health = await client.get('/health')
             assert health.status_code == 200 and not health.json()['modelReady']
+            assert health.json()['providerState'] == 'MODEL_LOADING'
             ready = await client.get('/api/ai/ready')
-            assert ready.status_code == 503 and ready.json()['lifecycle'] == 'BOOT'
+            assert ready.status_code == 503 and ready.json()['modelState'] == 'MODEL_LOADING'
+            assert 'starting' in ready.json()['lastError']
             status = await client.get('/model/status')
-            assert status.status_code == 200
+            assert status.status_code == 200 and status.json()['state'] == 'MODEL_LOADING'
             diagnostic = await client.get('/api/ai/health')
             assert diagnostic.status_code == 200 and not diagnostic.json()['modelReady']
-            assert manager._process is None
+            assert diagnostic.json()['errorCode'] == 'MODEL_LOADING'
+            resources = await client.get('/system/resources')
+            assert resources.status_code == 200 and resources.json()['loadsModel'] is False
+            chat = await client.post('/api/ai/chat', json={'message': 'hi', 'ownerId': 'student-1'})
+            assert chat.status_code == 503 and chat.json()['detail']['code'] == 'MODEL_LOADING'
     finally:
-        main.model_manager = original
+        main.llm = original
+
+
+@pytest.mark.asyncio
+async def test_http_surfaces_resource_insufficient_with_numbers():
+    import httpx
+    import main
+    from agent.remote_llm import RemoteInferenceLLM
+
+    def inference_handler(request):
+        return httpx.Response(200, json={"state": "MODEL_FAILED", "lifecycle": "MODEL_RESOURCE_INSUFFICIENT",
+                                         "errorStage": "MODEL_RESOURCE_INSUFFICIENT", "permanentFailure": True,
+                                         "error": "MODEL_RESOURCE_INSUFFICIENT: model needs 1100 MiB",
+                                         "resource": {"required_mb": 1100, "available_mb": 512, "recommended_mb": 2048}})
+
+    original = main.llm
+    main.llm = RemoteInferenceLLM(replace(main.settings, inference_url="http://inference.test"),
+                                  client=httpx.AsyncClient(transport=httpx.MockTransport(inference_handler)))
+    try:
+        headers = {'X-AI-Internal-Token': main.settings.ai_internal_token} if main.settings.ai_internal_token else {}
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url='http://test', headers=headers) as client:
+            ready = await client.get('/api/ai/ready')
+            body = ready.json()
+            assert ready.status_code == 503 and body['errorStage'] == 'MODEL_RESOURCE_INSUFFICIENT'
+            assert body['permanentFailure'] and body['resource']['required_mb'] == 1100
+            assert '1100 MiB' in body['lastError'] and '512 MiB' in body['lastError']
+            chat = await client.post('/api/ai/chat', json={'message': 'hi', 'ownerId': 'student-1'})
+            assert chat.status_code == 503 and chat.json()['detail']['code'] == 'MODEL_RESOURCE_INSUFFICIENT'
+    finally:
+        main.llm = original
+
 
 @pytest.mark.asyncio
 async def test_untrusted_document_cannot_enable_web_access():

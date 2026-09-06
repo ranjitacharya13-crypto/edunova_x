@@ -262,7 +262,7 @@ class Planner:
             # Grammar-constrained JSON + short planner outputs keep a small
             # model fast and reliable on shared CPU.
             kwargs = {
-                "json_schema": None,  # LocalLlamaLLM applies DECISION_SCHEMA automatically
+                "json_schema": None,  # RemoteInferenceLLM.complete_json applies DECISION_SCHEMA automatically
                 "max_output_tokens": min(self.settings.llm_max_output_tokens, 420),
             }
         decision = await self.llm.complete_json(

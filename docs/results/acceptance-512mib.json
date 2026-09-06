@@ -1,0 +1,66 @@
+{
+  "generatedAt": "2026-09-06T13:14:17Z",
+  "model_file": "SmolLM2-135M-Instruct.Q4_1.gguf",
+  "results": [
+    {
+      "test": 12,
+      "name": "Insufficient RAM fails fast with MODEL_RESOURCE_INSUFFICIENT + numbers",
+      "result": "PASS",
+      "detail": "{\"state\": \"MODEL_FAILED\", \"errorStage\": \"MODEL_RESOURCE_INSUFFICIENT\", \"required_mb\": 575, \"available_mb\": 512, \"recommended_mb\": 1024}",
+      "rootCause": ""
+    },
+    {
+      "test": 13,
+      "name": "Resource failure propagates orchestrator -> gateway with code + MiB numbers (no 'try again', no queue)",
+      "result": "PASS",
+      "detail": "orchestrator=503 gateway/ready=503 gateway/chat=503 msg='AI model resource insufficient: the inference service needs 575 MiB but has 512 MiB (recommended 1024 MiB)'",
+      "rootCause": ""
+    }
+  ],
+  "metrics": {
+    "model": "local:SmolLM2-135M-Instruct.Q4_1.gguf",
+    "quantization": null,
+    "context_size": 2048,
+    "model_load_ms": null,
+    "warmup_ms": null,
+    "cold_start_ms": null,
+    "process_cold_start_ms": 635,
+    "memory_requirement": null,
+    "resources": {
+      "ram_total_mb": 512,
+      "ram_available_mb": 3466,
+      "ram_limit_mb": 512,
+      "ram_used_mb": null,
+      "cpu_cores": 2,
+      "cpu_quota_cores": null,
+      "architecture": "x86_64",
+      "os": "Linux",
+      "python": "3.11.2",
+      "gpu": false,
+      "gpu_info": {
+        "available": false,
+        "vendor": null,
+        "count": 0
+      },
+      "disk_free_mb": 17541,
+      "disk_total_mb": 20823,
+      "model_requirement": {
+        "model_weights_mb": 94,
+        "kv_cache_mb": 53,
+        "runtime_overhead_mb": 160,
+        "server_overhead_mb": 140,
+        "embedding_overhead_mb": 0,
+        "safety_margin_mb": 128,
+        "required_mb": 575,
+        "recommended_mb": 1024,
+        "context_length": 2048,
+        "quantization": "Q4_1",
+        "architecture": "llama",
+        "layers": 30,
+        "size_label": "135M",
+        "source": "gguf-header"
+      },
+      "fits": false
+    }
+  }
+}

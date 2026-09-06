@@ -51,9 +51,9 @@ function startUpstream(behavior) {
         state.internalTokens.push(req.headers["x-ai-internal-token"] || null);
         // The gateway polls the real readiness gate before forwarding SSE
         // chat. A healthy AI service answers 200 + modelReady:true.
-        if (req.method === "GET" && req.url === "/api/ai/ready") {
+        if (req.method === "GET" && req.url === "/api/ai/ready" && !state.readyOverride) {
           res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ success: true, modelReady: true, modelState: "ready" }));
+          res.end(JSON.stringify({ success: true, modelReady: true, modelState: "MODEL_READY" }));
           return;
         }
         behavior(req, res, state, raw);
@@ -338,6 +338,91 @@ describe("Express AI route -> FastAPI integration", () => {
     } finally {
       upstream.restoreEnv();
       upstream.server.close();
+      app.close();
+    }
+  });
+
+  test("POST /ai/stream always streams SSE and forwards the internal token", async () => {
+    const upstream = await startUpstreamAt((req, res, state, raw) => {
+      assert.strictEqual(req.url, "/api/ai/chat");
+      assert.strictEqual(JSON.parse(raw).stream, true);
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write(sseBlock({ type: "token", delta: "Hel" }));
+      res.write(sseBlock({ type: "token", delta: "lo" }));
+      res.end(sseBlock({ type: "answer", success: true, message: "Hello", agentStatus: "completed" }));
+    });
+    const app = await listen(makeApp());
+    const token = signToken("stream-user-0000000001");
+    process.env.AI_INTERNAL_TOKEN = "gateway-test-token";
+    try {
+      const response = await fetch(`http://127.0.0.1:${app.address().port}/api/ai/stream`, {
+        method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify({ message: "hi" }),
+      });
+      assert.strictEqual(response.status, 200);
+      assert.match(response.headers.get("content-type"), /text\/event-stream/);
+      const { events, final } = await readSseFinalAnswer(await response.text());
+      assert.deepStrictEqual(events.filter((e) => e.type === "token").map((e) => e.delta), ["Hel", "lo"]);
+      assert.strictEqual(final.message, "Hello");
+      assert.ok(upstream.state.internalTokens.every((t) => t === "gateway-test-token"));
+    } finally {
+      delete process.env.AI_INTERNAL_TOKEN;
+      upstream.restoreEnv();
+      upstream.server.close();
+      app.close();
+    }
+  });
+
+  test("resource-insufficient inference service is reported precisely, not as 'try again'", async () => {
+    const upstream = await startUpstreamAt((req, res, state) => {
+      if (req.url === "/api/ai/ready" || req.url === "/model/status") {
+        res.writeHead(503, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ success: false, modelReady: false, modelState: "MODEL_FAILED", errorStage: "MODEL_RESOURCE_INSUFFICIENT",
+          lastError: "AI model resource insufficient: the inference service needs 1100 MiB but has 512 MiB (recommended 2048 MiB)",
+          resource: { required_mb: 1100, available_mb: 512, recommended_mb: 2048 }, permanentFailure: true }));
+        return;
+      }
+      res.writeHead(500); res.end();
+    });
+    upstream.state.readyOverride = true;
+    const app = await listen(makeApp());
+    const token = signToken("resource-user-000000001");
+    try {
+      const base = `http://127.0.0.1:${app.address().port}/api/ai`;
+      const headers = { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
+      const chat = await fetch(`${base}/chat`, { method: "POST", headers, body: JSON.stringify({ message: "hi" }) });
+      const body = await chat.json();
+      assert.strictEqual(chat.status, 503);
+      assert.strictEqual(body.error.code, "MODEL_RESOURCE_INSUFFICIENT");
+      assert.match(body.error.message, /1100 MiB/);
+      assert.doesNotMatch(body.error.message, /try again/i);
+      const ready = await fetch(`${base}/ready`, { headers });
+      const readyBody = await ready.json();
+      assert.strictEqual(ready.status, 503);
+      assert.strictEqual(readyBody.error.code, "MODEL_RESOURCE_INSUFFICIENT");
+      assert.strictEqual(readyBody.resource.required_mb, 1100);
+      const status = await fetch(`${base}/model/status`, { headers });
+      assert.strictEqual((await status.json()).modelState, "MODEL_FAILED");
+      assert.strictEqual(upstream.state.requests.filter((r) => r.path === "/api/ai/chat").length, 0, "chat must not be forwarded when the model cannot run");
+    } finally {
+      upstream.restoreEnv();
+      upstream.server.close();
+      app.close();
+    }
+  });
+
+  test("unreachable AI service maps to AI_SERVICE_UNREACHABLE on /ready", async () => {
+    const previous = process.env.AI_ENGINE_URL;
+    process.env.AI_ENGINE_URL = "http://127.0.0.1:9";
+    const app = await listen(makeApp());
+    const token = signToken("unreach-user-0000000001");
+    try {
+      const ready = await fetch(`http://127.0.0.1:${app.address().port}/api/ai/ready`, { headers: { Authorization: `Bearer ${token}` } });
+      const body = await ready.json();
+      assert.strictEqual(ready.status, 503);
+      assert.strictEqual(body.error.code, "AI_SERVICE_UNREACHABLE");
+      assert.strictEqual(body.modelReady, false);
+    } finally {
+      if (previous === undefined) delete process.env.AI_ENGINE_URL; else process.env.AI_ENGINE_URL = previous;
       app.close();
     }
   });

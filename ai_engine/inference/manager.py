@@ -1,40 +1,54 @@
-"""Persistent, process-isolated ModelManager. HTTP requests NEVER start models.
+"""THE authoritative model lifecycle for the EduNova AI INFERENCE service.
 
-Native C/C++ and torch calls cannot be stopped by cancelling an asyncio thread.
-A supervised child owns the weights; the parent can terminate it on a startup
-or stalled-inference deadline without wedging FastAPI's event loop. There is
-one child and one generation at a time, not one model per request.
+This module runs ONLY inside the persistent inference service
+(``inference_server.py``). The lightweight orchestrator (``main.py``) never
+imports it and never loads a model; it talks to the inference service over an
+authenticated HTTP/SSE API.
+
+Lifecycle (once, at service start — never per request):
+
+    BOOT -> CONFIG_LOADED -> RESOURCES_CHECKED -> DEPENDENCIES_READY
+         -> MODEL_LOCATED -> MODEL_VALID -> MODEL_LOADING -> MODEL_LOADED
+         -> WARMUP_RUNNING -> WARMUP_SUCCESS -> INFERENCE_TEST_SUCCESS -> READY
+
+Terminal failures are explicit and permanent for the life of the process
+(operator action is required): MODEL_RESOURCE_INSUFFICIENT, CONFIG_FAILED,
+DEPENDENCY_FAILED, MODEL_NOT_FOUND, MODEL_INVALID, MODEL_DOWNLOAD_FAILED,
+MODEL_LOAD_FAILED, OUT_OF_MEMORY, WARMUP_FAILED, INFERENCE_FAILED.
+
+The weights live in a supervised child process: native llama.cpp calls cannot
+be interrupted from asyncio, so the parent can terminate a stalled worker
+without wedging the event loop. Memory is checked BEFORE the worker is
+spawned; there is no retry loop and no infinite WARMING state.
 """
 from __future__ import annotations
 
 import asyncio
-from dataclasses import replace
-import importlib.metadata
 import logging
 import multiprocessing as mp
-import os
 from pathlib import Path
-import platform
 import re
 import time
 from typing import Any
 
 from agent.llm import LLMResponseError
 from config import Settings
+from inference.resources import ResourceInsufficient, ResourceManager, check_model_fits, estimate_requirement
 
 log = logging.getLogger("edunova.model_manager")
 
 PHASES = {
-    "BOOT": (30, "Worker started", "Worker failed to start"),
+    "BOOT": (30, "Worker started", "CONFIG_FAILED"),
     "CONFIG_LOADED": (30, "Valid local runtime/model configuration", "CONFIG_FAILED"),
-    "DEPENDENCIES_READY": (30, "Runtime import completed", "DEPENDENCY_FAILED"),
-    "RUNTIME_READY": (180, "Model located/downloaded", "MODEL_DOWNLOAD_FAILED"),
-    "MODEL_LOCATED": (60, "Integrity and format validated", "MODEL_INVALID"),
+    "RESOURCES_CHECKED": (30, "Container memory proven sufficient", "MODEL_RESOURCE_INSUFFICIENT"),
+    "DEPENDENCIES_READY": (30, "llama.cpp runtime import completed", "DEPENDENCY_FAILED"),
+    "RUNTIME_READY": (1800, "Model located (cache hit) or downloaded once", "MODEL_DOWNLOAD_FAILED"),
+    "MODEL_LOCATED": (120, "Integrity (size/sha256/GGUF magic) validated", "MODEL_INVALID"),
     "MODEL_VALID": (10, "Load scheduled", "MODEL_LOAD_FAILED"),
-    "MODEL_LOADING": (120, "Weights and tokenizer loaded", "MODEL_LOAD_FAILED"),
+    "MODEL_LOADING": (180, "Weights and tokenizer mmapped", "MODEL_LOAD_FAILED"),
     "MODEL_LOADED": (10, "Warmup started", "WARMUP_FAILED"),
-    "WARMUP_RUNNING": (60, "Non-empty decoded inference output", "WARMUP_FAILED"),
-    "WARMUP_SUCCESS": (60, "Independent inference test passed", "INFERENCE_FAILED"),
+    "WARMUP_RUNNING": (120, "Real decoded tokens for 'What is 2 + 2?'", "WARMUP_FAILED"),
+    "WARMUP_SUCCESS": (120, "Independent inference test passed", "INFERENCE_FAILED"),
     "INFERENCE_TEST_SUCCESS": (10, "Readiness published", "INFERENCE_FAILED"),
     "READY": (None, "Accept inference", "INFERENCE_FAILED"),
     "SERVING": (None, "EOS / validated completion", "INFERENCE_FAILED"),
@@ -42,8 +56,16 @@ PHASES = {
 FAILURES = {
     "CONFIG_FAILED", "DEPENDENCY_FAILED", "RUNTIME_FAILED", "MODEL_NOT_FOUND",
     "MODEL_INVALID", "MODEL_DOWNLOAD_FAILED", "MODEL_LOAD_FAILED", "OUT_OF_MEMORY",
-    "WARMUP_FAILED", "INFERENCE_FAILED",
+    "MODEL_RESOURCE_INSUFFICIENT", "WARMUP_FAILED", "INFERENCE_FAILED",
 }
+# Public state names (requirement 15): MODEL_NOT_READY / MODEL_LOADING / MODEL_READY / MODEL_FAILED.
+PUBLIC_STATES = {"BOOT": "MODEL_NOT_READY", "READY": "MODEL_READY", "SERVING": "MODEL_READY"}
+
+
+def public_state(phase: str) -> str:
+    if phase in FAILURES:
+        return "MODEL_FAILED"
+    return PUBLIC_STATES.get(phase, "MODEL_LOADING")
 
 
 def safe_error(exc: Any) -> str:
@@ -51,35 +73,12 @@ def safe_error(exc: Any) -> str:
     text = str(exc)
     text = re.sub(r"(?:https?|mongodb(?:\+srv)?)://\S+", "[endpoint redacted]", text)
     text = re.sub(r"(?i)(token|password|api[_-]?key|authorization)\s*[=:]\s*\S+", r"\1=[redacted]", text)
-    return text[:500]
+    return text[:600]
 
 
 def resources() -> dict[str, Any]:
-    memory = None
-    cpu = None
-    for file in ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
-        try:
-            value = int(Path(file).read_text().strip())
-            if value < 2**60:
-                memory = value
-                break
-        except (OSError, ValueError):
-            pass
-    if memory is None:
-        try:
-            memory = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
-        except (ValueError, OSError, AttributeError):
-            pass
-    try:
-        quota, period = Path("/sys/fs/cgroup/cpu.max").read_text().split()
-        if quota != "max":
-            cpu = int(quota) / int(period)
-    except (OSError, ValueError):
-        pass
-    try:
-        available_cpus = len(os.sched_getaffinity(0))
-    except AttributeError:
-        available_cpus = os.cpu_count() or 1
+    """Compatibility wrapper (older callers/tests) around ResourceManager."""
+    snap = ResourceManager().snapshot()
     rss = None
     try:
         for line in Path("/proc/self/status").read_text().splitlines():
@@ -87,10 +86,31 @@ def resources() -> dict[str, Any]:
                 rss = int(line.split()[1]) * 1024
     except (OSError, ValueError):
         pass
-    return {"memoryLimitBytes": memory, "cpuQuotaCores": cpu,
-            "visibleCpuCount": available_cpus, "rssBytes": rss,
-            "python": platform.python_version(), "os": platform.system(),
-            "architecture": platform.machine()}
+    limit_mb = snap.get("ram_limit_mb") or snap.get("ram_total_mb")
+    return {"memoryLimitBytes": (limit_mb * 1024 * 1024) if limit_mb else None,
+            "cpuQuotaCores": snap.get("cpu_quota_cores"), "visibleCpuCount": snap.get("cpu_cores"),
+            "rssBytes": rss, "python": snap.get("python"), "os": snap.get("os"),
+            "architecture": snap.get("architecture"), **snap}
+
+
+def model_requirement(settings: Settings, model_path: Path | None = None) -> dict[str, Any]:
+    """Memory requirement of the configured model (GGUF header when the file exists)."""
+    entry = settings.local_model_known_entry or {}
+    return estimate_requirement(
+        runtime="llama_cpp",
+        model_path=model_path if (model_path and model_path.exists()) else None,
+        ctx=settings.local_model_ctx_size,
+        catalogue_ram_mb=int(entry.get("ram_mb", 0) or 0),
+        expected_bytes=settings.local_model_expected_size,
+        with_embeddings=bool(settings.rag_enabled and settings.rag_embedding_model != "lexical"),
+    )
+
+
+def preflight_resources(settings: Settings, model_path: Path | None = None) -> dict[str, Any]:
+    """Parent-side check executed BEFORE the worker is spawned. Raises ResourceInsufficient."""
+    requirement = model_requirement(settings, model_path)
+    snapshot = ResourceManager(settings.local_model_dir).snapshot()
+    return check_model_fits(requirement, snapshot)
 
 
 def _worker(connection, settings: Settings) -> None:
@@ -110,85 +130,70 @@ def _worker(connection, settings: Settings) -> None:
     async def run():
         emit("BOOT", resources=resources())
         if settings.llm_provider != "local":
-            raise ValueError("Only self-hosted inference is supported")
+            raise ValueError("Only self-hosted inference is supported (LLM_PROVIDER=local)")
         if settings.llm_configuration_error:
-            raise ValueError(settings.llm_configuration_error)
-        if settings.local_model_runtime == "torch" and (
-            settings.local_model_file.lower().endswith(".gguf") or settings.local_model_repo.upper().endswith("-GGUF")
-        ):
-            raise ValueError("GGUF weights require LOCAL_MODEL_RUNTIME=llama_cpp")
+            raise ValueError(f"Invalid model configuration: {settings.llm_configuration_error}")
         emit("CONFIG_LOADED")
-        if settings.local_model_runtime == "llama_cpp":
-            import llama_cpp
-            from agent.local_llm import LocalModelManager
-            manager = LocalModelManager(settings)
-            version = llama_cpp.__version__
-        elif settings.local_model_runtime == "torch":
-            import torch
-            from inference.torch_runtime import TorchModelManager
-            manager = TorchModelManager(settings)
-            version = torch.__version__
-        else:
-            raise ValueError("Unsupported local runtime")
-        emit("DEPENDENCIES_READY", runtimeVersion=version, runtimeAvailable=True, resources=resources())
-        capacity = resources()
-        # Estimates include the API/embedding process as well as native weights.
-        required_mb = (settings.local_model_estimated_ram_mb or 700) + 400
-        if settings.local_model_runtime == "torch":
-            required_mb = max(required_mb, 2048)
-        if capacity["memoryLimitBytes"] and capacity["memoryLimitBytes"] < required_mb * 1024**2:
-            raise MemoryError(f"Model + server ML need at least {required_mb} MiB; container has {capacity['memoryLimitBytes'] // 1024**2} MiB")
-        emit("RUNTIME_READY", resources=capacity)
-        if settings.local_model_runtime == "llama_cpp":
-            from agent.local_llm import ModelSourceError
-            try:
-                await manager._download_if_needed()
-            except ModelSourceError as exc:
-                # Only a proven 404 for an invalid same-repository override can
-                # use its checksum-pinned catalogue file. Never another provider.
-                if not manager._try_recover_invalid_override(exc):
-                    raise
-                await manager._download_if_needed()
-                emit("RUNTIME_READY", configOverrideRejected=manager.config_override_rejected,
-                     effectiveModelId=manager.settings.local_model_id)
-        else:
-            await manager._obtain_weights()
+
+        from agent.local_llm import LocalModelManager, ModelSourceError
+        manager = LocalModelManager(settings)
+        # Second (in-worker) resource check with the real file when cached.
+        requirement = model_requirement(settings, manager.model_path)
+        try:
+            check_model_fits(requirement, ResourceManager(settings.local_model_dir).snapshot())
+        except ResourceInsufficient as exc:
+            state["resourceReport"] = exc.report()
+            raise
+        emit("RESOURCES_CHECKED", memoryRequirement=requirement)
+
+        import llama_cpp
+        emit("DEPENDENCIES_READY", runtimeVersion=llama_cpp.__version__, runtimeAvailable=True)
+
+        try:
+            await manager._download_if_needed()
+        except ModelSourceError as exc:
+            # Only a proven 404 for an invalid same-repository override can use
+            # its checksum-pinned catalogue file. Never another provider.
+            if not manager._try_recover_invalid_override(exc):
+                raise
+            await manager._download_if_needed()
+            state["configOverrideRejected"] = manager.config_override_rejected
+            state["effectiveModelId"] = manager.settings.local_model_id
+        emit("RUNTIME_READY")
         emit("MODEL_LOCATED", fileExists=manager.model_path.exists(), fileName=manager.model_path.name)
-        if settings.local_model_runtime == "llama_cpp":
-            if not await asyncio.to_thread(manager._validate_cached_file, manager.model_path):
-                raise ValueError("GGUF integrity validation failed")
-        else:
-            if not (manager.model_path / "config.json").exists() or not list(manager.model_path.glob("*.safetensors")):
-                raise ValueError("Transformers runtime requires config.json and safetensors weights (pickle checkpoints are not accepted)")
-        emit("MODEL_VALID", fileValid=True, fileSizeBytes=getattr(manager, "file_size_bytes", None))
+        if not await asyncio.to_thread(manager._validate_cached_file, manager.model_path):
+            raise ValueError("GGUF integrity validation failed (size/sha256/magic)")
+        # Re-estimate with the real header now that the file is proven valid.
+        requirement = model_requirement(settings, manager.model_path)
+        check_model_fits(requirement, ResourceManager(settings.local_model_dir).snapshot())
+        emit("MODEL_VALID", fileValid=True, fileSizeBytes=manager.file_size_bytes,
+             memoryRequirement=requirement, quantization=requirement.get("quantization"))
+
         emit("MODEL_LOADING")
         started = time.monotonic()
         await manager._load_model()
-        if settings.local_model_runtime == "torch":
-            await asyncio.to_thread(manager._configure_quantization_and_compile)
         emit("MODEL_LOADED", modelLoaded=True, tokenizerLoaded=True,
              modelLoadMs=round((time.monotonic() - started) * 1000))
-        manager.state = "warming"
+
         emit("WARMUP_RUNNING")
         started = time.monotonic()
-        args = {"_skip_wait_ready": True} if settings.local_model_runtime == "llama_cpp" else {}
         answer = await manager.generate(system_prompt="Answer briefly.", user_prompt="What is 2 + 2?",
-                                        max_tokens=16, temperature=0, **args)
+                                        max_tokens=24, temperature=0)
         if not answer.strip() or not (manager.last_generation_metrics or {}).get("tokens"):
             raise ValueError("Warmup did not generate decoded tokens")
-        # This verifies runtime operation, not general reasoning quality.
-        warmup = {"ok": True, "answer": answer, "durationMs": round((time.monotonic() - started) * 1000)}
+        warmup = {"ok": True, "prompt": "What is 2 + 2?", "answer": answer,
+                  "durationMs": round((time.monotonic() - started) * 1000),
+                  "generation": manager.last_generation_metrics}
         emit("WARMUP_SUCCESS", warmupComplete=True, warmupMs=warmup["durationMs"], lastSelfTest=warmup)
-        answer = await manager.generate(system_prompt="Answer briefly.", user_prompt="Name one thing students can learn.",
-                                        max_tokens=24, temperature=0, **args)
+
+        answer = await manager.generate(system_prompt="Answer briefly.",
+                                        user_prompt="Name one thing students can learn.",
+                                        max_tokens=32, temperature=0)
         if not answer.strip() or not (manager.last_generation_metrics or {}).get("tokens"):
             raise ValueError("Independent inference test returned no decoded tokens")
         emit("INFERENCE_TEST_SUCCESS", inferenceTest=True)
-        manager.last_self_test = warmup
-        manager.state = "ready"
-        if settings.local_model_runtime == "torch":
-            manager._ready = True
         emit("READY", resources=resources())
+
         while True:
             command = await asyncio.to_thread(connection.recv)
             if command["kind"] == "stop":
@@ -197,19 +202,24 @@ def _worker(connection, settings: Settings) -> None:
                 continue
             try:
                 emit("SERVING")
+
                 def on_token(piece):
                     if connection.poll():
                         control = connection.recv()
                         if control.get("kind") in {"cancel", "stop"}:
                             raise LLMResponseError("Generation cancelled", status_code=499, error_type="REQUEST_CANCELLED")
                     connection.send({"kind": "token", "delta": piece})
+
                 text = await manager.generate(**command["arguments"], on_token=on_token)
                 if (manager.last_generation_metrics or {}).get("finishReason") == "length":
-                    raise LLMResponseError("The model reached its output capacity before finishing; partial output is not a complete answer", status_code=502, error_type="OUTPUT_LIMIT_REACHED")
+                    raise LLMResponseError(
+                        "The model reached its output token capacity before finishing; partial output is not a complete answer",
+                        status_code=502, error_type="OUTPUT_LIMIT_REACHED")
                 connection.send({"kind": "result", "text": text, "metrics": manager.last_generation_metrics})
                 emit("READY", resources=resources())
-            except Exception as exc:
-                connection.send({"kind": "error", "code": getattr(exc, "error_type", "INFERENCE_FAILED"), "message": safe_error(exc), "metrics": manager.last_generation_metrics})
+            except Exception as exc:  # noqa: BLE001 — reported, never faked
+                connection.send({"kind": "error", "code": getattr(exc, "error_type", "INFERENCE_FAILED"),
+                                 "message": safe_error(exc), "metrics": manager.last_generation_metrics})
                 # Invalid model output does not justify reloading the weights.
                 emit("READY")
 
@@ -217,17 +227,21 @@ def _worker(connection, settings: Settings) -> None:
         asyncio.run(run())
     except (EOFError, BrokenPipeError):
         pass
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         failure = {
-            "BOOT": "CONFIG_FAILED", "CONFIG_LOADED": "DEPENDENCY_FAILED",
-            "DEPENDENCIES_READY": "RUNTIME_FAILED", "RUNTIME_READY": "MODEL_DOWNLOAD_FAILED",
-            "MODEL_LOCATED": "MODEL_INVALID", "MODEL_VALID": "MODEL_LOAD_FAILED",
-            "MODEL_LOADING": "MODEL_LOAD_FAILED", "MODEL_LOADED": "WARMUP_FAILED",
-            "WARMUP_RUNNING": "WARMUP_FAILED", "WARMUP_SUCCESS": "INFERENCE_FAILED",
+            "BOOT": "CONFIG_FAILED", "CONFIG_LOADED": "MODEL_RESOURCE_INSUFFICIENT",
+            "RESOURCES_CHECKED": "DEPENDENCY_FAILED", "DEPENDENCIES_READY": "MODEL_DOWNLOAD_FAILED",
+            "RUNTIME_READY": "MODEL_INVALID", "MODEL_LOCATED": "MODEL_INVALID",
+            "MODEL_VALID": "MODEL_LOAD_FAILED", "MODEL_LOADING": "MODEL_LOAD_FAILED",
+            "MODEL_LOADED": "WARMUP_FAILED", "WARMUP_RUNNING": "WARMUP_FAILED",
+            "WARMUP_SUCCESS": "INFERENCE_FAILED",
         }.get(phase, "INFERENCE_FAILED")
-        if isinstance(exc, MemoryError):
+        if isinstance(exc, ResourceInsufficient):
+            failure = "MODEL_RESOURCE_INSUFFICIENT"
+            state["resourceReport"] = exc.report()
+        elif isinstance(exc, MemoryError):
             failure = "OUT_OF_MEMORY"
-        if isinstance(exc, FileNotFoundError) or getattr(exc, "status", None) == 404:
+        elif isinstance(exc, FileNotFoundError) or getattr(exc, "status", None) == 404:
             failure = "MODEL_NOT_FOUND"
         emit(failure, lastError=safe_error(exc), failureStage=phase)
     finally:
@@ -235,6 +249,8 @@ def _worker(connection, settings: Settings) -> None:
 
 
 class ModelManager:
+    """Parent-side supervisor. Exactly one instance per inference service process."""
+
     def __init__(self, settings: Settings, *, worker_target=_worker):
         self.settings = settings
         self.worker_target = worker_target
@@ -262,14 +278,14 @@ class ModelManager:
         self._boot_monotonic = self._last_activity
         self._startup_duration_ms = None
 
+    # ------------------------------------------------------------ status --
     @property
     def config_override_rejected(self):
         return self.facts.get("configOverrideRejected")
 
     @property
-    def lifecycle(self):
-        from types import SimpleNamespace
-        return SimpleNamespace(state=self.phase)
+    def public_state(self) -> str:
+        return public_state(self.phase)
 
     def _transition(self, phase, facts=None):
         if phase not in PHASES and phase not in FAILURES:
@@ -292,8 +308,11 @@ class ModelManager:
                 self._startup_duration_ms = round((time.monotonic() - self._boot_monotonic) * 1000)
             self.last_error = self.facts.get("lastError", phase)
             self.error_detail = phase
-            self.error_report = {"code": "MODEL_STARTUP_FAILED" if self.ready_at is None else "INFERENCE_FAILED",
+            self.error_report = {"code": phase if phase == "MODEL_RESOURCE_INSUFFICIENT" else
+                                 ("MODEL_STARTUP_FAILED" if self.ready_at is None else "INFERENCE_FAILED"),
                                  "stage": phase, "reason": self.last_error, "permanent": True}
+            if self.facts.get("resourceReport"):
+                self.error_report.update(self.facts["resourceReport"])
             self._ready_event.set()
         if phase == "READY":
             if self.ready_at is None:
@@ -301,16 +320,31 @@ class ModelManager:
                 self.facts["coldStartMs"] = round((time.monotonic() - self._boot_monotonic) * 1000)
                 self._startup_duration_ms = self.facts["coldStartMs"]
             self._ready_event.set()
-        log.info("MODEL_STATE state=%s diagnostic=%s", phase, self.last_error or "-")
+        log.info("MODEL_STATE state=%s public=%s diagnostic=%s", phase, public_state(phase), self.last_error or "-")
 
+    # ------------------------------------------------------------ startup --
     def ensure_loading(self, force=False):
-        # force is accepted for compatibility but NEVER restarts a failed/ready model.
+        """Start the single lifecycle once. Never restarts a failed/ready model."""
         if self._started or self.phase in FAILURES:
             return
         self._started = True
         self.started_at = time.time()
         self._boot_monotonic = time.monotonic()
         self._transition("BOOT")
+        # Memory rule: NEVER spawn a worker for a model the container cannot hold.
+        try:
+            from agent.local_llm import LocalModelManager
+            check = preflight_resources(self.settings, LocalModelManager(self.settings).model_path)
+            self.facts["memoryRequirement"] = {k: v for k, v in check.items() if k != "fits"}
+        except ResourceInsufficient as exc:
+            self.facts["resourceReport"] = exc.report()
+            self._transition("MODEL_RESOURCE_INSUFFICIENT", {"lastError": safe_error(exc), "failureStage": "BOOT"})
+            log.error("MODEL_RESOURCE_INSUFFICIENT required_mb=%s available_mb=%s recommended_mb=%s",
+                      exc.required_mb, exc.available_mb, exc.recommended_mb)
+            return
+        except Exception as exc:  # noqa: BLE001 — detection failure is a config failure, not a crash
+            self._transition("CONFIG_FAILED", {"lastError": safe_error(exc), "failureStage": "BOOT"})
+            return
         context = mp.get_context("spawn")
         self._pipe, child = context.Pipe()
         self._process = context.Process(target=self.worker_target, args=(child, self.settings), daemon=True)
@@ -345,17 +379,16 @@ class ModelManager:
                     elif kind == "token" and self._callback:
                         try:
                             self._callback(event["delta"])
-                        except Exception:
+                        except Exception:  # noqa: BLE001
                             # Stop decoding for a broken consumer without killing
                             # the persistent model. Keep admission locked until ack.
                             self._callback = None
                             self._pipe.send({"kind": "cancel"})
                     elif kind in {"result", "error"} and self._current and not self._current.done():
+                        self.last_generation_metrics = event.get("metrics")
                         if kind == "result":
-                            self.last_generation_metrics = event.get("metrics")
                             self._current.set_result(event["text"])
                         else:
-                            self.last_generation_metrics = event.get("metrics")
                             self._current.set_exception(LLMResponseError(event["message"], status_code=502, error_type=event["code"]))
                 now = time.monotonic()
                 if self.ready_at is None:
@@ -365,13 +398,15 @@ class ModelManager:
                         code = PHASES.get(stage, (0, "", "RUNTIME_FAILED"))[2]
                         if code not in FAILURES:
                             code = "RUNTIME_FAILED"
-                        await self._fail(code, f"MODEL_STARTUP_FAILED: hard deadline exceeded in {stage}")
+                        await self._fail(code, f"MODEL_STARTUP_FAILED: hard deadline exceeded in {stage} "
+                                               f"(startup budget {self.settings.local_model_startup_timeout}s)")
                         break
                 elif self._current and not self._current.done() and now - self._last_activity > self.settings.local_inference_idle_timeout:
                     await self._fail("INFERENCE_FAILED", "Native inference stalled (no decoded tokens within idle deadline)")
                     break
                 if not self._process.is_alive() and self.phase not in FAILURES:
-                    await self._fail("OUT_OF_MEMORY" if self._process.exitcode == -9 else "RUNTIME_FAILED", f"Model worker exited unexpectedly (exit={self._process.exitcode})")
+                    await self._fail("OUT_OF_MEMORY" if self._process.exitcode == -9 else "RUNTIME_FAILED",
+                                     f"Model worker exited unexpectedly (exit={self._process.exitcode})")
                     break
                 await asyncio.sleep(0.01)
         except (EOFError, OSError) as exc:
@@ -379,12 +414,13 @@ class ModelManager:
                 await asyncio.to_thread(self._process.join, 0.2)
                 code = "OUT_OF_MEMORY" if self._process.exitcode == -9 else "RUNTIME_FAILED"
                 await self._fail(code, f"Worker connection closed (exit={self._process.exitcode}): {safe_error(exc)}")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             await self._fail("RUNTIME_FAILED", f"Supervisor failure: {safe_error(exc)}")
         finally:
             if self.phase in FAILURES and self._current and not self._current.done():
                 self._current.set_exception(LLMResponseError(self.last_error, status_code=503, error_type=self.phase))
 
+    # ---------------------------------------------------------- inference --
     def is_ready(self):
         return bool(self.phase in {"READY", "SERVING"} and self.facts.get("inferenceTest")
                     and self.facts.get("warmupComplete") and self._process and self._process.is_alive())
@@ -393,7 +429,7 @@ class ModelManager:
         # Observational: no download, retry, loading or implicit queueing.
         if self.is_ready():
             return
-        raise LLMResponseError(self.last_error or f"Model startup has not completed ({self.phase})",
+        raise LLMResponseError(self.last_error or f"Model startup has not completed ({self.public_state}: {self.phase})",
                                status_code=503, error_type=self.error_detail or "MODEL_NOT_READY")
 
     async def generate(self, *, on_token=None, **arguments):
@@ -426,20 +462,20 @@ class ModelManager:
                 self._callback = None
 
     async def self_test(self):
-        text = await self.generate(system_prompt="Answer briefly.", user_prompt="What is 2 + 2?", max_tokens=16)
+        text = await self.generate(system_prompt="Answer briefly.", user_prompt="What is 2 + 2?", max_tokens=24)
         return {"ok": bool(text.strip()), "answer": text, "generation": self.last_generation_metrics}
 
-    async def preflight(self):
-        return {"success": bool(self.facts.get("fileValid")), "scope": "startup-observation", "runtime": self.settings.local_model_runtime, "model": self.facts.get("effectiveModelId", self.settings.local_model_id), "fileExists": self.facts.get("fileExists", False), "fileValid": bool(self.facts.get("fileValid"))}
-
     def snapshot(self, include_source=False):
-        snap = {**self.facts, "state": self.state, "lifecycle": self.phase, "phase": self.phase,
-                "runtime": self.settings.local_model_runtime, "modelId": self.facts.get("effectiveModelId", self.settings.local_model_id),
+        snap = {**self.facts, "state": self.state, "publicState": self.public_state,
+                "lifecycle": self.phase, "phase": self.phase, "runtime": "llama_cpp",
+                "modelId": self.facts.get("effectiveModelId", self.settings.local_model_id),
                 "ready": self.is_ready(), "inferenceAvailable": self.is_ready(),
                 "lastError": self.last_error or None, "errorDetail": self.error_detail or None,
                 "lastGeneration": self.last_generation_metrics, "lastSelfTest": self.last_self_test,
                 "contextSize": self.settings.local_model_ctx_size, "threads": self.settings.local_model_threads,
-                "loadedAt": self.ready_at, "startupDurationMs": self._startup_duration_ms if self._startup_duration_ms is not None else (round((time.monotonic() - self._boot_monotonic) * 1000) if self._started else None),
+                "loadedAt": self.ready_at,
+                "startupDurationMs": self._startup_duration_ms if self._startup_duration_ms is not None else (
+                    round((time.monotonic() - self._boot_monotonic) * 1000) if self._started else None),
                 "startupTimeoutSeconds": self.settings.local_model_startup_timeout,
                 "history": list(self.history), "permanentFailure": self.phase in FAILURES,
                 "overrideRejected": bool(self.facts.get("configOverrideRejected"))}

@@ -60,25 +60,33 @@ class CatalogueHelperTests(unittest.TestCase):
         self.assertIn("bytes", entry)
 
 
+async def _worker_download_step(manager: LocalModelManager) -> None:
+    """Mirror of the inference worker's download stage (inference/manager.py).
+
+    Only a proven 404 for an invalid same-repository override may switch to
+    the checksum-pinned catalogue file; everything else stays a loud error.
+    """
+    try:
+        await manager._download_if_needed()
+    except ModelSourceError as exc:
+        if not manager._try_recover_invalid_override(exc):
+            raise
+        await manager._download_if_needed()
+
+
 class _RecordingManager(LocalModelManager):
-    """LocalModelManager with the network/llama steps stubbed out."""
+    """LocalModelManager with the network step stubbed out."""
 
     def __init__(self, settings: Settings, fail_first_download: bool = True):
         super().__init__(settings)
         self._fail_first_download = fail_first_download
         self.download_calls = 0
-        self.load_calls = 0
 
     async def _download_if_needed(self) -> None:  # noqa: D102 - test stub
         self.download_calls += 1
         if self._fail_first_download and self.download_calls == 1:
             raise _source_404()
         self.file_size_bytes = 1234
-
-    async def _load_model(self) -> None:  # noqa: D102 - test stub
-        self.load_calls += 1
-        from types import SimpleNamespace
-        self._llama = SimpleNamespace(create_completion=lambda **kwargs: {"choices": [{"text": "4", "finish_reason": "stop"}]})
 
 
 class OverrideFallbackTests(unittest.TestCase):
@@ -89,16 +97,14 @@ class OverrideFallbackTests(unittest.TestCase):
             local_model_file="Qwen2.5-0.5B-Instruct-IQ3_XXS.gguf",
         )
         manager = _RecordingManager(settings)
-        asyncio.run(manager._load_pipeline())
+        asyncio.run(_worker_download_step(manager))
 
-        self.assertEqual(manager.state, "ready")
-        self.assertIsNotNone(manager._llama)
         self.assertEqual(manager.download_calls, 2)  # failed attempt + healed retry
         # Settings were re-pointed at the verified catalogue file.
         self.assertEqual(manager.settings.local_model_file, DEFAULT_LOCAL_MODEL_FILE)
         # The rejection is recorded and never hidden.
-        self.assertIsNotNone(manager.config_override_rejected)
         rejected = manager.config_override_rejected
+        self.assertIsNotNone(rejected)
         self.assertEqual(rejected["configuredFile"], "Qwen2.5-0.5B-Instruct-IQ3_XXS.gguf")
         self.assertEqual(rejected["status"], 404)
         self.assertEqual(rejected["fallbackFile"], DEFAULT_LOCAL_MODEL_FILE)
@@ -115,22 +121,17 @@ class OverrideFallbackTests(unittest.TestCase):
             local_model_file=DEFAULT_LOCAL_MODEL_FILE,
         )
         manager = _RecordingManager(settings)
-        asyncio.run(manager._load_pipeline())
-
-        self.assertEqual(manager.state, "error")
+        with self.assertRaises(ModelSourceError):
+            asyncio.run(_worker_download_step(manager))
         self.assertIsNone(manager.config_override_rejected)
         self.assertEqual(manager.download_calls, 1)
-        self.assertEqual(manager.load_calls, 0)
 
     def test_custom_url_404_never_falls_back(self):
         # A custom LOCAL_MODEL_URL is a deliberate operator choice.
-        settings = Settings(
-            local_model_url="http://127.0.0.1:9/stale.gguf",
-        )
+        settings = Settings(local_model_url="http://127.0.0.1:9/stale.gguf")
         manager = _RecordingManager(settings)
-        asyncio.run(manager._load_pipeline())
-
-        self.assertEqual(manager.state, "error")
+        with self.assertRaises(ModelSourceError):
+            asyncio.run(_worker_download_step(manager))
         self.assertIsNone(manager.config_override_rejected)
         self.assertEqual(manager.download_calls, 1)
 
@@ -140,21 +141,18 @@ class OverrideFallbackTests(unittest.TestCase):
             local_model_file="Qwen2.5-0.5B-Instruct-IQ3_XXS.gguf",
         )
         manager = _RecordingManager(settings, fail_first_download=False)
-        # Simulate: even after the fallback the (unknown) failure repeats —
-        # the recovery must not loop forever.
-        original = manager._download_if_needed
 
         async def always_fails():
             manager.download_calls += 1
             raise _source_404()
 
         manager._download_if_needed = always_fails  # type: ignore[method-assign]
-        asyncio.run(manager._load_pipeline())
-        self.assertEqual(manager.state, "error")
+        with self.assertRaises(ModelSourceError):
+            asyncio.run(_worker_download_step(manager))
         # 1st attempt (configured file) + 1 healed attempt, then it stops.
         self.assertEqual(manager.download_calls, 2)
         self.assertIsNotNone(manager.config_override_rejected)
-        del original
+        self.assertFalse(manager._try_recover_invalid_override(_source_404()))
 
     def test_snapshot_exposes_override_state(self):
         settings = Settings(
@@ -162,20 +160,9 @@ class OverrideFallbackTests(unittest.TestCase):
             local_model_file="Qwen2.5-0.5B-Instruct-IQ3_XXS.gguf",
         )
         manager = _RecordingManager(settings)
-        asyncio.run(manager._load_pipeline())
-
+        asyncio.run(_worker_download_step(manager))
         public_view = manager.snapshot(include_source=False)
         self.assertTrue(public_view["overrideRejected"])
-        self.assertTrue(public_view["ready"])
-
-        internal_view = manager.snapshot(include_source=True)
-        self.assertIsNotNone(internal_view.get("configOverrideRejected"))
-        self.assertEqual(
-            internal_view["configOverrideRejected"]["fallbackFile"],
-            DEFAULT_LOCAL_MODEL_FILE,
-        )
-        # modelId in the snapshot reflects the file that will actually load.
-        self.assertEqual(internal_view["modelId"], manager.settings.local_model_id)
 
 
 if __name__ == "__main__":

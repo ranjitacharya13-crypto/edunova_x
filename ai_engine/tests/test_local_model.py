@@ -25,7 +25,9 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from agent.llm import LLMResponseError  # noqa: E402
-from agent.local_llm import LocalLlamaLLM, LocalModelManager, create_llm  # noqa: E402
+from agent.local_llm import DECISION_SCHEMA, LocalModelManager  # noqa: E402
+from agent.remote_llm import RemoteInferenceLLM, create_llm  # noqa: E402
+from inference.resources import ResourceInsufficient, check_model_fits, estimate_requirement  # noqa: E402
 from agent.router import (  # noqa: E402
     IntentRouter,
     RouteDecision,
@@ -106,23 +108,24 @@ class LocalProviderConfigTests(unittest.TestCase):
         self.assertNotIn("user:pass", diag)
         self.assertNotIn("example.com/model.gguf", diag)  # only host + filename
 
-    def test_create_llm_factory_explicit_pytorch_uses_supervisor(self):
-        settings = local_settings(local_model_runtime="torch", local_model_repo="Qwen/Qwen2.5-0.5B-Instruct", local_model_file="")
-        from inference.torch_runtime import TorchChatLLM, TorchModelManager
-
-        llm, manager = create_llm(settings)
-        self.assertIsInstance(llm, TorchChatLLM)
-        from inference.manager import ModelManager
-        self.assertIsInstance(manager, ModelManager)
+    def test_create_llm_factory_returns_remote_inference_client(self):
+        """The orchestrator never builds an in-process model: only the remote client."""
+        settings = local_settings(inference_url="http://inference:8002")
+        llm = create_llm(settings)
+        self.assertIsInstance(llm, RemoteInferenceLLM)
         self.assertTrue(llm.is_local)
+        self.assertEqual(llm.base_url, "http://inference:8002")
 
-    def test_create_llm_factory_legacy_llama_cpp_runtime(self):
-        settings = local_settings(local_model_runtime="llama_cpp")
-        llm, manager = create_llm(settings)
-        self.assertIsInstance(llm, LocalLlamaLLM)
-        from inference.manager import ModelManager
-        self.assertIsInstance(manager, ModelManager)
-        self.assertTrue(llm.is_local)
+    def test_orchestrator_modules_never_import_model_runtimes(self):
+        """Layer A must stay lightweight: no llama_cpp / torch imports at module level."""
+        import ast
+        for name in ("agent/remote_llm.py", "agent/engine.py", "agent/router.py", "main.py"):
+            tree = ast.parse((Path(__file__).resolve().parents[1] / name).read_text())
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.Import, ast.ImportFrom)):
+                    mods = [n.name for n in node.names] if isinstance(node, ast.Import) else [node.module or ""]
+                    for mod in mods:
+                        self.assertFalse(mod.split(".")[0] in {"llama_cpp", "torch", "transformers"}, f"{name} imports {mod}")
 
 
 class IntentRouterTests(unittest.TestCase):
@@ -482,151 +485,66 @@ def _install_fake_llama_cpp():
     return patch.dict(sys.modules, {"llama_cpp": module, "llama_cpp.llama": module})
 
 
-class LocalModelManagerTests(unittest.IsolatedAsyncioTestCase):
+class WeightsEngineTests(unittest.IsolatedAsyncioTestCase):
+    """LocalModelManager is now ONLY the weights engine used inside the inference worker."""
+
     def _settings_with_dir(self, tmp: str, **kw) -> Settings:
         kw.setdefault("local_model_dir", tmp)
         kw.setdefault("local_model_file", "fake-model.gguf")
-        kw.setdefault("local_chat_wait_seconds", 2)
         return local_settings(**kw)
 
     def _make_model_bytes(self, tmp: str, name: str = "fake-model.gguf") -> Path:
-        # Real GGUF magic: the cache validator rejects anything that does not
-        # start with it, so the fixture has to look like a genuine GGUF file.
         path = Path(tmp) / name
         path.write_bytes(b"GGUF" + b"\x00" * (11 * 1024 * 1024))
         return path
 
-    async def test_ready_after_cache_hit_and_load(self):
+    async def test_load_then_generate_uses_chatml_and_grammar(self):
         with tempfile.TemporaryDirectory() as tmp:
             settings = self._settings_with_dir(tmp)
             self._make_model_bytes(tmp)
             manager = LocalModelManager(settings)
+            _FakeGrammar.captured.clear()
             with _install_fake_llama_cpp():
-                manager.ensure_loading()
-                await manager.wait_ready(timeout=30)
-            self.assertEqual(manager.state, "ready")
-            self.assertTrue(manager.snapshot()["ready"])
-            self.assertEqual(manager.snapshot()["chatFormat"], "chatml")
+                await manager._load_model()
+                self.assertTrue(manager.is_loaded())
+                text = await manager.generate(system_prompt="sys", user_prompt="What is ML?", max_tokens=64, json_schema=DECISION_SCHEMA)
+            self.assertIn('"action"', text)
             llama = _FakeLlama.instances[-1]
             self.assertEqual(llama.kwargs["n_ctx"], settings.local_model_ctx_size)
             self.assertEqual(llama.kwargs["n_gpu_layers"], 0)
-
-    async def test_complete_json_constrains_to_schema_and_uses_chatml(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            settings = self._settings_with_dir(tmp)
-            self._make_model_bytes(tmp)
-            manager = LocalModelManager(settings)
-            llm = LocalLlamaLLM(settings, manager)
-            _FakeGrammar.captured.clear()
-            with _install_fake_llama_cpp():
-                manager.ensure_loading()
-                await llm.probe()
-                result = await llm.complete_json(system_prompt="sys", user_prompt="What is ML?")
-            self.assertEqual(result["action"], "final")
-            llama = _FakeLlama.instances[-1]
             call = llama.calls[-1]
             self.assertIn("<|im_start|>", call["prompt"])
             self.assertIn("What is ML?", call["prompt"])
             self.assertIsNotNone(call["grammar"], "decision schema must force valid JSON")
-            self.assertTrue(_FakeGrammar.captured)
-
-    async def test_readiness_is_published_only_after_warmup_generation(self):
-        """READY (state, is_ready, warmupComplete) requires a real warm-up run."""
-        with tempfile.TemporaryDirectory() as tmp:
-            settings = self._settings_with_dir(tmp)
-            self._make_model_bytes(tmp)
-            manager = LocalModelManager(settings)
-            with _install_fake_llama_cpp():
-                manager.ensure_loading()
-                await manager.wait_ready(timeout=30)
-            self.assertEqual(manager.state, "ready")
-            self.assertTrue(manager.is_ready())
             snap = manager.snapshot()
-            self.assertTrue(snap["ready"])
             self.assertTrue(snap["modelLoaded"])
-            self.assertTrue(snap["tokenizerLoaded"])
-            self.assertTrue(snap["warmupComplete"])
-            self.assertIsNotNone(snap["lastSelfTest"])
-            self.assertTrue(snap["lastSelfTest"]["ok"])
+            self.assertEqual(snap["chatFormat"], "chatml")
 
-    async def test_failed_warmup_never_reports_ready(self):
-        """A model that loads but cannot decode must stay NOT ready + honest."""
+    async def test_generate_never_fakes_when_weights_not_loaded(self):
+        settings = local_settings()
+        manager = LocalModelManager(settings)
+        with self.assertRaises(LLMResponseError) as ctx:
+            await manager.generate(system_prompt="s", user_prompt="hello", max_tokens=8)
+        self.assertEqual(ctx.exception.error_type, "MODEL_NOT_READY")
+        self.assertEqual(ctx.exception.status_code, 503)
+
+    async def test_decode_failure_surfaces_instead_of_partial_answer(self):
         with tempfile.TemporaryDirectory() as tmp:
             settings = self._settings_with_dir(tmp)
             self._make_model_bytes(tmp)
             manager = LocalModelManager(settings)
-            with patch.dict(
-                sys.modules,
-                {
-                    "llama_cpp": types.SimpleNamespace(
-                        Llama=_FailingWarmupLlama,
-                        LlamaGrammar=_FakeGrammar,
-                    ),
-                    "llama_cpp.llama": types.SimpleNamespace(
-                        Llama=_FailingWarmupLlama,
-                        LlamaGrammar=_FakeGrammar,
-                    ),
-                },
-            ):
-                manager.ensure_loading()
-                with self.assertRaises(LLMResponseError) as ctx:
-                    await manager.wait_ready(timeout=30)
-            self.assertEqual(manager.state, "error")
-            self.assertFalse(manager.is_ready())
-            snap = manager.snapshot()
-            self.assertFalse(snap["ready"])
-            self.assertTrue(snap["modelLoaded"], "weights loaded, only warm-up failed")
-            self.assertFalse(snap["warmupComplete"])
-            self.assertIn("failed during generation", snap["lastError"])
-            self.assertIn(ctx.exception.error_type, {"model_unavailable", "model_loading"})
-
-    async def test_wait_ready_timeout_maps_to_model_loading(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            settings = self._settings_with_dir(tmp)
-            # No file → manager would try to download; simulate a slow pipeline.
-            manager = LocalModelManager(settings)
-
-            async def slow_pipeline():
-                manager.state = "downloading"
-                await asyncio.sleep(30)
-
-            with patch.object(manager, "_load_pipeline", slow_pipeline):
-                manager.ensure_loading()
-                with self.assertRaises(LLMResponseError) as ctx:
-                    await manager.wait_ready(timeout=0.2)
-            self.assertEqual(ctx.exception.status_code, 503)
-            self.assertEqual(ctx.exception.error_type, "MODEL_NOT_READY")
-
-    async def test_failed_load_maps_to_model_unavailable(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            settings = self._settings_with_dir(tmp)
-            manager = LocalModelManager(settings)
-
-            async def failing_download():
-                raise RuntimeError("model download failed: connection refused")
-
-            # Patch a pipeline stage (not the pipeline) so the real error
-            # handling that sets state/error_detail actually runs.
-            with patch.object(manager, "_download_if_needed", failing_download):
-                manager.ensure_loading()
-                with self.assertRaises(LLMResponseError) as ctx:
-                    await manager.wait_ready(timeout=5)
-            self.assertEqual(ctx.exception.error_type, "model_unavailable")
-            self.assertEqual(manager.state, "error")
-            self.assertEqual(manager.error_detail, "download_failed")
-            # And the honest state persists for /health reporting.
-            with self.assertRaises(LLMResponseError):
-                await manager.wait_ready(timeout=0.1)
+            fake = types.SimpleNamespace(Llama=_FailingWarmupLlama, LlamaGrammar=_FakeGrammar)
+            with patch.dict(sys.modules, {"llama_cpp": fake, "llama_cpp.llama": fake}):
+                await manager._load_model()
+                with self.assertRaises(LLMResponseError):
+                    await manager.generate(system_prompt="s", user_prompt="hi", max_tokens=8)
 
     async def test_min_size_guard_rejects_tiny_files(self):
         with tempfile.TemporaryDirectory() as tmp:
             settings = self._settings_with_dir(tmp)
             tiny = Path(tmp) / "fake-model.gguf"
-            tiny.write_bytes(b"not a real model")  # < 10MB: cache must be rejected
+            tiny.write_bytes(b"not a real model")
             manager = LocalModelManager(settings)
-
-            # Download itself is skipped entirely; the pipeline must treat the
-            # undersized cache as missing rather than loading garbage.
             self.assertFalse(tiny.stat().st_size >= 11 * 1024 * 1024)
             self.assertEqual(str(manager.model_path), str(tiny))
 
@@ -638,14 +556,135 @@ class LocalModelManagerTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("/", manager.model_path.name)
             self.assertNotIn("..", manager.model_path.name)
 
-    async def test_generate_never_fakes_when_not_ready(self):
-        settings = local_settings(local_chat_wait_seconds=1)
-        manager = LocalModelManager(settings)
-        manager.ensure_loading = lambda: None  # type: ignore[assignment]
-        llm = LocalLlamaLLM(settings, manager)
+
+class ResourceCheckTests(unittest.TestCase):
+    """Pre-load memory compatibility check: fail fast, precise numbers, no silent shrink."""
+
+    def test_512mib_container_is_rejected_with_numbers(self):
+        requirement = estimate_requirement(runtime="llama_cpp", model_path=None, ctx=6144, expected_bytes=397 * 1024 * 1024)
+        self.assertGreater(requirement["required_mb"], 512)
+        with self.assertRaises(ResourceInsufficient) as ctx:
+            check_model_fits(requirement, {"ram_limit_mb": 512, "ram_total_mb": 512})
+        report = ctx.exception.report()
+        self.assertEqual(report["error"], "MODEL_RESOURCE_INSUFFICIENT")
+        self.assertEqual(report["available_mb"], 512)
+        self.assertEqual(report["required_mb"], requirement["required_mb"])
+        self.assertGreaterEqual(report["recommended_mb"], report["required_mb"])
+        self.assertIn("512 MiB", str(ctx.exception))
+
+    def test_sufficient_container_passes(self):
+        requirement = estimate_requirement(runtime="llama_cpp", model_path=None, ctx=6144, expected_bytes=397 * 1024 * 1024)
+        check_model_fits(requirement, {"ram_limit_mb": 2048, "ram_total_mb": 4096})  # no exception
+
+
+class RemoteInferenceClientTests(unittest.IsolatedAsyncioTestCase):
+    """Orchestrator -> inference service contract, with a fake HTTP transport."""
+
+    def _client(self, handler):
+        import httpx
+        settings = local_settings(inference_url="http://inference:8002", ai_internal_token="secret-token")
+        transport = httpx.MockTransport(handler)
+        return RemoteInferenceLLM(settings, client=httpx.AsyncClient(transport=transport))
+
+    async def test_status_sends_internal_token_and_maps_ready(self):
+        import httpx
+        seen = {}
+
+        def handler(request):
+            seen["token"] = request.headers.get("X-AI-Internal-Token")
+            seen["path"] = request.url.path
+            return httpx.Response(200, json={"state": "MODEL_READY", "model_loaded": True, "warmup_complete": True, "inference_test": True})
+
+        llm = self._client(handler)
+        status = await llm.status()
+        self.assertEqual(seen["token"], "secret-token")
+        self.assertEqual(seen["path"], "/model/status")
+        self.assertEqual(status["state"], "MODEL_READY")
+        await llm.probe()  # READY -> no exception
+
+    async def test_resource_insufficient_is_reported_verbatim(self):
+        import httpx
+
+        def handler(request):
+            return httpx.Response(200, json={"state": "MODEL_FAILED", "errorStage": "MODEL_RESOURCE_INSUFFICIENT",
+                                             "error": "needs 1100 MiB", "permanentFailure": True,
+                                             "resource": {"required_mb": 1100, "available_mb": 512, "recommended_mb": 2048}})
+
+        llm = self._client(handler)
         with self.assertRaises(LLMResponseError) as ctx:
-            await llm.complete_text(system_prompt="s", user_prompt="hello")
-        self.assertIn(ctx.exception.error_type, {"MODEL_NOT_READY", "model_unavailable"})
+            await llm.probe()
+        self.assertEqual(ctx.exception.error_type, "MODEL_RESOURCE_INSUFFICIENT")
+        self.assertEqual(ctx.exception.status_code, 503)
+
+    async def test_loading_state_is_not_ready_and_not_generic(self):
+        import httpx
+
+        def handler(request):
+            return httpx.Response(200, json={"state": "MODEL_LOADING", "model_loaded": False})
+
+        llm = self._client(handler)
+        with self.assertRaises(LLMResponseError) as ctx:
+            await llm.probe()
+        self.assertEqual(ctx.exception.error_type, "MODEL_LOADING")
+        self.assertIn("starting", str(ctx.exception))
+
+    async def test_unreachable_service_maps_to_ai_service_unreachable(self):
+        import httpx
+
+        def handler(request):
+            raise httpx.ConnectError("refused")
+
+        llm = self._client(handler)
+        with self.assertRaises(LLMResponseError) as ctx:
+            await llm.status()
+        self.assertEqual(ctx.exception.error_type, "AI_SERVICE_UNREACHABLE")
+
+    async def test_missing_url_is_configuration_error(self):
+        from agent.llm import LLMConfigurationError
+        llm = RemoteInferenceLLM(local_settings(inference_url=""))
+        with self.assertRaises(LLMConfigurationError):
+            await llm.status()
+
+    async def test_streaming_completion_forwards_tokens_and_full_text(self):
+        import httpx
+
+        def handler(request):
+            if request.url.path == "/generate/stream":
+                body = ("data: " + json.dumps({"type": "token", "delta": "Hel"}) + "\n\n"
+                        "data: " + json.dumps({"type": "token", "delta": "lo"}) + "\n\n"
+                        "data: " + json.dumps({"type": "done", "text": "Hello", "metrics": {"tokens": 2, "finishReason": "stop"}}) + "\n\n")
+                return httpx.Response(200, content=body.encode(), headers={"content-type": "text/event-stream"})
+            return httpx.Response(404)
+
+        llm = self._client(handler)
+        pieces = []
+        text = await llm.complete_text(system_prompt="s", user_prompt="u", on_token=pieces.append)
+        self.assertEqual(text, "Hello")
+        self.assertEqual(pieces, ["Hel", "lo"])
+        self.assertEqual(llm.last_generation_metrics["finishReason"], "stop")
+
+    async def test_json_completion_parses_object(self):
+        import httpx
+
+        def handler(request):
+            payload = json.loads(request.content)
+            self.assertIsNotNone(payload.get("json_schema"))
+            return httpx.Response(200, json={"text": '{"action": "final", "answer": "ok"}', "metrics": {"tokens": 5}})
+
+        llm = self._client(handler)
+        result = await llm.complete_json(system_prompt="s", user_prompt="u")
+        self.assertEqual(result["action"], "final")
+
+    async def test_inference_error_propagates_code(self):
+        import httpx
+
+        def handler(request):
+            return httpx.Response(503, json={"detail": {"code": "MODEL_BUSY", "message": "busy"}})
+
+        llm = self._client(handler)
+        with self.assertRaises(LLMResponseError) as ctx:
+            await llm.complete_json(system_prompt="s", user_prompt="u", retries=0)
+        self.assertEqual(ctx.exception.error_type, "MODEL_BUSY")
 
 
 class CompactPlannerTests(unittest.IsolatedAsyncioTestCase):

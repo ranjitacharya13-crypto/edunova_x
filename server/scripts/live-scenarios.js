@@ -53,7 +53,8 @@ async function postChat(gateway, { message, accept }, token) {
       .map((block) => JSON.parse(block.slice(5).trim()));
     const final = events.find((e) => e.type === "answer") || events.find((e) => e.type === "error");
     const firstToken = events.find((e) => e.type === "token");
-    const preparing = events.find((e) => e.event === "model.preparing");
+    // There is no warm queue any more: a not-ready model fails fast with a code.
+    const preparing = false;
     return {
       status: response.status,
       ok: Boolean(final && (final.type === "answer") && final.success !== false),

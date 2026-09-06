@@ -38,7 +38,7 @@ export default function useAIStatus({ enabled = true } = {}) {
       const next = await refresh();
       if (cancelled || !mountedRef.current) return;
       if (next.terminal) return; // A terminal failure needs operator intervention, not endless preparing polls.
-      const delay = [AI_STATUS.READY, AI_STATUS.UNAVAILABLE, AI_STATUS.UNKNOWN].includes(next.status) ? READY_POLL_MS : STARTING_POLL_MS;
+      const delay = [AI_STATUS.READY, AI_STATUS.UNAVAILABLE, AI_STATUS.RESOURCE_INSUFFICIENT, AI_STATUS.UNKNOWN].includes(next.status) ? READY_POLL_MS : STARTING_POLL_MS;
       timerRef.current = window.setTimeout(tick, delay);
     };
     tick();
@@ -59,7 +59,8 @@ export default function useAIStatus({ enabled = true } = {}) {
       state.status === AI_STATUS.STARTING || state.status === AI_STATUS.LOADING,
     isLoading: state.status === AI_STATUS.LOADING,
     isBusy: state.status === AI_STATUS.BUSY,
-    isUnavailable: state.status === AI_STATUS.UNAVAILABLE,
+    isResourceInsufficient: state.status === AI_STATUS.RESOURCE_INSUFFICIENT,
+    isUnavailable: state.status === AI_STATUS.UNAVAILABLE || state.status === AI_STATUS.RESOURCE_INSUFFICIENT,
     refresh,
   };
 }

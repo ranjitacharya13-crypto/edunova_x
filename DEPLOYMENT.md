@@ -98,137 +98,143 @@ IPs are dynamic, so an IP allowlist will intermittently fail.
 
 ---
 
-## 2. AI engine — Render (FastAPI) — SELF-HOSTED MODEL
+## 2. AI layer — Render (two Python services) — SELF-HOSTED MODEL
+
+The AI layer is split so that **the model never runs in a 512 MiB container**:
+
+| Service | Role | Loads the model? | Typical RSS | Minimum Render plan |
+|---|---|---|---|---|
+| `edunova-api` (Node/Express) | REST API, auth, MongoDB, AI **gateway** (`/api/ai/*`) | **No** | ~150 MiB | Free/Starter 512 MB |
+| `edunova-ai` (FastAPI, `main:app`) | AI **orchestrator**: IntentRouter, authenticated ToolRegistry, RAG orchestration, web search, memory, SSE relay | **No** (never imports `llama_cpp`/`torch`) | ~150 MiB | Free/Starter 512 MB |
+| `edunova-inference` (FastAPI, `inference_server:app`) | **Persistent inference service**: llama.cpp GGUF LLM + PyTorch embeddings | **Yes — the only one** | ~1.2 GiB | **Standard 2 GB / 1 CPU** |
+
+Request path: browser → `edunova-api` `POST /api/ai/chat|stream` (JWT) →
+`edunova-ai` `POST /api/ai/chat` (`X-AI-Internal-Token`) → `edunova-inference`
+`POST /generate/stream` (`X-AI-Internal-Token`) → real tokens streamed back as
+SSE through every hop. No OpenAI/Groq/Gemini/Anthropic/OpenRouter anywhere.
+
+### Root cause of "Model + server ML need at least 1100 MiB; container has 512 MiB"
+
+The model was loaded **inside** the orchestrator process and that process was
+deployed on a 512 MiB instance. Qwen2.5-0.5B Q4_K_M + llama.cpp + FastAPI +
+PyTorch embeddings genuinely need more than 512 MiB, so the memory gate failed
+(correctly). Reducing context/timeouts cannot fix physics; the fix is to run
+the model in its own adequately sized service, which is what the blueprint now
+does.
+
+### Memory requirement (documented and enforced at boot)
+
+`ai_engine/inference/resources.py` computes the requirement from the real GGUF
+header and refuses to start a model that cannot fit
+(`MODEL_RESOURCE_INSUFFICIENT {required_mb, available_mb, recommended_mb}`).
+For the blueprint model at `LOCAL_MODEL_CTX=6144`:
+
+| Component | MiB |
+|---|---|
+| Model weights (Qwen2.5-0.5B-Instruct Q4_K_M GGUF, 397 MB file) | 398 |
+| KV cache @ 6144 context | 80 |
+| llama.cpp runtime buffers | 160 |
+| FastAPI/uvicorn + Python | 140 |
+| PyTorch embeddings (all-MiniLM-L6-v2) for RAG | 260 |
+| Safety margin | 128 |
+| **Required** | **1166** |
+| Required with `RAG_ENABLED=false` | 906 |
+| **Recommended** | **2048** |
+| CPU | 1 dedicated core, `LOCAL_MODEL_THREADS=2` |
+
+`GET /system/resources` on either Python service prints the live numbers.
+
+### `edunova-inference` (the model)
 
 | Setting | Value |
 |---|---|
-| Type | Web Service |
-| Runtime | Python |
+| Type / Runtime | Web Service / Python |
 | **Root Directory** | **`ai_engine`** |
-| Build Command | `pip install "torch==2.4.1" --index-url https://download.pytorch.org/whl/cpu && pip install -r requirements.txt && python -c "import llama_cpp; print('llama_cpp runtime OK')"` |
-| Start Command | `python -c "import llama_cpp; print('llama_cpp runtime OK')" && uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1` |
+| Plan | **Standard (2 GB)** or larger — 512 MB plans fail the resource check by design |
+| Build Command | `pip install "torch==2.8.0" --index-url https://download.pytorch.org/whl/cpu && pip install -r requirements.txt && python verify_runtime.py` |
+| Start Command | `python verify_runtime.py && uvicorn inference_server:app --host 0.0.0.0 --port $PORT --workers 1` |
 | Health Check Path | `/health` |
+| Disk | 4 GB at `/var/data/models` (weights downloaded once) |
 
-The AI brain is a **self-hosted quantized GGUF model running in-process via
-llama.cpp** (`LOCAL_MODEL_RUNTIME=llama_cpp`, the production runtime). There
-are **no external LLM API keys** — OpenAI/Groq/Gemini/Anthropic/OpenRouter are
-not used.
+`verify_runtime.py` imports `llama_cpp` and `torch` at build **and** start, so a
+broken dependency fails the deploy instead of surfacing as `DEPENDENCY_FAILED`.
 
-Dependency install (this is the root-cause fix for the
-`LOCAL_MODEL_RUNTIME_MISSING runtime=llama_cpp` production error):
-`llama-cpp-python` is part of **`ai_engine/requirements.txt`**, so the single
-`pip install -r requirements.txt` step every deployment runs installs the
-llama.cpp runtime. It is pinned to `0.3.35`, whose **prebuilt CPU wheel** is
-served by the `--extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu`
-declared in that file (`--prefer-binary`), so no C++/cmake compile happens at
-deploy time. Both the Render build command and the start command then verify
-`import llama_cpp` and fail loudly if it is missing, so a deployment can never
-again serve the runtime-missing error.
+Startup lifecycle (once per process, never per request):
+`resource check → runtime check → GGUF validation → load → warmup ("What is
+2 + 2?") → independent inference test → MODEL_READY`. Public states:
+`MODEL_NOT_READY`, `MODEL_LOADING`, `MODEL_READY`, `MODEL_FAILED`.
 
-The PyTorch CPU wheel is still installed first from the official CPU index
-(never the ~3GB CUDA wheel from PyPI) so the optional
-`LOCAL_MODEL_RUNTIME=torch` path (`Qwen/Qwen2.5-0.5B-Instruct`, safetensors +
-transformers) works without a rebuild; the GGUF model is always loaded by
-llama.cpp, never by PyTorch.
-
-Required agent environment (self-hosted default):
+Endpoints (all but `/health` and `/ready` require `X-AI-Internal-Token`):
+`GET /health`, `GET /ready` (200 only when READY), `GET /model/status`,
+`GET /system/resources`, `GET /metrics`, `POST /generate`,
+`POST /generate/stream` (SSE `token`/`done`/`error`), `POST /embeddings`.
 
 | Variable | Notes |
 |---|---|
-| `LLM_PROVIDER` | `local` (self-hosted in-process model — the default) |
-| `LOCAL_MODEL_RUNTIME` | `llama_cpp` (GGUF — the production runtime) or `torch` (optional safetensors runtime) |
-| `LOCAL_MODEL_REPO` | GGUF repo; default `bartowski/Qwen2.5-0.5B-Instruct-GGUF` (verified catalogue entry) |
-| `LOCAL_MODEL_FILE` | GGUF filename, e.g. `Qwen2.5-0.5B-Instruct-Q4_K_M.gguf` (~380MB; verified in `config.py -> KNOWN_MODELS` with size + sha256) |
-| `LOCAL_MODEL_DIR` | Weights cache dir; **point at a persistent disk** (blueprint: `/var/data/models`) |
-| `LOCAL_MODEL_CTX_SIZE` | Context tokens, default `6144` (auto-lowered to `4096` on ≤768MB containers) |
-| `LOCAL_MODEL_THREADS` | llama.cpp CPU threads (blueprint: `2`) |
-| `LOCAL_MODEL_URL` / `LOCAL_MODEL_SHA256` / `LOCAL_MODEL_BYTES` | Optional download pins for a model outside the verified catalogue |
-| `LOCAL_MODEL_DTYPE` / `LOCAL_MODEL_DEVICE` | Used only by the optional `torch` runtime (`auto` defaults) |
-| `LOCAL_PRELOAD_MODEL` | `true` = download+load+warm in background at boot |
-| `LOCAL_CHAT_WAIT_TIMEOUT` | Seconds the AI service holds a queued request while warming, default `180` |
-| `AI_WARM_QUEUE_MAX_MS` | **API service**: how long the gateway keeps a request queued (SSE `model.preparing` + polling), default `600000` |
-| `LOCAL_MODEL_DOWNLOAD_TIMEOUT` | Boot-time weight download budget, default `1800` |
-| `LLM_MAX_OUTPUT_TOKENS` / `LLM_TEMPERATURE` | Default `2048` / `0.2`; routing adaptively uses 128–1800 tokens and never shrinks output based on elapsed time |
-| `APP_BACKEND_URL` | Public HTTPS URL of `edunova-api` (AI service only) |
-| `WEB_SEARCH_API_KEY` | Brave, Tavily, or Serper credential (web data source) |
-| `WEB_SEARCH_PROVIDER` | `brave`, `tavily`, or `serper` |
-| `AI_INTERNAL_TOKEN` | Required in production; exact same value as API service |
-| `AI_REQUIRE_INTERNAL_TOKEN` | Set `true` in production (blueprint default) |
-| `MAX_AGENT_ITERATIONS` / `MAX_TOOL_CALLS` | Local defaults `5` / `8` |
-| `WEB_REQUEST_TIMEOUT` / `WEB_MAX_CONTENT_LENGTH` | Defaults `10` / `200000` |
+| `LLM_PROVIDER` | `local` |
+| `LOCAL_MODEL_RUNTIME` | `llama_cpp` (GGUF). PyTorch is used for embeddings only. |
+| `LOCAL_MODEL_REPO` / `LOCAL_MODEL_FILE` | Verified catalogue entry (`config.py -> KNOWN_MODELS`, size + sha256 pinned) |
+| `LOCAL_MODEL_DIR` | Persistent disk path (`/var/data/models`) |
+| `LOCAL_MODEL_CTX` | Context tokens (`6144`). **No silent downgrade**: if it does not fit, startup fails with the numbers. |
+| `LOCAL_MODEL_THREADS` | `2` |
+| `MODEL_STARTUP_TIMEOUT` | Hard deadline per lifecycle stage (`300`) |
+| `RAG_ENABLED` / `RAG_EMBEDDING_MODEL` | PyTorch embeddings served on `/embeddings` |
+| `AI_INTERNAL_TOKEN` / `AI_REQUIRE_INTERNAL_TOKEN` | Same token on all three services / `true` |
+| `AI_MEMORY_LIMIT_MB` | Optional override of the detected container limit (testing only) |
 
-Model sizing guide (llama.cpp GGUF runtime; pick per Render plan):
+### `edunova-ai` (the orchestrator)
 
-| Plan | RAM | Recommended model (set `LOCAL_MODEL_REPO`, `LOCAL_MODEL_FILE`) |
-|---|---|---|
-| Free / Starter (512MB) | 512MB | Auto-lowered context (4096) fits `Qwen2.5-0.5B-Instruct-Q4_K_M.gguf` with little OOM headroom; for comfortable 512MB operation use the catalogue's `bartowski/SmolLM2-360M-Instruct-GGUF` option. |
-| **Standard (2GB / 1 CPU) — blueprint default** | 2GB | `bartowski/Qwen2.5-0.5B-Instruct-GGUF` + `Qwen2.5-0.5B-Instruct-Q4_K_M.gguf` at `LOCAL_MODEL_CTX=6144` (RSS ≈ 700MB — comfortable headroom). |
-| Pro (4GB / 2 CPU) | 4GB | Same model at full context, or move up to the catalogue's `bartowski/Qwen2.5-1.5B-Instruct-GGUF` entry (~1.5GB RSS). |
+| Setting | Value |
+|---|---|
+| Type / Runtime | Web Service / Python |
+| **Root Directory** | **`ai_engine`** |
+| Plan | Free/Starter (512 MB) is sufficient |
+| Build Command | `pip install -r requirements-orchestrator.txt && python verify_runtime.py --orchestrator` |
+| Start Command | `uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1` |
+| Health Check Path | `/health` |
 
-Run `/api/ai/diagnose` and `/api/ai/metrics` after the first deploy to confirm
-cold-start time, RSS and tokens/sec for the actual model before tuning further.
-Filename and byte-size verification via `GET /api/ai/model/source-check` before
-changing `LOCAL_MODEL_FILE` — `bartowski/Qwen2.5-0.5B-Instruct-GGUF` has never
-published an `IQ3_XXS` quant, so confirm names rather than guessing.
+| Variable | Notes |
+|---|---|
+| `AI_INFERENCE_URL` | **Required.** Public HTTPS URL of `edunova-inference` |
+| `AI_INFERENCE_REQUEST_TIMEOUT` | Network safety net per inference call (`600` s); never shortens an answer |
+| `APP_BACKEND_URL` | Public HTTPS URL of `edunova-api` (authenticated tools) |
+| `AI_INTERNAL_TOKEN` / `AI_REQUIRE_INTERNAL_TOKEN` | Same token as the other services / `true` |
+| `RAG_ENABLED` / `RAG_EMBEDDING_MODEL` | Orchestrates the user-scoped index; vectors come from the inference service (`lexical` = offline dev only) |
+| `WEB_SEARCH_API_KEY` / `WEB_SEARCH_PROVIDER` | Brave/Tavily/Serper web data source |
+| `LLM_MAX_OUTPUT_TOKENS` / `LLM_TEMPERATURE` | `2048` / `0.2` — no elapsed-time output reduction |
+| `AGENT_MAX_CONTEXT_CHARS` / `LOCAL_MODEL_CTX` | Must fit the inference service's context (`12000` / `6144`) |
+| `MAX_AGENT_ITERATIONS` / `MAX_TOOL_CALLS` / `MAX_AGENT_RUNTIME_SECONDS` | `3` / `8` / `300` |
 
-`AGENT_MAX_CONTEXT_CHARS` must fit inside `LOCAL_MODEL_CTX`. Budget roughly
-3 characters per token and leave room for the system prompt plus
-`LLM_MAX_OUTPUT_TOKENS`; the blueprint pairs `LOCAL_MODEL_CTX=6144` with
-`AGENT_MAX_CONTEXT_CHARS=12000`. If a turn still overflows, the runtime trims
-the middle of the tool context and logs `LOCAL_MODEL_PROMPT_TRUNCATED` instead
-of failing the request.
+Endpoints: `GET /health`, `GET /ready`, `GET /model/status`,
+`GET /system/resources`, `GET /metrics`, `GET /api/ai/health|ready|metrics|diagnose`,
+`POST /api/ai/chat` (JSON or SSE with `Accept: text/event-stream`). All of them
+**observe** the inference service; none of them start, reload or queue on the
+model.
+
+### `edunova-api` AI gateway
+
+`server/routes/ai.js` (JWT-authenticated, rate limited, internal token added
+server-side): `POST /api/ai/chat`, `POST /api/ai/stream` (always SSE),
+`GET /api/ai/health`, `GET /api/ai/ready`, `GET /api/ai/model/status`,
+`GET /api/ai/system/resources` (admin), `GET /api/ai/diagnose` (admin).
+Before forwarding chat it reads `/api/ai/ready` once and returns the precise
+code (`MODEL_LOADING`, `MODEL_RESOURCE_INSUFFICIENT`, `AI_SERVICE_UNREACHABLE`,
+…) — there is no warm queue and no "preparing…" loop.
 
 ### Model weights cache (persistent disk)
 
-`render.yaml` attaches a 2GB disk to **edunova-ai** at `/var/data/models` and
-sets `LOCAL_MODEL_DIR` to it. Effects:
+`render.yaml` attaches a 4 GB disk to **edunova-inference** at
+`/var/data/models`. Weights are downloaded **once** (never during a request),
+re-validated on boot (size + sha256 + `GGUF` magic) and re-downloaded if
+corrupt. Disks require a paid instance type — which the inference service
+needs anyway.
 
-- weights are downloaded **once**, not per deploy/restart and never per chat
-  request (a warm boot logs `LOCAL_MODEL_CACHE_HIT ... (no download)`);
-- a cached file is re-validated on boot (size + `GGUF` magic). A truncated or
-  corrupt file logs `LOCAL_MODEL_CACHE_REJECTED` and is re-downloaded;
-- disks require a paid instance type. On Free, drop the `disk:` block and
-  accept a re-download on every cold start.
+### Order of first deploy
 
-Emergency rollback only (remove after the local model is verified):
-`LLM_PROVIDER=openai_compatible` + `LLM_API_KEY` + `LLM_MODEL` +
-`LLM_BASE_URL` (HTTPS enforced for public hosts; `http://` is accepted only
-for private/loopback hosts, e.g. a self-hosted gateway).
-
-The AI agent does not need MongoDB. Express remains the authenticated database
-and application API. After the agent deploys, copy its public URL into the API
-service's `AI_ENGINE_URL`. If that is unset, `/api/ai/chat` returns a clean `503`
-instead of hanging. See `AGENT_ARCHITECTURE.md` for all limits and providers.
-
-### Free-plan cold starts, model warmup, and the AI chat
-
-On Render's free plan a web service that receives no traffic spins down after
-about 15 minutes. While it wakes, Render's router answers with an HTML
-"Application loading" page (HTTP 503) instead of proxying to the app. With the
-self-hosted model there is one more step after boot: the GGUF weights are
-downloaded (~380MB, once, onto the persistent disk) and loaded, during which
-the AI service answers
-`503 LLM_MODEL_LOADING` (never a fake answer) and reports progress at
-`/api/ai/health`.
-
-The Express AI route retries bounded fast failures (proxy 502/503/504 pages,
-connect-level errors, and `LLM_MODEL_LOADING` 503s) for up to
-`AI_UPSTREAM_RETRY_WINDOW_MS` (blueprint: `240000`, sized for download+load;
-schedule `AI_UPSTREAM_RETRY_DELAYS_MS`) before returning an error. The user
-only sees "Understanding your question..." while the service boots. Two ways
-to remove the cold-start wait entirely:
-
-- Upgrade **edunova-ai** to a paid instance type (always on), or
-- keep the free plan and accept the first question after idle taking ~1-4 min
-  (wake + model download + load); retries then succeed and later questions
-  are fast.
-
-If the service is genuinely down, the API now returns an accurate, user-safe
-message ("The EduNova AI service is starting up or temporarily unavailable…")
-with `agentStatus: "unavailable"` instead of the old misleading
-"could not start this request".
-
----
+1. Deploy `edunova-inference`; wait for `GET /ready` → `{"ready": true}`.
+2. Set `AI_INFERENCE_URL` on `edunova-ai` to that URL; deploy; check `/ready`.
+3. Set `AI_ENGINE_URL` on `edunova-api` to the `edunova-ai` URL.
+4. Use the same `AI_INTERNAL_TOKEN` on all three.
 
 ## 3. Frontend — Cloudflare Workers
 

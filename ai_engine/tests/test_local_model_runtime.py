@@ -21,6 +21,7 @@ never breaks a lightweight environment:
 
 from __future__ import annotations
 
+import asyncio
 import http.server
 import socket
 import sys
@@ -33,12 +34,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from agent.llm import LLMResponseError  # noqa: E402
 from agent.local_llm import (  # noqa: E402
-    LocalLlamaLLM,
     LocalModelManager,
     ModelSourceError,
     runtime_available,
 )
 from config import Settings  # noqa: E402
+from inference.manager import ModelManager  # noqa: E402
 
 try:  # pragma: no cover - environment probe
     import gguf  # noqa: F401
@@ -133,6 +134,10 @@ class LocalModelRuntimeTests(unittest.IsolatedAsyncioTestCase):
         cls.server.shutdown()
         cls.server.server_close()
 
+    async def _start(self, manager: ModelManager, timeout: float = 120) -> None:
+        manager.ensure_loading()
+        await asyncio.wait_for(manager._ready_event.wait(), timeout)
+
     def _settings(self, tmp: str, filename: str = "model.gguf", **overrides) -> Settings:
         base = dict(
             llm_provider="local",
@@ -167,15 +172,19 @@ class LocalModelRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Status: 404", rendered)
             self.assertIn("does-not-exist.gguf", rendered)
 
-            # ...and the manager surfaces it as an honest 503, never a fake answer.
-            manager.ensure_loading()
-            with self.assertRaises(LLMResponseError) as chat_ctx:
-                await manager.wait_ready(timeout=30)
-            self.assertEqual(chat_ctx.exception.error_type, "model_unavailable")
-            self.assertEqual(manager.state, "error")
-            self.assertEqual(manager.error_report["status"], 404)
-            self.assertTrue(manager.error_report["permanent"])
-            self.assertIn("LOCAL_MODEL_FILE", manager.error_report["hint"])
+            # ...and the supervisor surfaces it as an honest 503, never a fake answer.
+            supervisor = ModelManager(settings)
+            try:
+                supervisor.ensure_loading()
+                await asyncio.wait_for(supervisor._ready_event.wait(), 30)
+                with self.assertRaises(LLMResponseError) as chat_ctx:
+                    await supervisor.wait_ready()
+                self.assertEqual(chat_ctx.exception.error_type, "MODEL_DOWNLOAD_FAILED")
+                self.assertEqual(supervisor.public_state, "MODEL_FAILED")
+                self.assertTrue(supervisor.error_report["permanent"])
+                self.assertIn("404", supervisor.last_error)
+            finally:
+                await supervisor.close()
 
     async def test_credentials_are_never_exposed_in_diagnostics(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -200,113 +209,136 @@ class LocalModelRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 local_model_sha256=digest,
                 local_model_expected_bytes=len(_MODEL_BYTES),
             )
-            manager = LocalModelManager(settings)
-            manager.ensure_loading()
-            await manager.wait_ready(timeout=120)
+            manager = ModelManager(settings)
+            try:
+                await self._start(manager)
+                self.assertEqual(manager.public_state, "MODEL_READY")
+                snap = manager.snapshot(include_source=True)
+                self.assertTrue(snap["ready"])
+                self.assertTrue(snap["modelLoaded"])
+                self.assertTrue(snap["warmupComplete"])
+                self.assertTrue(snap["inferenceTest"], "READY requires a real inference test")
+                self.assertTrue(snap["inferenceAvailable"])
+                self.assertEqual(snap["fileSizeBytes"], len(_MODEL_BYTES))
+                self.assertIsNotNone(snap["memoryRequirement"])
 
-            self.assertEqual(manager.state, "ready")
-            snap = manager.snapshot(include_source=True)
-            self.assertTrue(snap["ready"])
-            self.assertTrue(snap["fileExists"])
-            self.assertTrue(snap["runtimeAvailable"])
-            self.assertTrue(snap["inferenceAvailable"])
-            self.assertEqual(snap["fileSizeBytes"], len(_MODEL_BYTES))
-            self.assertTrue(snap["integrityPinned"])
-            self.assertEqual(snap["sourceCheck"]["status"], 200)
+                # Real tokens out of real llama.cpp, streamed token by token.
+                pieces: list[str] = []
+                text = await manager.generate(
+                    system_prompt="You are EduNova AI.",
+                    user_prompt="what is ml",
+                    max_tokens=16,
+                    on_token=pieces.append,
+                )
+                self.assertTrue(text.strip(), "the local model must produce real output")
+                self.assertTrue(pieces, "streaming must deliver incremental tokens")
 
-            # Real tokens out of real llama.cpp.
-            text = await manager.generate(
-                system_prompt="You are EduNova AI.",
-                user_prompt="what is ml",
-                max_tokens=16,
-            )
-            self.assertTrue(text.strip(), "the local model must produce real output")
-
-            probe = await manager.self_test()
-            self.assertTrue(probe["ok"])
+                probe = await manager.self_test()
+                self.assertTrue(probe["ok"])
+            finally:
+                await manager.close()
 
     async def test_cached_model_is_not_downloaded_again(self):
         with tempfile.TemporaryDirectory() as tmp:
             settings = self._settings(tmp)
-            first = LocalModelManager(settings)
-            first.ensure_loading()
-            await first.wait_ready(timeout=120)
-            self.assertGreaterEqual(first.download_attempts, 1)
+            first = ModelManager(settings)
+            try:
+                await self._start(first)
+                self.assertGreaterEqual(int(first.facts.get("downloadAttempts") or 0), 1)
+            finally:
+                await first.close()
 
             # A fresh manager (i.e. a service restart) over the same cache dir
             # must reuse the file: zero download attempts.
-            second = LocalModelManager(settings)
-            second.ensure_loading()
-            await second.wait_ready(timeout=120)
-            self.assertEqual(second.download_attempts, 0, "cached model was re-downloaded")
-            self.assertEqual(second.state, "ready")
+            second = ModelManager(settings)
+            try:
+                await self._start(second)
+                self.assertEqual(int(second.facts.get("downloadAttempts") or 0), 0, "cached model was re-downloaded")
+                self.assertEqual(second.public_state, "MODEL_READY")
+            finally:
+                await second.close()
 
     async def test_corrupt_cache_is_replaced_not_loaded(self):
         with tempfile.TemporaryDirectory() as tmp:
             settings = self._settings(tmp)
-            manager = LocalModelManager(settings)
-            manager.model_path.parent.mkdir(parents=True, exist_ok=True)
-            manager.model_path.write_bytes(b"NOTGGUF" + b"\x00" * 100_000)
+            path = LocalModelManager(settings).model_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"NOTGGUF" + b"\x00" * 100_000)
 
-            manager.ensure_loading()
-            await manager.wait_ready(timeout=120)
-            self.assertEqual(manager.state, "ready")
-            self.assertEqual(manager.model_path.read_bytes()[:4], b"GGUF")
+            manager = ModelManager(settings)
+            try:
+                await self._start(manager)
+                self.assertEqual(manager.public_state, "MODEL_READY")
+                self.assertEqual(path.read_bytes()[:4], b"GGUF")
+            finally:
+                await manager.close()
 
     async def test_transient_failures_are_retried(self):
         _ModelHTTPHandler.flaky_failures = 2
         try:
             with tempfile.TemporaryDirectory() as tmp:
                 settings = self._settings(tmp, filename="flaky.gguf")
-                manager = LocalModelManager(settings)
-                manager.ensure_loading()
-                await manager.wait_ready(timeout=180)
-                self.assertEqual(manager.state, "ready")
-                self.assertGreater(manager.download_attempts, 1, "503 should have been retried")
+                manager = ModelManager(settings)
+                try:
+                    await self._start(manager, 180)
+                    self.assertEqual(manager.public_state, "MODEL_READY")
+                    self.assertGreater(int(manager.facts.get("downloadAttempts") or 0), 1, "503 should have been retried")
+                finally:
+                    await manager.close()
         finally:
             _ModelHTTPHandler.flaky_failures = 0
 
     async def test_error_page_is_rejected_as_not_a_model(self):
         with tempfile.TemporaryDirectory() as tmp:
             settings = self._settings(tmp, filename="not-a-model.gguf", local_model_min_bytes=4096)
-            manager = LocalModelManager(settings)
-            manager.ensure_loading()
-            with self.assertRaises(LLMResponseError):
-                await manager.wait_ready(timeout=60)
-            self.assertEqual(manager.state, "error")
-            self.assertEqual(manager.error_report["stage"], "verification")
+            manager = ModelManager(settings)
+            try:
+                await self._start(manager, 60)
+                with self.assertRaises(LLMResponseError):
+                    await manager.wait_ready()
+                self.assertEqual(manager.public_state, "MODEL_FAILED")
+                self.assertIn(manager.phase, {"MODEL_DOWNLOAD_FAILED", "MODEL_INVALID"})
+            finally:
+                await manager.close()
 
     async def test_checksum_mismatch_is_fatal(self):
         with tempfile.TemporaryDirectory() as tmp:
             settings = self._settings(tmp, local_model_sha256="0" * 64)
-            manager = LocalModelManager(settings)
-            manager.ensure_loading()
-            with self.assertRaises(LLMResponseError):
-                await manager.wait_ready(timeout=120)
-            self.assertEqual(manager.state, "error")
-            self.assertIn("checksum", manager.error_report["reason"])
-            self.assertFalse(manager.model_path.exists())
+            manager = ModelManager(settings)
+            try:
+                await self._start(manager)
+                with self.assertRaises(LLMResponseError):
+                    await manager.wait_ready()
+                self.assertEqual(manager.public_state, "MODEL_FAILED")
+                self.assertIn("checksum", manager.last_error.lower())
+                self.assertFalse(LocalModelManager(settings).model_path.exists())
+            finally:
+                await manager.close()
 
     # -- planner integration ----------------------------------------------
     async def test_grammar_constrained_json_from_real_runtime(self):
         """The planner contract (valid JSON decision) must hold on real llama.cpp."""
         with tempfile.TemporaryDirectory() as tmp:
             settings = self._settings(tmp)
-            manager = LocalModelManager(settings)
-            llm = LocalLlamaLLM(settings, manager)
-            manager.ensure_loading()
-            await manager.wait_ready(timeout=120)
-            await llm.probe(deep=True)
+            from agent.llm import parse_json_object
+            from agent.local_llm import DECISION_SCHEMA
 
-            decision = await llm.complete_json(
-                system_prompt="Return a decision.",
-                user_prompt="what is ml",
-                max_output_tokens=64,
-            )
-            # Random weights cannot produce a *sensible* plan, but the GBNF
-            # grammar must still force a parseable, schema-shaped object.
-            self.assertIsInstance(decision, dict)
-            self.assertIn("action", decision)
+            manager = ModelManager(settings)
+            try:
+                await self._start(manager)
+                raw = await manager.generate(
+                    system_prompt="Return a decision.",
+                    user_prompt="what is ml",
+                    max_tokens=64,
+                    json_schema=DECISION_SCHEMA,
+                )
+                decision = parse_json_object(raw)
+                # Random weights cannot produce a *sensible* plan, but the GBNF
+                # grammar must still force a parseable, schema-shaped object.
+                self.assertIsInstance(decision, dict)
+                self.assertIn("action", decision)
+            finally:
+                await manager.close()
 
 
 if __name__ == "__main__":

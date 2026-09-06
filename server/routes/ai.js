@@ -72,7 +72,8 @@ async function handleAgentChat(req, res) {
   const base = getAiBaseUrl();
   if (!base) return fail(res, 503, "CONFIG_FAILED", "AI service endpoint is not configured", requestId);
   if (process.env.NODE_ENV === "production" && !process.env.AI_INTERNAL_TOKEN) return fail(res, 503, "AUTH_FAILED", "Internal AI authentication is not configured", requestId);
-  const stream = req.path === "/chat" && /text\/event-stream/i.test(req.headers.accept || "");
+  // POST /ai/stream is always SSE; POST /ai/chat streams when the client asks for it.
+  const stream = req.path === "/stream" || (req.path === "/chat" && /text\/event-stream/i.test(req.headers.accept || ""));
   const controller = new AbortController();
   const started = Date.now();
   res.on("close", () => { if (!res.writableEnded) controller.abort(); });
@@ -159,12 +160,33 @@ router.post("/actions/:token/confirm", auth, aiRateLimit, async (req, res) => {
     res.status(result.success ? 200 : result.status || 400).json(result);
   } catch { fail(res, 500, "DATABASE_FAILED", "Action could not be saved"); }
 });
-router.get("/health", auth, async (req, res) => {
-  try {
-    const response = await axios.get(`${getAiBaseUrl()}/api/ai/health`, { headers: internalHeaders(crypto.randomUUID()), timeout: 10000, validateStatus: () => true });
-    if (!response.data || typeof response.data !== "object") return fail(res, 502, "INVALID_UPSTREAM", "AI health response is invalid");
-    res.status(response.status).json(response.data);
-  } catch { res.status(503).json({ success: false, modelReady: false, status: "error", error: { code: "AI_SERVICE_UNREACHABLE" } }); }
+// Observational status proxies. The API never runs the model; it relays the
+// orchestrator's real state so the frontend can show a precise message
+// (starting / resource insufficient / unreachable) instead of "Try again".
+function proxyStatus(path, timeout = 10000) {
+  return async (req, res) => {
+    const base = getAiBaseUrl();
+    if (!base) return res.status(503).json({ success: false, modelReady: false, modelState: "CONFIG_FAILED", status: "error", error: { code: "CONFIG_FAILED", message: "AI service endpoint is not configured" } });
+    try {
+      const response = await axios.get(`${base}${path}`, { headers: internalHeaders(crypto.randomUUID()), timeout, validateStatus: () => true });
+      if (!response.data || typeof response.data !== "object") return fail(res, 502, "INVALID_UPSTREAM", "AI status response is invalid");
+      const data = response.data;
+      const code = data.errorCode || data.errorStage || (response.status === 401 ? "AUTH_FAILED" : null);
+      if (code && !data.error) data.error = { code, message: data.errorMessage || data.lastError || null };
+      res.status(response.status).json(data);
+    } catch (error) {
+      const code = networkCode(error);
+      res.status(503).json({ success: false, modelReady: false, modelState: "UNREACHABLE", status: "error",
+        error: { code, message: code === "UPSTREAM_TIMEOUT" ? "AI service did not respond in time" : "AI service is unreachable" } });
+    }
+  };
+}
+router.get("/health", auth, proxyStatus("/api/ai/health"));
+router.get("/ready", auth, proxyStatus("/api/ai/ready"));
+router.get("/model/status", auth, proxyStatus("/model/status"));
+router.get("/system/resources", auth, async (req, res) => {
+  if (req.user.role !== "admin") return fail(res, 403, "PERMISSION_DENIED", "Admin diagnostics only");
+  return proxyStatus("/system/resources")(req, res);
 });
 router.get("/diagnose", auth, aiRateLimit, async (req, res) => {
   if (req.user.role !== "admin") return fail(res, 403, "PERMISSION_DENIED", "Admin diagnostics only");
@@ -174,5 +196,6 @@ router.get("/diagnose", auth, aiRateLimit, async (req, res) => {
   } catch (error) { fail(res, 503, networkCode(error), "Model diagnostic failed"); }
 });
 router.post("/chat", auth, aiRateLimit, handleAgentChat);
+router.post("/stream", auth, aiRateLimit, handleAgentChat);
 router.post("/query", auth, aiRateLimit, handleAgentChat);
 module.exports = router;

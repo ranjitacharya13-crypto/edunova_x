@@ -265,44 +265,65 @@ function safeAIErrorDetail(detail) {
   return text;
 }
 
-export function aiRequestErrorMessage(status, detail) {
+// Precise, user-facing messages per backend error code. The backend (API
+// gateway -> AI orchestrator -> inference service) always classifies failures;
+// the UI never collapses them into a generic "Try again".
+const AI_ERROR_MESSAGES = {
+  MODEL_LOADING: "EduNova AI is starting — the model is loading on the AI server. This usually takes under a minute after a deploy or restart.",
+  MODEL_NOT_READY: "EduNova AI is starting — the model is not ready yet. Please wait a moment; your message was not sent.",
+  MODEL_RESOURCE_INSUFFICIENT: "EduNova AI cannot run right now: the AI server does not have enough memory for the model. This is a deployment resource issue that an administrator must fix — sending the question again will not help.",
+  MODEL_STARTUP_FAILED: "EduNova AI is unavailable because the model failed to start on the AI server. An administrator has the exact failure stage in the model status page.",
+  MODEL_FAILED: "EduNova AI is unavailable because the model failed on the AI server. An administrator needs to check the AI service.",
+  MODEL_DOWNLOAD_FAILED: "EduNova AI is unavailable: the AI server could not download its model. An administrator needs to check the AI service network/model settings.",
+  MODEL_INVALID: "EduNova AI is unavailable: the model file on the AI server failed validation. An administrator needs to check the AI service.",
+  MODEL_LOAD_FAILED: "EduNova AI is unavailable: the model could not be loaded into memory on the AI server.",
+  WARMUP_FAILED: "EduNova AI is unavailable: the model loaded but failed its startup test on the AI server.",
+  OUT_OF_MEMORY: "EduNova AI ran out of memory on the AI server. This is a deployment resource issue that an administrator must fix.",
+  DEPENDENCY_FAILED: "EduNova AI is unavailable: the AI server is missing its inference runtime. An administrator needs to check the deployment build.",
+  CONFIG_FAILED: "EduNova AI is not configured correctly on the server (AI service endpoint or model settings). An administrator needs to fix the configuration.",
+  AUTH_FAILED: "EduNova AI authentication failed. Please sign in again; if it continues, the AI service's internal authentication needs attention.",
+  AI_SERVICE_UNREACHABLE: "EduNova AI service is unavailable: the API could not reach the AI server. If this persists, the AI service may be down or still deploying.",
+  UPSTREAM_TIMEOUT: "The AI server did not respond in time. It may be overloaded — wait a moment before asking again.",
+  MODEL_BUSY: "EduNova AI is answering another request right now. Wait a few seconds and send your message again — it was not lost.",
+  RATE_LIMITED: "You are sending AI requests too quickly. Wait a few seconds and send your message again.",
+  INFERENCE_FAILED: "EduNova AI hit an inference error while generating this answer. The model is running, so asking again is reasonable; if it repeats, an administrator should check the AI service logs.",
+  OUTPUT_LIMIT_REACHED: "EduNova AI reached its maximum answer length before finishing and did not return a partial answer. Try a narrower question.",
+  INVALID_MODEL_OUTPUT: "EduNova AI produced an invalid response for this question. Rephrasing the question usually helps.",
+  STREAM_INTERRUPTED: "The connection to EduNova AI was interrupted before the answer finished. Check your network connection and ask again.",
+  INVALID_STREAM: "EduNova AI did not return a valid response stream. If this repeats, the AI service needs attention.",
+  DATABASE_FAILED: "EduNova could not read your data from the database for this request. This is a server-side database issue, not an AI problem.",
+  PERMISSION_DENIED: "You do not have permission for this AI action.",
+  INVALID_INPUT: "This message could not be processed. Shorten or rephrase it and send it again.",
+  NETWORK_ERROR: "EduNova could not reach the API. Check your internet connection.",
+};
+
+export function aiErrorCodeMessage(code, detail) {
+  const key = String(code || "").toUpperCase();
+  return AI_ERROR_MESSAGES[key] || safeAIErrorDetail(detail) || "";
+}
+
+export function aiRequestErrorMessage(status, detail, code) {
   const safeDetail = safeAIErrorDetail(detail);
-  // Preserve the backend's precise classification when available.
-  // The FastAPI AI service now returns distinct messages:
-  //  - 503 + "configuration requires attention" => LLM credentials/model/endpoint misconfig
-  //  - 502 / 503 + "temporarily unavailable" => transient provider outage
-  //  - 429 => rate limit, 401/403 => auth
-  // If the backend supplied a safe, specific detail, surface it instead of a generic fallback.
-  const isConfigMessage = /configuration requires attention/i.test(safeDetail);
-  if (status === 404) {
-    return safeDetail || "The EduNova AI endpoint is unavailable. Please try again after the service is redeployed.";
+  const fromCode = aiErrorCodeMessage(code);
+  if (fromCode) {
+    // Append the backend's specific numbers (e.g. required/available MiB) when present.
+    const numbers = /\d+\s*MiB/.test(safeDetail) ? ` (${safeDetail})` : "";
+    return fromCode + numbers;
   }
-  if (status === 401 || status === 403) {
-    return safeDetail || "EduNova AI authentication failed. Please sign in again; if it continues, the AI service configuration needs attention.";
-  }
-  if (status === 429) {
-    return safeDetail || "EduNova AI is receiving too many requests at once. Wait a few seconds and send your message again — it will not be lost.";
-  }
-  if (status === 503) {
-    // 503 from the AI service during warm-up means the model is still being
-    // prepared. The API gateway queues the request and streams a "preparing"
-    // status instead of returning this to the student, so this fallback is
-    // only reached when no specific backend message exists.
-    if (safeDetail) return safeDetail;
-    return "EduNova AI is preparing its model — your question is queued and will be answered automatically.";
-  }
-  if (status === 502) {
-    return safeDetail || "The AI model provider is temporarily unavailable. Please try again in a moment.";
-  }
-  if (status === 504) {
-    return safeDetail || "EduNova AI is still working on your request. If the connection dropped, send the message again.";
-  }
-  if (status >= 500) {
-    // Generic fallback for other 5xx, but still honor a safe config hint if present
-    if (isConfigMessage) return safeDetail;
-    return safeDetail || "The EduNova AI backend is temporarily unavailable. Please try again in a moment.";
-  }
-  return safeDetail || "EduNova AI could not complete this request. Please try again.";
+  if (status === 404) return safeDetail || "The EduNova AI endpoint was not found. The API deployment may be missing the AI routes.";
+  if (status === 401 || status === 403) return safeDetail || AI_ERROR_MESSAGES.AUTH_FAILED;
+  if (status === 429) return safeDetail || AI_ERROR_MESSAGES.RATE_LIMITED;
+  if (status === 503) return safeDetail || AI_ERROR_MESSAGES.AI_SERVICE_UNREACHABLE;
+  if (status === 502) return safeDetail || AI_ERROR_MESSAGES.INFERENCE_FAILED;
+  if (status === 504) return safeDetail || AI_ERROR_MESSAGES.UPSTREAM_TIMEOUT;
+  if (status >= 500) return safeDetail || "The EduNova API hit a server error while handling this AI request.";
+  return safeDetail || "EduNova AI could not complete this request.";
+}
+
+function extractAIError(body) {
+  const raw = body?.error || body?.detail || "";
+  if (typeof raw === "object" && raw) return { code: raw.code || body?.errorStage || "", message: raw.message || "" };
+  return { code: body?.errorStage || body?.code || "", message: String(raw || "") };
 }
 
 export const confirmAIAction = async (confirmationToken) => {
@@ -325,6 +346,7 @@ export const AI_STATUS = {
   LOADING: "loading",
   READY: "ready",
   BUSY: "busy",
+  RESOURCE_INSUFFICIENT: "resource_insufficient",
   UNAVAILABLE: "unavailable",
 };
 
@@ -337,7 +359,8 @@ const AI_STATUS_LABELS = {
   [AI_STATUS.LOADING]: "EduNova AI is loading its model...",
   [AI_STATUS.READY]: "Ready to help",
   [AI_STATUS.BUSY]: "EduNova AI is answering...",
-  [AI_STATUS.UNAVAILABLE]: "EduNova AI is temporarily unavailable.",
+  [AI_STATUS.RESOURCE_INSUFFICIENT]: "EduNova AI cannot run: the AI server has too little memory for the model.",
+  [AI_STATUS.UNAVAILABLE]: "EduNova AI service is unavailable.",
 };
 
 export const aiStatusLabel = (status) =>
@@ -353,11 +376,14 @@ export function classifyAIHealth(body, httpStatus) {
   if (body.modelReady === true && httpStatus < 400) return AI_STATUS.READY;
   if (body.permanentFailure || body.model?.permanentFailure) return AI_STATUS.UNAVAILABLE;
 
+  const code = String(body.errorCode || body.errorStage || body.error?.code || "").toUpperCase();
+  if (code === "MODEL_RESOURCE_INSUFFICIENT" || code === "OUT_OF_MEMORY") return AI_STATUS.RESOURCE_INSUFFICIENT;
+  if (code === "AI_SERVICE_UNREACHABLE" || code === "UPSTREAM_TIMEOUT" || code === "CONFIG_FAILED") return AI_STATUS.UNAVAILABLE;
   const state = String(body.modelState || body.lifecycle || body.status || "").toLowerCase();
-  if (["error", "failed", "model_unavailable", "missing_config"].includes(state)) {
+  if (["error", "failed", "model_failed", "model_unavailable", "missing_config", "unreachable"].includes(state)) {
     return AI_STATUS.UNAVAILABLE;
   }
-  if (["not_started", "starting", "cold"].includes(state)) return AI_STATUS.STARTING;
+  if (["not_started", "starting", "cold", "model_not_ready", "boot"].includes(state)) return AI_STATUS.STARTING;
   if (["downloading", "loading", "warming", "model_loading"].includes(state)) {
     return AI_STATUS.LOADING;
   }
@@ -382,15 +408,20 @@ export const getAIStatus = async () => {
       label: aiStatusLabel(status),
       terminal: Boolean(res.data?.permanentFailure || res.data?.model?.permanentFailure),
       // Progress detail (e.g. "downloading 42%") for the starting state only.
-      detail: describeModelProgress(res.data?.model),
+      code: res.data?.errorCode || res.data?.errorStage || res.data?.error?.code || null,
+      detail: describeModelProgress(res.data?.model) || safeAIErrorDetail(res.data?.errorMessage || res.data?.error?.message),
     };
   } catch {
-    return { status: AI_STATUS.UNKNOWN, label: aiStatusLabel(AI_STATUS.UNKNOWN), detail: "" };
+    return { status: AI_STATUS.UNAVAILABLE, label: AI_ERROR_MESSAGES.NETWORK_ERROR, code: "NETWORK_ERROR", detail: "" };
   }
 };
 
 function describeModelProgress(model) {
   if (!model || typeof model !== "object") return "";
+  if (model.resource && model.resource.required_mb) {
+    return `Model needs ${model.resource.required_mb} MiB; server has ${model.resource.available_mb} MiB (recommended ${model.resource.recommended_mb} MiB)`;
+  }
+  if (model.state === "MODEL_LOADING" || model.lifecycle === "MODEL_LOADING") return "Loading model into memory";
   if (model.state === "downloading") {
     const done = Number(model.downloadedBytes) || 0;
     const total = Number(model.expectedSizeBytes) || 0;
@@ -419,14 +450,12 @@ export const queryAIEngine = async ({ message, conversationId, applicationContex
     return res.data;
   } catch (err) {
     const status = err.response?.status;
-    const rawDetail = err.response?.data?.error || err.response?.data?.detail;
-    const detail = typeof rawDetail === "object" ? rawDetail?.message : rawDetail;
+    const { code, message } = extractAIError(err.response?.data);
     return {
       success: false,
       status,
-      error: err.response
-        ? aiRequestErrorMessage(status, detail)
-        : "The EduNova AI backend is unreachable. Check your connection and try again.",
+      code: err.response ? code || null : "NETWORK_ERROR",
+      error: err.response ? aiRequestErrorMessage(status, message, code) : AI_ERROR_MESSAGES.NETWORK_ERROR,
     };
   }
 };
@@ -470,20 +499,19 @@ export const streamAIEngine = async ({
     cleanup();
     if (callerSignal?.aborted) throw new DOMException("Aborted", "AbortError");
     console.error("[EduNova AI] Backend request failed:", error);
-    throw new Error("The EduNova AI backend is unreachable. Check your connection and try again.");
+    throw Object.assign(new Error(AI_ERROR_MESSAGES.NETWORK_ERROR), { code: "NETWORK_ERROR" });
   }
 
   if (!response.ok) {
     cleanup();
+    let code = "";
     let detail = "";
     try {
-      const body = await response.json();
-      const rawDetail = body.error || body.detail || "";
-      detail = typeof rawDetail === "object" ? rawDetail?.message || "" : rawDetail;
+      ({ code, message: detail } = extractAIError(await response.json()));
     } catch {
       // Use the status-specific, user-safe fallback for non-JSON proxy errors.
     }
-    throw new Error(aiRequestErrorMessage(response.status, detail));
+    throw Object.assign(new Error(aiRequestErrorMessage(response.status, detail, code)), { code: code || null, status: response.status });
   }
   if (!response.body) {
     cleanup();
@@ -509,7 +537,7 @@ export const streamAIEngine = async ({
     } catch {
       // A truncated or malformed event must never surface as a raw parser
       // error; treat it like any other recoverable stream failure.
-      throw new Error("EduNova AI returned a malformed update. Please try again.");
+      throw Object.assign(new Error(AI_ERROR_MESSAGES.INVALID_STREAM), { code: "INVALID_STREAM" });
     }
     // Real generated tokens, emitted by llama.cpp as it decodes. Accumulate
     // them so the caller can render the answer progressively, and so a stream
@@ -521,7 +549,10 @@ export const streamAIEngine = async ({
     }
     onEvent?.(event);
     if (event.type === "answer") finalAnswer = event;
-    if (event.type === "error") throw new Error(`${event.error?.code || "INFERENCE_FAILED"}: ${event.message || "EduNova AI request failed"}`);
+    if (event.type === "error") {
+      const code = event.error?.code || "INFERENCE_FAILED";
+      throw Object.assign(new Error(aiRequestErrorMessage(502, event.error?.message || event.message, code)), { code });
+    }
   };
 
   try {
@@ -552,7 +583,7 @@ export const streamAIEngine = async ({
   if (!finalAnswer) {
     // Partial tokens are never promoted to a successful answer. A healthy
     // stream always ends with the authoritative, complete answer event.
-    throw new Error("STREAM_INTERRUPTED: The answer did not finish. Partial output is not a complete response.");
+    throw Object.assign(new Error(AI_ERROR_MESSAGES.STREAM_INTERRUPTED), { code: "STREAM_INTERRUPTED" });
   }
   return finalAnswer;
 };
