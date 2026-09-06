@@ -145,7 +145,15 @@ services:
         value: https://edunova-x.ranjitacharya13.workers.dev
       - key: LLM_PROVIDER
         value: local
-      # Public HTTPS URL of edunova-inference (set after its first deploy).
+      # REQUIRED. Public HTTPS URL of edunova-inference, no trailing slash.
+      # Copy the exact URL Render assigns it (Dashboard -> edunova-inference ->
+      # the .onrender.com URL). `sync: false` because that URL does not exist
+      # until the inference service's first deploy; never commit a guess.
+      #
+      # edunova-ai now FAILS FAST without this value: the process refuses to
+      # start and exits non-zero (CONFIG_FAILED / AI_INFERENCE_URL_MISSING in
+      # the deploy log) instead of reporting a green /health and answering the
+      # first chat with a 503. So an unset value surfaces as a red deploy.
       - key: AI_INFERENCE_URL
         sync: false
       # Per-request ceiling for one inference call (network safety net only;
