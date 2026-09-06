@@ -92,7 +92,7 @@ The new implementation identifies itself as **v5.0.0** in AI/API health and the 
 | Live web research and mixed student/current answers | UNVERIFIED | Code/regression contracts are not verified live results |
 | Physical WebXR camera / 2-GB phone | UNVERIFIED | Browser capability/fallback paths are tested; actual phone/camera is unavailable |
 | Deployed AI/DB/RAG/AR combined acceptance | BLOCKED | No authenticated production test session/deployment credentials; inadequate observed AI capacity |
-| GitHub push / merge | FINAL IMPLEMENTATION PUSHED | Authentication was restored. Commits `4edf724` and `bdab788` are pushed to the session branch; [PR #57](https://github.com/ranjitacharya13-crypto/edunova_x/pull/57) records the authoritative merge outcome. Production acceptance is separate. |
+| GitHub push / merge | PASS — PR #57 MERGED | Merge commit `05c2430741548bdcb3baceff5848220e787851c6`, confirmed by GitHub at `2026-09-06T11:47:55Z`. Production acceptance is separate. |
 
 ## Deployment boundaries
 
@@ -103,7 +103,7 @@ The actual public hosts observed are:
 
 The frontend uses relative `/api` requests, with Cloudflare/Vercel server-side proxying to the known API. Camera frames are not proxied to AI. The Cloudflare Worker is a streaming network proxy, never a model host.
 
-GitHub access is available for application branch/PR operations; the first push was rejected because the connection lacks workflow-edit permission. `.github/ci/quality.workflow.yml` is an **inactive** template, not an executed workflow. Access to Actions secrets returned HTTP 403, and Render/Cloudflare production credentials and Mongo credentials are not available. Deployment checks on the first pushed revision: **Cloudflare Workers build FAILED; both Vercel builds FAILED**. The GitHub check exposes provider dashboard links, not diagnostic logs. The local equivalent Worker build/bundle succeeds; the actual remote failure cause remains unverified, and is not claimed fixed.
+GitHub access is available for application branch/PR operations; the first push was rejected because the connection lacks workflow-edit permission. `.github/ci/quality.workflow.yml` is an **inactive** template, not an executed workflow. Access to Actions secrets returned HTTP 403, and Render/Cloudflare production credentials and Mongo credentials are not available. Deployment checks on the first pushed revision failed on Cloudflare and both Vercel integrations. **Later Cloudflare builds succeeded**, including the final branch revision and the PR #57 merge commit. The merged-commit Vercel checks still failed. Provider error logs were not available, so the initial remote failure's exact cause is not asserted.
 
 No new production account or demo data has been inserted. Tests never operate on a live database. A merge may trigger existing connected deployment integrations, but deployment must be verified separately; it is not assumed successful.
 
@@ -125,3 +125,18 @@ No new production account or demo data has been inserted. Tests never operate on
 4. `gh auth status` then explicitly reported that the configured token is no longer valid, and the repository API returned **401 Bad credentials**. No credentials are requested or stored in this report/chat.
 5. At that point the final changes were not pushed and the PR was unmerged; all changes were preserved locally on the same session branch.
 6. **The user reconnected GitHub in Arena.** Authentication was re-verified, and the final implementation commit `4edf724` plus report commit `bdab788` were successfully pushed to `arena/01a07641-edunova-x`. The requested merge is tracked by PR #57; no deployment pass is implied by that repository operation.
+
+7. **PR #57 was successfully merged** via GitHub's merge API with exact-head protection, without overriding branch protection. Confirmed merge SHA: `05c2430741548bdcb3baceff5848220e787851c6`; time: `2026-09-06T11:47:55Z`.
+
+## Post-merge public deployment checks
+
+Fresh, cache-busted public requests after the merge established:
+
+- **Cloudflare build: SUCCESS** for merge commit `05c2430`. Production `/ar-assets/README.md` serves the new original teaching-asset manifest. `/api/ai/health` through the frontend now returns an authentication error instead of the SPA; the new API proxy is active.
+- **Express API: v5.0.0, database connected**, reported by `https://edunova-api-y3rx.onrender.com/health?verification=05c243`. This verifies deployment/liveness and connection state, not student CRUD correctness.
+- **AR route is deployed and protected**: `https://edunova-api-y3rx.onrender.com/api/ar/lessons?verification=05c243` changed from `Route not found` to `No token provided`. Authenticated lesson retrieval/quiz grading is still not verified.
+- **AI service remains v4.0.0** at the fresh health check. The new model service deployment is NOT confirmed; the old 0.20-token/sec measurement is not a new-code benchmark.
+- Both merged-commit Vercel deployments remain failed. The actual production frontend is Cloudflare, which now passes its build check.
+- A follow-up makes `requirements.txt` itself pin Linux/Windows CPU PyTorch. Previously the CPU choice depended on running the new Docker/Render preinstall command; an existing provider build command that only uses `pip -r` could otherwise select CUDA transitively through `accelerate`. Deployed CPU imports are still not claimed verified.
+
+**Final acceptance remains incomplete:** frontend/API deployment passed these public checks, but the self-hosted model upgrade, authenticated Mongo/RAG/AR/quiz flow, physical phone/camera and latency targets remain blocked or unverified.
