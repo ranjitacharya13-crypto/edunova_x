@@ -1,8 +1,16 @@
-"""Project-controlled byte-level BPE tokenizer (EduNovaTokenizer v1).
+"""Project-controlled byte-level BPE tokenizer (EduNovaTokenizer v2).
 
 Byte fallback means any Unicode (including Devanagari, Tamil, math, JSON)
 tokenizes without UNK holes. Vocabulary is frozen at release; a vocab change
 is a major model version.
+
+v2 (edunova-tok-v2) fixes the v1 train/infer mismatch: v1 kept multi-char
+tokens (STRUCTURE_TOKENS, TOOL_TOKENS, JSON scaffolding) in the vocab but
+encode() was byte-only, so the decoder never saw them during training and
+never emitted them at inference. v2 encodes with a longest-match scan over
+all multi-char vocab tokens (specials, structure, tool names, JSON
+wrappers/fields, edu terms); unmatched regions fall back to UTF-8 bytes and
+then BPE merges. Atomic tokens are never split or merged by BPE.
 """
 
 from __future__ import annotations
@@ -10,12 +18,18 @@ from __future__ import annotations
 from collections import Counter
 from pathlib import Path
 import json
-import re
 from typing import Iterable
 
-from .specials import EDU_TERMS, SPECIAL_TOKENS, STRUCTURE_TOKENS, TOOL_TOKENS
+from .specials import (
+    EDU_TERMS,
+    JSON_FIELD_TOKENS,
+    JSON_WRAPPER_TOKENS,
+    SPECIAL_TOKENS,
+    STRUCTURE_TOKENS,
+    TOOL_TOKENS,
+)
 
-TOKENIZER_VERSION = "edunova-tok-v1"
+TOKENIZER_VERSION = "edunova-tok-v2"
 
 
 class EduNovaTokenizer:
@@ -25,8 +39,10 @@ class EduNovaTokenizer:
             tokens = list(SPECIAL_TOKENS)
             tokens.extend(STRUCTURE_TOKENS)
             tokens.extend(TOOL_TOKENS)
+            tokens.extend(JSON_WRAPPER_TOKENS)
+            tokens.extend(JSON_FIELD_TOKENS)
             tokens.extend(EDU_TERMS)
-            # bytes 0-255 as single-char tokens
+            # bytes 0-255 as single-char tokens (do not duplicate atomics)
             for i in range(256):
                 ch = chr(i)
                 if ch not in tokens:
@@ -42,13 +58,46 @@ class EduNovaTokenizer:
         self.eos_id = self.token_to_id["<eos>"]
         self.unk_id = self.token_to_id["<unk>"]
         self._merge_ranks = {pair: i for i, pair in enumerate(self.merges)}
+        # Atomic multi-char tokens: matched longest-first, never BPE-merged.
+        # Byte tokens already in the vocab are never treated as atomic.
+        atomics = [t for t in self.token_to_id if len(t) > 1 and not t.startswith("<extra_")]
+        # Also keep multi-char tokens learned by BPE non-atomic (they are merge outputs).
+        merged = {a + b for a, b in self.merges}
+        self._atomics = sorted((t for t in atomics if t not in merged), key=len, reverse=True)
+        self._atomic_set = set(self._atomics)
+        self._atomic_by_first: dict[str, list[str]] = {}
+        for tok in self._atomics:
+            self._atomic_by_first.setdefault(tok[0], []).append(tok)
 
     @property
     def vocab_size(self) -> int:
         return len(self.token_to_id)
 
-    def _to_bytes(self, text: str) -> list[str]:
-        return [chr(b) for b in text.encode("utf-8")]
+    def is_atomic_id(self, token_id: int) -> bool:
+        return self.id_to_token.get(int(token_id), "") in self._atomic_set
+
+    def _char_bytes(self, ch: str) -> list[str]:
+        return [chr(b) for b in ch.encode("utf-8")]
+
+    def _atomize(self, text: str) -> list[tuple[str, bool]]:
+        """Split text into (symbol, is_atomic). Unmatched chars become UTF-8 bytes."""
+        out: list[tuple[str, bool]] = []
+        i = 0
+        n = len(text)
+        while i < n:
+            matched = None
+            for cand in self._atomic_by_first.get(text[i], ()):
+                if text.startswith(cand, i):
+                    matched = cand
+                    break
+            if matched is not None:
+                out.append((matched, True))
+                i += len(matched)
+            else:
+                for sym in self._char_bytes(text[i]):
+                    out.append((sym, False))
+                i += 1
+        return out
 
     def _apply_merges(self, symbols: list[str]) -> list[str]:
         if not self._merge_ranks:
@@ -74,8 +123,29 @@ class EduNovaTokenizer:
             symbols = new
         return symbols
 
+    def _encode_symbols(self, text: str) -> list[str]:
+        """Atomize, then apply BPE merges only inside non-atomic runs."""
+        atomized = self._atomize(text or "")
+        symbols: list[str] = []
+        run: list[str] = []
+
+        def flush() -> None:
+            nonlocal run
+            if run:
+                symbols.extend(self._apply_merges(run))
+                run = []
+
+        for sym, atomic in atomized:
+            if atomic:
+                flush()
+                symbols.append(sym)
+            else:
+                run.append(sym)
+        flush()
+        return symbols
+
     def encode(self, text: str, add_special: bool = False) -> list[int]:
-        symbols = self._apply_merges(self._to_bytes(text or ""))
+        symbols = self._encode_symbols(text)
         ids = [self.token_to_id.get(s, self.unk_id) for s in symbols]
         if add_special:
             return [self.bos_id] + ids + [self.eos_id]
@@ -100,16 +170,16 @@ class EduNovaTokenizer:
         if untrusted:
             chunks.extend(["<untrusted>", untrusted, "</untrusted>"])
         chunks.append("<assistant>")
-        ids: list[int] = []
-        for chunk in chunks:
-            if chunk.startswith("<") and chunk in self.token_to_id:
-                ids.append(self.token_to_id[chunk])
-            else:
-                ids.extend(self.encode(chunk))
+        text = "".join(chunks)
+        ids = self.encode(text)
         if assistant is not None:
             ids.extend(self.encode(assistant))
             ids.append(self.eos_id)
         return ids
+
+    def prompt_ids(self, system: str, user: str, untrusted: str = "") -> list[int]:
+        """Encoder-side chat prefix ending at <assistant> (aligned with SFT)."""
+        return self.encode_chat(system, user, assistant=None, untrusted=untrusted)
 
     def pad(self, sequences: list[list[int]], max_len: int | None = None) -> tuple[list[list[int]], list[list[int]]]:
         max_len = max_len or max((len(s) for s in sequences), default=0)
@@ -144,11 +214,22 @@ class EduNovaTokenizer:
         tok = cls()
         if vocab_size <= tok.vocab_size:
             return tok
+        # Corpus as byte-only segments split at atomic tokens; merges never
+        # cross an atomic boundary, mirroring encode().
+        segments: list[list[str]] = []
         stats: Counter[tuple[str, str]] = Counter()
-        corpus: list[list[str]] = []
         for text in texts:
-            symbols = tok._to_bytes(text)
-            corpus.append(symbols)
+            run: list[str] = []
+            for sym, atomic in tok._atomize(text):
+                if atomic:
+                    if run:
+                        segments.append(run)
+                        run = []
+                else:
+                    run.append(sym)
+            if run:
+                segments.append(run)
+        for symbols in segments:
             stats.update((symbols[i], symbols[i + 1]) for i in range(len(symbols) - 1))
         merges: list[tuple[str, str]] = []
         token_to_id = dict(tok.token_to_id)
@@ -162,10 +243,9 @@ class EduNovaTokenizer:
                 continue
             token_to_id[merged] = len(token_to_id)
             merges.append(pair)
-            # Refresh pair stats cheaply on a sample of the corpus.
-            new_corpus = []
+            new_segments = []
             stats = Counter()
-            for symbols in corpus:
+            for symbols in segments:
                 i, out = 0, []
                 while i < len(symbols):
                     if i < len(symbols) - 1 and symbols[i] == pair[0] and symbols[i + 1] == pair[1]:
@@ -174,9 +254,9 @@ class EduNovaTokenizer:
                     else:
                         out.append(symbols[i])
                         i += 1
-                new_corpus.append(out)
+                new_segments.append(out)
                 stats.update((out[j], out[j + 1]) for j in range(len(out) - 1))
-            corpus = new_corpus
+            segments = new_segments
         while len(token_to_id) < vocab_size:
             token_to_id[f"<extra_{len(token_to_id)}>"] = len(token_to_id)
         trained = cls(vocab=token_to_id, merges=merges)

@@ -1,11 +1,22 @@
 {
   "production": null,
-  "note": "Production inference remains llama.cpp GGUF until HRM golden JSON validity and tool accuracy pass promotion gates.",
+  "note": "Production inference remains llama.cpp GGUF. HRM v0.2-sft: JSON syntax solved (1.00); tool routing 0.4786/0.50 below the 0.70 promotion gates.",
   "history": [
     {
       "event": "register",
       "version": "v0.1-base",
       "date": "2026-09-08T00:00:00+00:00"
+    },
+    {
+      "event": "register",
+      "version": "v0.2-sft",
+      "date": "2026-09-08T17:55:22.625117+00:00"
+    },
+    {
+      "event": "promotion_refused",
+      "version": "v0.2-sft",
+      "reason": "tool_name_accuracy 0.4786 and plan_tool_accuracy 0.50 below 0.70 gate; production stays null (llama.cpp default)",
+      "date": "2026-09-08T17:55:22.625117+00:00"
     }
   ],
   "models": {
@@ -27,6 +38,44 @@
         "json_validity": 0.0
       },
       "date": "2026-09-08T00:00:00+00:00"
+    },
+    "v0.2-sft": {
+      "model_version": "v0.2-sft",
+      "architecture_version": "hrm-v1",
+      "tokenizer_version": "edunova-tok-v2",
+      "dataset_version": "edunova-hrm-sft-v2",
+      "training_stage": "sft",
+      "training_configuration": "configs/model/20m.yaml",
+      "checkpoint": "post_training/checkpoints/edunova-hrm-20m-sft-r600",
+      "parent_model": null,
+      "adapters": [],
+      "evaluation": {
+        "parameter_count": 22789248,
+        "steps": 600,
+        "train_loss_avg": 0.5481671413313598,
+        "train_structure_token_accuracy": 0.980484315929294,
+        "val_structure_token_accuracy": 0.8705636743215032,
+        "val_tool_accuracy": 0.6,
+        "val_task_accuracy": 0.85,
+        "golden_plan_tool_accuracy": 0.5,
+        "golden_plan_task_accuracy": 0.5,
+        "golden_json_syntax_constrained": 1.0,
+        "golden_json_syntax_unconstrained": 1.0,
+        "golden_schema_constrained": 1.0,
+        "golden_schema_unconstrained": 1.0,
+        "bench_cases": 117,
+        "bench_json_syntax_constrained": 1.0,
+        "bench_json_syntax_unconstrained": 1.0,
+        "tool_name_accuracy": 0.4786,
+        "rss_after_generate_mib": 626.2,
+        "fits_render_free_512mib": false,
+        "promotion_gates": {
+          "json_syntax": ">=0.70 PASS",
+          "tool_name_accuracy": "0.4786 < 0.70 FAIL",
+          "plan_tool_accuracy": "0.50 < 0.70 FAIL"
+        }
+      },
+      "date": "2026-09-08T17:55:22.625117+00:00"
     }
   }
 }
