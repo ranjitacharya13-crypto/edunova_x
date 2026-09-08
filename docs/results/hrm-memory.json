@@ -1,20 +1,26 @@
 {
-  "date": "2026-09-08T17:53:49Z",
+  "date": "2026-09-08T18:30:07Z",
   "python": "3.11.2",
-  "checkpoint": "post_training/checkpoints/edunova-hrm-20m-sft-r600",
+  "checkpoint": "post_training/checkpoints/edunova-hrm-20m-sft",
   "measurements": {
-    "baseline_rss_mib": 11.4,
-    "after_import_torch_rss_mib": 486.9,
-    "checkpoint_disk_mib": 86.98,
-    "after_model_load_rss_mib": 619.9,
-    "after_generate_rss_mib": 626.2,
-    "generated_tokens": 8,
-    "generate_wall_time_sec": 0.068,
-    "sample_output": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{}}",
-    "weights_only_mib": 86.93
+    "python_baseline_rss_mib": 11.5,
+    "after_import_torch_rss_mib": 485.2,
+    "torch_num_threads": 1,
+    "after_tokenizer_rss_mib": 487.0,
+    "after_model_construct_rss_mib": 583.5,
+    "checkpoint_disk_mib": 87.02,
+    "after_model_load_rss_mib": 671.1,
+    "weights_only_mib": 86.98,
+    "after_plan_rss_mib": 675.9,
+    "after_generate_rss_mib": 675.9,
+    "peak_rss_mib": 675.9,
+    "generated_tokens": 12,
+    "generate_wall_time_sec": 0.117,
+    "sample_output": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{\"subject\":\"Chemistry\"}}"
   },
-  "torch_version": "2.14.0+cu130",
-  "parameters": 22789248,
+  "torch_version": "2.8.0+cu128",
+  "parameters": 22800768,
   "tokenizer_version": "edunova-tok-v2",
-  "render_free_512_fits": false
+  "render_free_512_fits": false,
+  "render_free_verdict": "DOES_NOT_FIT \u2014 torch runtime + weights exceed 512 MiB"
 }

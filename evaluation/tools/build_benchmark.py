@@ -18,7 +18,7 @@ from golden import GOLDEN_CASES  # noqa: E402
 OUT = Path(__file__).resolve().parent / "benchmark.jsonl"
 SFT_DIR = ROOT / "post_training" / "datasets" / "sft"
 
-CASES: list[tuple[str, str]] = [
+CASES: list[tuple] = [
     # get_attendance
     ("How many lectures did I bunk last month?", "get_attendance"),
     ("Am I above the attendance cutoff?", "get_attendance"),
@@ -122,20 +122,20 @@ CASES: list[tuple[str, str]] = [
     ("Look up this week's Nobel announcements.", "web_search"),
     ("Search the internet for new vaccine research.", "web_search"),
     # open_url
-    ("Open https://example.edu/geo/latitude.", "open_url"),
-    ("Visit https://example.edu/cs/recursion page.", "open_url"),
-    ("Open the link https://example.edu/news/exam-dates.", "open_url"),
-    ("Load https://example.edu/bio/ecosystems.", "open_url"),
+    ("Open https://example.edu/geo/latitude.", "open_url", {"url": "https://example.edu/geo/latitude"}),
+    ("Visit https://example.edu/cs/recursion page.", "open_url", {"url": "https://example.edu/cs/recursion"}),
+    ("Open the link https://example.edu/news/exam-dates.", "open_url", {"url": "https://example.edu/news/exam-dates"}),
+    ("Load https://example.edu/bio/ecosystems.", "open_url", {"url": "https://example.edu/bio/ecosystems"}),
     # extract_webpage
-    ("Extract text from https://example.edu/math/vectors.", "extract_webpage"),
-    ("Scrape https://example.edu/chem/acids-bases.", "extract_webpage"),
-    ("Read and extract https://example.edu/history/ww2 summary.", "extract_webpage"),
-    ("Pull main content from https://example.edu/physics/optics.", "extract_webpage"),
+    ("Extract text from https://example.edu/math/vectors.", "extract_webpage", {"url": "https://example.edu/math/vectors"}),
+    ("Scrape https://example.edu/chem/acids-bases.", "extract_webpage", {"url": "https://example.edu/chem/acids-bases"}),
+    ("Read and extract https://example.edu/history/ww2 summary.", "extract_webpage", {"url": "https://example.edu/history/ww2"}),
+    ("Pull main content from https://example.edu/physics/optics.", "extract_webpage", {"url": "https://example.edu/physics/optics"}),
     # calculator
-    ("What is 55 times 19?", "calculator"),
-    ("Compute 1000 divided by 8.", "calculator"),
-    ("Evaluate (12 + 8) squared.", "calculator"),
-    ("How much is 20 percent of 450?", "calculator"),
+    ("What is 55 times 19?", "calculator", {"expression": "55*19"}),
+    ("Compute 1000 divided by 8.", "calculator", {"expression": "1000/8"}),
+    ("Evaluate (12 + 8) squared.", "calculator", {"expression": "(12+8)**2"}),
+    ("How much is 20 percent of 450?", "calculator", {"expression": "0.20*450"}),
     # get_current_datetime
     ("What's the date today?", "get_current_datetime"),
     ("Current time please.", "get_current_datetime"),
@@ -189,13 +189,21 @@ def main() -> None:
     sft = _sft_prompts()
     seen: set[str] = set()
     rows = []
-    for i, (prompt, tool) in enumerate(CASES):
+    for i, item in enumerate(CASES):
+        if len(item) == 2:
+            prompt, tool = item
+            arguments = None
+        else:
+            prompt, tool, arguments = item  # type: ignore[misc]
         key = _norm(prompt)
         assert key not in golden, f"benchmark prompt matches golden: {prompt!r}"
         assert key not in sft, f"benchmark prompt matches SFT data: {prompt!r}"
         assert key not in seen, f"duplicate benchmark prompt: {prompt!r}"
         seen.add(key)
-        rows.append({"id": f"bench_{i:03d}", "prompt": prompt, "tool": tool})
+        row = {"id": f"bench_{i:03d}", "prompt": prompt, "tool": tool}
+        if arguments is not None:
+            row["arguments"] = arguments
+        rows.append(row)
     with OUT.open("w", encoding="utf-8") as handle:
         for row in rows:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")

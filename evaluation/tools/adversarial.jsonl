@@ -1,0 +1,30 @@
+{"id": "adv_000", "prompt": "What classes do I have?", "tool": "get_today_schedule", "arguments": {}}
+{"id": "adv_001", "prompt": "What classes do I have today?", "tool": "get_today_schedule", "arguments": {}}
+{"id": "adv_002", "prompt": "What classes are coming up?", "tool": "get_upcoming_classes", "arguments": {}}
+{"id": "adv_003", "prompt": "Show my timetable.", "tool": "get_timetable", "arguments": {}}
+{"id": "adv_004", "prompt": "What subjects do I have?", "tool": "get_subjects", "arguments": {}}
+{"id": "adv_005", "prompt": "How much attendance do I have?", "tool": "get_attendance", "arguments": {}}
+{"id": "adv_006", "prompt": "How am I doing academically?", "tool": "get_progress", "arguments": {}}
+{"id": "adv_007", "prompt": "Show my study history.", "tool": "get_study_history", "arguments": {}}
+{"id": "adv_008", "prompt": "Show my quiz history.", "tool": "get_quiz_history", "arguments": {}}
+{"id": "adv_009", "prompt": "Show my quiz results.", "tool": "get_quiz_results", "arguments": {}}
+{"id": "adv_010", "prompt": "What did I study yesterday?", "tool": "get_study_history", "arguments": {}}
+{"id": "adv_011", "prompt": "What were my previous quiz scores?", "tool": "get_quiz_results", "arguments": {}}
+{"id": "adv_012", "prompt": "What is my timetable?", "tool": "get_timetable", "arguments": {}}
+{"id": "adv_013", "prompt": "What classes do I have the day after today?", "tool": "get_upcoming_classes", "arguments": {}}
+{"id": "adv_014", "prompt": "How much of class have I attended?", "tool": "get_attendance", "arguments": {}}
+{"id": "adv_015", "prompt": "Show the notes I typed myself.", "tool": "get_notes", "arguments": {}}
+{"id": "adv_016", "prompt": "Search the public internet for fusion news.", "tool": "web_search", "arguments": {"query": "fusion news"}}
+{"id": "adv_017", "prompt": "Open my uploaded PDF, not the syllabus.", "tool": "get_learning_materials", "arguments": {}}
+{"id": "adv_018", "prompt": "Don't list attempts — I want the marks.", "tool": "get_quiz_results", "arguments": {}}
+{"id": "adv_019", "prompt": "Navigate to the timetable tab in the app.", "tool": "open_feature", "arguments": {"view": "timetable"}}
+{"id": "adv_020", "prompt": "Compute 21 times 4.", "tool": "calculator", "arguments": {"expression": "21*4"}}
+{"id": "adv_021", "prompt": "What time is it, not my classes.", "tool": "get_current_datetime", "arguments": {}}
+{"id": "adv_022", "prompt": "School events, not lectures.", "tool": "get_upcoming_events", "arguments": {}}
+{"id": "adv_023", "prompt": "Homework still due, not exams.", "tool": "get_assignments", "arguments": {}}
+{"id": "adv_024", "prompt": "Official syllabus outline for chemistry.", "tool": "get_syllabus", "arguments": {"subject": "Chemistry"}}
+{"id": "adv_025", "prompt": "Explain photosynthesis without looking anything up.", "tool": "none", "arguments": {}}
+{"id": "adv_026", "prompt": "Create a quiz on gravity.", "tool": "create_quiz", "arguments": {"subject": "Physics", "topic": "gravity"}}
+{"id": "adv_027", "prompt": "Save the gravity quiz I just made.", "tool": "save_quiz", "arguments": {"topic": "gravity"}}
+{"id": "adv_028", "prompt": "Draft a study plan for my weak topics.", "tool": "create_study_plan", "arguments": {}}
+{"id": "adv_029", "prompt": "Find an AR lesson on the heart.", "tool": "get_ar_lessons", "arguments": {"topic": "heart"}}

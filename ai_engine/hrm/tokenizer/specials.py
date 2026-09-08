@@ -38,6 +38,8 @@ STRUCTURE_TOKENS = [
     "TOOL_ERROR",
 ]
 
+# Must stay 1:1 with TOOL_NAMES (except the "none" routing class). A missing
+# atomic token gives that tool a length/byte-split disadvantage at decode time.
 TOOL_TOKENS = [
     "get_student_profile",
     "get_subjects",
@@ -59,11 +61,15 @@ TOOL_TOKENS = [
     "get_notifications",
     "retrieve_learning_materials",
     "web_search",
+    "open_url",
+    "extract_webpage",
     "calculator",
+    "get_current_datetime",
     "get_ar_lessons",
     "create_quiz",
     "save_quiz",
     "create_study_plan",
+    "open_feature",
 ]
 
 # Atomic JSON scaffolding tokens (added in edunova-tok-v2). The v1 byte

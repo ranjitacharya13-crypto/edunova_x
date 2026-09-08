@@ -1,6 +1,6 @@
 {
   "production": null,
-  "note": "Production inference remains llama.cpp GGUF. HRM v0.2-sft: JSON syntax solved (1.00); tool routing 0.4786/0.50 below the 0.70 promotion gates.",
+  "note": "Production inference remains llama.cpp GGUF. HRM v0.3-tool-routing: JSON 1.00 preserved; generated tool 0.6496 and tool-head 0.6239 still below 0.80/0.85 gates. Not promoted.",
   "history": [
     {
       "event": "register",
@@ -17,6 +17,17 @@
       "version": "v0.2-sft",
       "reason": "tool_name_accuracy 0.4786 and plan_tool_accuracy 0.50 below 0.70 gate; production stays null (llama.cpp default)",
       "date": "2026-09-08T17:55:22.625117+00:00"
+    },
+    {
+      "event": "register",
+      "version": "v0.3-tool-routing",
+      "date": "2026-09-08T18:30:00+00:00"
+    },
+    {
+      "event": "promotion_refused",
+      "version": "v0.3-tool-routing",
+      "reason": "tool-head top-1 0.6239 < 0.85, generated tool 0.6496 < 0.80, argument accuracy 0.00/0.359 oracle; JSON 1.00 preserved. production stays null (llama.cpp default)",
+      "date": "2026-09-08T18:30:00+00:00"
     }
   ],
   "models": {
@@ -76,6 +87,51 @@
         }
       },
       "date": "2026-09-08T17:55:22.625117+00:00"
+    },
+    "v0.3-tool-routing": {
+      "model_version": "v0.3-tool-routing",
+      "architecture_version": "hrm-v1",
+      "tokenizer_version": "edunova-tok-v2",
+      "dataset_version": "edunova-hrm-sft-v3",
+      "training_stage": "sft",
+      "training_configuration": "configs/model/20m.yaml",
+      "checkpoint": "post_training/checkpoints/edunova-hrm-20m-sft",
+      "parent_model": "v0.2-sft",
+      "adapters": [],
+      "evaluation": {
+        "parameter_count": 22800768,
+        "steps": 800,
+        "train_loss_avg": 3.6043131776340305,
+        "train_structure_token_accuracy": 0.9196530203713154,
+        "val_structure_token_accuracy": 0.9274647887323944,
+        "val_tool_accuracy": 0.7371794871794872,
+        "val_task_accuracy": 0.7884615384615384,
+        "golden_plan_tool_accuracy": 0.6,
+        "golden_plan_task_accuracy": 0.5,
+        "golden_json_syntax_constrained": 1.0,
+        "golden_json_syntax_unconstrained": 1.0,
+        "golden_schema_constrained": 1.0,
+        "golden_schema_unconstrained": 1.0,
+        "bench_cases": 117,
+        "bench_json_syntax_constrained": 1.0,
+        "bench_json_syntax_unconstrained": 1.0,
+        "tool_head_top1": 0.6239,
+        "tool_head_top3": 0.8034,
+        "tool_name_accuracy": 0.6496,
+        "macro_f1": 0.6188,
+        "argument_accuracy_required_args": 0.0,
+        "oracle_argument_accuracy": 0.359,
+        "mode_collapse_share": 0.0769,
+        "rss_after_generate_mib": 675.9,
+        "fits_render_free_512mib": false,
+        "promotion_gates": {
+          "json_syntax": ">=0.98 PASS",
+          "tool_head_top1": "0.6239 < 0.85 FAIL",
+          "generated_tool": "0.6496 < 0.80 FAIL",
+          "arguments": "0.00/0.359 < 0.85 FAIL"
+        }
+      },
+      "date": "2026-09-08T18:30:00+00:00"
     }
   }
 }

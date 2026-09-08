@@ -82,6 +82,14 @@ The model must not be described as "supporting tool calling" in production.
 tool hit 0.458; llama.cpp side **NOT IMPLEMENTED** in this sandbox (no GGUF
 available — not a failure of the harness). Production is never dual-loaded.
 
+## Phase 4 (this session, 20M kept)
+
+See `docs/phase4-results.md`. Kept checkpoint: 800-step `edunova-hrm-20m-sft`
+(22,800,768 params, tok-v2, sft-v3 823 rows). Generated tool **0.6496**
+(was 0.4786), JSON **1.00** (no regression), tool-head top-1 **0.6239**,
+mode-collapse **7.69%**. Still below routing gates. Render Free: **no**
+(peak RSS 675.9 MiB). `registry.production` remains null.
+
 ## What limits tool accuracy now
 
 - The high-level router heads train on ≤197 prompts for 12 task types / 30

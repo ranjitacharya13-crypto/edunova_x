@@ -122,8 +122,9 @@ class HRMConfig:
         emb = self.vocab_size * d
         lm = 0 if self.tie_embeddings else self.vocab_size * d
         heads = (d * self.n_task_types) + (d * self.n_tools) + (d * self.n_output_types) + (d * 2)
-        # high-level summary proj
+        # high-level summary proj + tool-conditioning embedding
         heads += d * d
+        heads += self.n_tools * d
         return emb + high + low + lm + heads
 
 

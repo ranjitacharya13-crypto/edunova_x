@@ -52,12 +52,24 @@ def _model_class():
         def disk_bytes_fp32(self) -> int:
             return self.parameter_count() * 4
 
+        def _tool_condition(self, high, tool_ids=None):
+            """Decoder start-token bias from a tool id.
+
+            Training passes the gold tool id (teacher-forced conditioning).
+            Inference passes None and uses the tool-head argmax. This is the
+            model's own routing, not a keyword overlay.
+            """
+            if tool_ids is None:
+                tool_ids = high["tool_logits"].argmax(dim=-1)
+            return self.high.tool_cond(tool_ids)
+
         def forward(
             self,
             input_ids,
             attention_mask=None,
             decoder_input_ids=None,
             decoder_attention_mask=None,
+            tool_ids=None,
         ):
             if attention_mask is None:
                 padding = input_ids.ne(self.config.pad_id)
@@ -69,7 +81,8 @@ def _model_class():
                 decoder_input_ids = input_ids
             dec = self.tok_emb(decoder_input_ids)
             dec = dec.clone()
-            dec[:, 0] = dec[:, 0] + high["summary"]
+            cond = self._tool_condition(high, tool_ids)
+            dec[:, 0] = dec[:, 0] + high["summary"] + cond
             low = self.low(
                 dec,
                 high["memory"],
@@ -80,7 +93,7 @@ def _model_class():
 
         def plan(self, input_ids, attention_mask=None) -> dict[str, Any]:
             self.eval()
-            with torch.no_grad():
+            with torch.inference_mode():
                 if attention_mask is None:
                     padding = input_ids.ne(self.config.pad_id)
                 else:
@@ -91,10 +104,14 @@ def _model_class():
             out_id = int(high["output_type_logits"][0].argmax().item())
             need_tools = int(high["need_tools_logits"][0].argmax().item()) == 1
             tool_probs = torch.softmax(high["tool_logits"][0].float(), dim=-1)
-            topk = torch.topk(tool_probs, k=min(5, tool_probs.numel()))
+            k = min(5, tool_probs.numel())
+            topk = torch.topk(tool_probs, k=k)
             tools = []
+            top3 = []
             for score, idx in zip(topk.values.tolist(), topk.indices.tolist()):
                 name = self.tool_names[idx]
+                if len(top3) < 3:
+                    top3.append({"tool": name, "score": round(float(score), 4)})
                 if name != "none" and score >= 0.08:
                     tools.append(name)
             if need_tools and not tools:
@@ -110,9 +127,10 @@ def _model_class():
                 "task_id": task_id,
                 "tool_id": tool_id,
                 "output_type_id": out_id,
+                "tool_confidence": round(float(tool_probs[tool_id].item()), 4),
+                "tool_head_top3": top3,
             }
 
-        @torch.no_grad()
         def generate(
             self,
             input_ids,
@@ -123,6 +141,8 @@ def _model_class():
             start_token_id: int | None = None,
             forced_prefix_ids=None,
             logit_bias=None,
+            oracle_tool_id: int | None = None,
+            condition_on_tool_head: bool = True,
         ):
             """Autoregressive decode conditioned on the encoder prompt.
 
@@ -141,44 +161,55 @@ def _model_class():
             start = self.config.bos_id if start_token_id is None else int(start_token_id)
             prefix = [int(t) for t in (forced_prefix_ids or [])]
             padding = input_ids.ne(self.config.pad_id)
-            memory_pack = self.high(self.tok_emb(input_ids), padding)
-            memory = memory_pack["memory"]
-            b = input_ids.size(0)
-            generated = torch.full((b, 1), start, dtype=torch.long, device=input_ids.device)
-            kv_caches = [{} for _ in range(self.config.low_level_layers)]
-            for step in range(max_new_tokens):
-                tok = generated[:, -1:]
-                hidden = self.tok_emb(tok)
-                if generated.size(1) == 1:
-                    hidden = hidden + memory_pack["summary"].unsqueeze(1)
-                low = self.low(
-                    hidden,
-                    memory,
-                    memory_padding=padding,
-                    kv_caches=kv_caches,
-                    embedding_weight=self.tok_emb.weight if self.config.tie_embeddings else None,
-                )
-                logits = low["logits"][:, -1]
-                if logit_bias is not None:
-                    # callable(step, logits) -> bias tensor to add (or None);
-                    # a plain tensor is added directly.
-                    bias = logit_bias(step, logits) if callable(logit_bias) else logit_bias
-                    if bias is not None:
-                        logits = logits + bias.to(logits.device)
-                if step < len(prefix):
-                    next_id = torch.full((b, 1), prefix[step], dtype=torch.long, device=input_ids.device)
-                elif temperature and temperature > 0:
-                    scaled = logits / max(1e-5, temperature)
-                    probs = torch.softmax(scaled.float(), dim=-1)
-                    next_id = torch.multinomial(probs, num_samples=1)
+            with torch.inference_mode():
+                memory_pack = self.high(self.tok_emb(input_ids), padding)
+                memory = memory_pack["memory"]
+                b = input_ids.size(0)
+                if condition_on_tool_head:
+                    if oracle_tool_id is not None:
+                        tool_ids = torch.full(
+                            (b,), int(oracle_tool_id), dtype=torch.long, device=input_ids.device
+                        )
+                    else:
+                        tool_ids = memory_pack["tool_logits"].argmax(dim=-1)
+                    cond = self.high.tool_cond(tool_ids)
                 else:
-                    next_id = logits.argmax(dim=-1, keepdim=True)
-                token = int(next_id[0].item())
-                if on_token is not None:
-                    on_token(token)
-                generated = torch.cat([generated, next_id], dim=1)
-                if token == eos_id:
-                    break
+                    cond = None
+                generated = torch.full((b, 1), start, dtype=torch.long, device=input_ids.device)
+                kv_caches = [{} for _ in range(self.config.low_level_layers)]
+                for step in range(max_new_tokens):
+                    tok = generated[:, -1:]
+                    hidden = self.tok_emb(tok)
+                    if generated.size(1) == 1:
+                        hidden = hidden + memory_pack["summary"].unsqueeze(1)
+                        if cond is not None:
+                            hidden = hidden + cond.unsqueeze(1)
+                    low = self.low(
+                        hidden,
+                        memory,
+                        memory_padding=padding,
+                        kv_caches=kv_caches,
+                        embedding_weight=self.tok_emb.weight if self.config.tie_embeddings else None,
+                    )
+                    logits = low["logits"][:, -1]
+                    if logit_bias is not None:
+                        bias = logit_bias(step, logits) if callable(logit_bias) else logit_bias
+                        if bias is not None:
+                            logits = logits + bias.to(logits.device)
+                    if step < len(prefix):
+                        next_id = torch.full((b, 1), prefix[step], dtype=torch.long, device=input_ids.device)
+                    elif temperature and temperature > 0:
+                        scaled = logits / max(1e-5, temperature)
+                        probs = torch.softmax(scaled.float(), dim=-1)
+                        next_id = torch.multinomial(probs, num_samples=1)
+                    else:
+                        next_id = logits.argmax(dim=-1, keepdim=True)
+                    token = int(next_id[0].item())
+                    if on_token is not None:
+                        on_token(token)
+                    generated = torch.cat([generated, next_id], dim=1)
+                    if token == eos_id:
+                        break
             return generated[:, 1:]
 
         def save_pretrained(self, directory: str | Path, tokenizer=None) -> Path:

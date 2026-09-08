@@ -4,7 +4,9 @@ Directory: `post_training/`.
 
 ## Methods that actually run
 
-- **Full SFT**: `post_training/pipelines/sft.py` — real AdamW updates.
+- **Full SFT**: `post_training/train_sft.py` — real AdamW updates, curriculum,
+  class-balanced sampling, multitask tool/output/task/need losses, argument-span
+  weights. Dataset: `post_training/datasets/sft/build_sft.py` (v3).
 - **LoRA**: `post_training/adapters/lora.py` — freezes base `Linear` modules
   and adds trainable A/B. Zero-init B so injection does not change outputs
   until training. `lora_state_dict` saves only adapter tensors.

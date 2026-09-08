@@ -70,6 +70,22 @@ def encode_completion(tokenizer, completion: str) -> tuple[list[int], list[int]]
     return decoder_ids, labels
 
 
+def _argument_mask(labels: list[int], tokenizer) -> list[int]:
+    """1 on decoder label positions inside the JSON arguments object."""
+    wrapper_id = tokenizer.token_to_id.get('","arguments":')
+    mask = [0] * len(labels)
+    if wrapper_id is None:
+        return mask
+    try:
+        start = labels.index(wrapper_id) + 1
+    except ValueError:
+        return mask
+    for i in range(start, len(labels)):
+        if labels[i] != -100:
+            mask[i] = 1
+    return mask
+
+
 def encode_example_aligned(tokenizer, row: dict[str, Any], max_seq_len: int) -> dict[str, Any]:
     """SFT encoding with encoder/decoder split (Phase 2).
 
@@ -86,12 +102,15 @@ def encode_example_aligned(tokenizer, row: dict[str, Any], max_seq_len: int) -> 
     tools = row.get("tools") or []
     primary = tools[0] if tools else "none"
     output_type = str(row.get("output_type") or "FINAL_ANSWER")
+    stage = int(row.get("stage") or 1)
     return {
         "encoder_ids": encoder_ids,
         "decoder_ids": decoder_ids,
         "labels": labels,
+        "arg_mask": _argument_mask(labels, tokenizer),
         "task_id": TASK_TYPES.index(task) if task in TASK_TYPES else TASK_TYPES.index("EXPLANATION"),
         "tool_id": TOOL_NAMES.index(primary) if primary in TOOL_NAMES else 0,
         "output_type_id": OUTPUT_TYPE_NAMES.index(output_type) if output_type in OUTPUT_TYPE_NAMES else 0,
         "need_tools": 1 if row.get("need_tools") or tools else 0,
+        "stage": stage,
     }
