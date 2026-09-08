@@ -79,18 +79,18 @@
 {"id": "bench_078", "prompt": "Find news about recent Mars missions online.", "tool": "web_search"}
 {"id": "bench_079", "prompt": "Look up this week's Nobel announcements.", "tool": "web_search"}
 {"id": "bench_080", "prompt": "Search the internet for new vaccine research.", "tool": "web_search"}
-{"id": "bench_081", "prompt": "Open https://example.edu/geo/latitude.", "tool": "open_url"}
-{"id": "bench_082", "prompt": "Visit https://example.edu/cs/recursion page.", "tool": "open_url"}
-{"id": "bench_083", "prompt": "Open the link https://example.edu/news/exam-dates.", "tool": "open_url"}
-{"id": "bench_084", "prompt": "Load https://example.edu/bio/ecosystems.", "tool": "open_url"}
-{"id": "bench_085", "prompt": "Extract text from https://example.edu/math/vectors.", "tool": "extract_webpage"}
-{"id": "bench_086", "prompt": "Scrape https://example.edu/chem/acids-bases.", "tool": "extract_webpage"}
-{"id": "bench_087", "prompt": "Read and extract https://example.edu/history/ww2 summary.", "tool": "extract_webpage"}
-{"id": "bench_088", "prompt": "Pull main content from https://example.edu/physics/optics.", "tool": "extract_webpage"}
-{"id": "bench_089", "prompt": "What is 55 times 19?", "tool": "calculator"}
-{"id": "bench_090", "prompt": "Compute 1000 divided by 8.", "tool": "calculator"}
-{"id": "bench_091", "prompt": "Evaluate (12 + 8) squared.", "tool": "calculator"}
-{"id": "bench_092", "prompt": "How much is 20 percent of 450?", "tool": "calculator"}
+{"id": "bench_081", "prompt": "Open https://example.edu/geo/latitude.", "tool": "open_url", "arguments": {"url": "https://example.edu/geo/latitude"}}
+{"id": "bench_082", "prompt": "Visit https://example.edu/cs/recursion page.", "tool": "open_url", "arguments": {"url": "https://example.edu/cs/recursion"}}
+{"id": "bench_083", "prompt": "Open the link https://example.edu/news/exam-dates.", "tool": "open_url", "arguments": {"url": "https://example.edu/news/exam-dates"}}
+{"id": "bench_084", "prompt": "Load https://example.edu/bio/ecosystems.", "tool": "open_url", "arguments": {"url": "https://example.edu/bio/ecosystems"}}
+{"id": "bench_085", "prompt": "Extract text from https://example.edu/math/vectors.", "tool": "extract_webpage", "arguments": {"url": "https://example.edu/math/vectors"}}
+{"id": "bench_086", "prompt": "Scrape https://example.edu/chem/acids-bases.", "tool": "extract_webpage", "arguments": {"url": "https://example.edu/chem/acids-bases"}}
+{"id": "bench_087", "prompt": "Read and extract https://example.edu/history/ww2 summary.", "tool": "extract_webpage", "arguments": {"url": "https://example.edu/history/ww2"}}
+{"id": "bench_088", "prompt": "Pull main content from https://example.edu/physics/optics.", "tool": "extract_webpage", "arguments": {"url": "https://example.edu/physics/optics"}}
+{"id": "bench_089", "prompt": "What is 55 times 19?", "tool": "calculator", "arguments": {"expression": "55*19"}}
+{"id": "bench_090", "prompt": "Compute 1000 divided by 8.", "tool": "calculator", "arguments": {"expression": "1000/8"}}
+{"id": "bench_091", "prompt": "Evaluate (12 + 8) squared.", "tool": "calculator", "arguments": {"expression": "(12+8)**2"}}
+{"id": "bench_092", "prompt": "How much is 20 percent of 450?", "tool": "calculator", "arguments": {"expression": "0.20*450"}}
 {"id": "bench_093", "prompt": "What's the date today?", "tool": "get_current_datetime"}
 {"id": "bench_094", "prompt": "Current time please.", "tool": "get_current_datetime"}
 {"id": "bench_095", "prompt": "Which month is it?", "tool": "get_current_datetime"}

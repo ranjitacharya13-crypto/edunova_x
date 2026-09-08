@@ -1,19 +1,19 @@
 {
-  "checkpoint": "post_training/checkpoints/edunova-hrm-20m-sft-r600",
+  "checkpoint": "post_training/checkpoints/edunova-hrm-20m-sft",
   "tokenizer_version": "edunova-tok-v2",
-  "parameters": 22789248,
+  "parameters": 22800768,
   "guided_wrapper": false,
   "modes": [
     "constrained",
     "unconstrained"
   ],
-  "date": "2026-09-08T17:53:07Z",
+  "date": "2026-09-08T18:29:44Z",
   "golden": {
     "summary": {
       "cases": 10,
-      "plan_tool_accuracy": 0.5,
+      "plan_tool_accuracy": 0.6,
       "plan_task_accuracy": 0.5,
-      "wall_time_sec": 2.1,
+      "wall_time_sec": 2.3,
       "json_syntax_constrained": 1.0,
       "schema_constrained": 1.0,
       "json_syntax_unconstrained": 1.0,
@@ -35,14 +35,14 @@
         "plan_task_hit": true,
         "modes": {
           "constrained": {
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{}}",
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{\"subject\":\"Chemistry\"}}",
             "json_syntax": true,
             "schema_ok": true,
             "type": "TOOL_CALL",
             "tool": "get_attendance"
           },
           "unconstrained": {
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{}}",
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{\"subject\":\"Chemistry\"}}",
             "json_syntax": true,
             "schema_ok": true,
             "type": "TOOL_CALL",
@@ -57,8 +57,7 @@
           "task_type": "DB_QUERY",
           "primary_tool": "get_today_schedule",
           "tools": [
-            "get_today_schedule",
-            "open_feature"
+            "get_today_schedule"
           ],
           "output_type": "TOOL_CALL"
         },
@@ -66,18 +65,18 @@
         "plan_task_hit": true,
         "modes": {
           "constrained": {
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"open_feature\",\"arguments\":{}}",
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_today_schedule\",\"arguments\":{\"subject\":\"Chemistry\"}}",
             "json_syntax": true,
             "schema_ok": true,
             "type": "TOOL_CALL",
-            "tool": "open_feature"
+            "tool": "get_today_schedule"
           },
           "unconstrained": {
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"open_feature\",\"arguments\":{}}",
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_today_schedule\",\"arguments\":{\"subject\":\"Chemistry\"}}",
             "json_syntax": true,
             "schema_ok": true,
             "type": "TOOL_CALL",
-            "tool": "open_feature"
+            "tool": "get_today_schedule"
           }
         }
       },
@@ -96,14 +95,14 @@
         "plan_task_hit": true,
         "modes": {
           "constrained": {
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_syllabus\",\"arguments\":{\"subject\":\"Physics\"}}",
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_syllabus\",\"arguments\":{\"subject\":\"English\"}}",
             "json_syntax": true,
             "schema_ok": true,
             "type": "TOOL_CALL",
             "tool": "get_syllabus"
           },
           "unconstrained": {
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_syllabus\",\"arguments\":{\"subject\":\"Physics\"}}",
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_syllabus\",\"arguments\":{\"subject\":\"English\"}}",
             "json_syntax": true,
             "schema_ok": true,
             "type": "TOOL_CALL",
@@ -115,29 +114,29 @@
         "id": "web_ai",
         "prompt": "What are the latest developments in AI research this week?",
         "plan": {
-          "task_type": "DB_QUERY",
-          "primary_tool": "get_quiz_results",
+          "task_type": "EXPLANATION",
+          "primary_tool": "none",
           "tools": [
-            "get_quiz_results"
+            "web_search"
           ],
-          "output_type": "TOOL_CALL"
+          "output_type": "FINAL_ANSWER"
         },
-        "plan_tool_hit": false,
+        "plan_tool_hit": true,
         "plan_task_hit": false,
         "modes": {
           "constrained": {
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_results\",\"arguments\":{}}",
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_assignments\",\"arguments\":{}}",
             "json_syntax": true,
             "schema_ok": true,
             "type": "TOOL_CALL",
-            "tool": "get_quiz_results"
+            "tool": "get_assignments"
           },
           "unconstrained": {
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_results\",\"arguments\":{}}",
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_assignments\",\"arguments\":{}}",
             "json_syntax": true,
             "schema_ok": true,
             "type": "TOOL_CALL",
-            "tool": "get_quiz_results"
+            "tool": "get_assignments"
           }
         }
       },
@@ -146,9 +145,9 @@
         "prompt": "Create a 10-question medium quiz from Unit 2.",
         "plan": {
           "task_type": "QUIZ",
-          "primary_tool": "create_quiz",
+          "primary_tool": "save_quiz",
           "tools": [
-            "create_quiz"
+            "save_quiz"
           ],
           "output_type": "TOOL_CALL"
         },
@@ -156,18 +155,18 @@
         "plan_task_hit": true,
         "modes": {
           "constrained": {
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_quiz\",\"arguments\":{\"title\":\"Arrays Quiz\",\"subject\":\"Data Structures\",\"topic\":\"arrays\"}}",
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"save_quiz\",\"arguments\":{\"title\":\"Networking Quiz\",\"subject\":\"Computer Science\",\"topic\":\"networking\"}}",
             "json_syntax": true,
             "schema_ok": true,
             "type": "TOOL_CALL",
-            "tool": "create_quiz"
+            "tool": "save_quiz"
           },
           "unconstrained": {
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_quiz\",\"arguments\":{\"title\":\"Arrays Quiz\",\"subject\":\"Data Structures\",\"topic\":\"arrays\"}}",
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"save_quiz\",\"arguments\":{\"title\":\"Networking Quiz\",\"subject\":\"Computer Science\",\"topic\":\"networking\"}}",
             "json_syntax": true,
             "schema_ok": true,
             "type": "TOOL_CALL",
-            "tool": "create_quiz"
+            "tool": "save_quiz"
           }
         }
       },
@@ -186,14 +185,14 @@
         "plan_task_hit": false,
         "modes": {
           "constrained": {
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_exams\",\"arguments\":{}}",
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_exams\",\"arguments\":{\"url\":\"https://example.edu/articles/osmosis\"}}",
             "json_syntax": true,
             "schema_ok": true,
             "type": "TOOL_CALL",
             "tool": "get_exams"
           },
           "unconstrained": {
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_exams\",\"arguments\":{}}",
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_exams\",\"arguments\":{\"url\":\"https://example.edu/articles/osmosis\"}}",
             "json_syntax": true,
             "schema_ok": true,
             "type": "TOOL_CALL",
@@ -205,29 +204,27 @@
         "id": "ar_cpu",
         "prompt": "Show me CPU architecture as an AR model.",
         "plan": {
-          "task_type": "SUMMARY",
+          "task_type": "EXPLANATION",
           "primary_tool": "none",
-          "tools": [
-            "get_quiz_history"
-          ],
-          "output_type": "TOOL_CALL"
+          "tools": [],
+          "output_type": "FINAL_ANSWER"
         },
         "plan_tool_hit": false,
         "plan_task_hit": false,
         "modes": {
           "constrained": {
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_history\",\"arguments\":{}}",
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{}}",
             "json_syntax": true,
             "schema_ok": true,
             "type": "TOOL_CALL",
-            "tool": "get_quiz_history"
+            "tool": "get_attendance"
           },
           "unconstrained": {
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_history\",\"arguments\":{}}",
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{}}",
             "json_syntax": true,
             "schema_ok": true,
             "type": "TOOL_CALL",
-            "tool": "get_quiz_history"
+            "tool": "get_attendance"
           }
         }
       },
@@ -246,14 +243,14 @@
         "plan_task_hit": false,
         "modes": {
           "constrained": {
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_results\",\"arguments\":{}}",
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_results\",\"arguments\":{\"subject\":\"Mathematics\"}}",
             "json_syntax": true,
             "schema_ok": true,
             "type": "TOOL_CALL",
             "tool": "get_quiz_results"
           },
           "unconstrained": {
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_results\",\"arguments\":{}}",
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_results\",\"arguments\":{\"subject\":\"Mathematics\"}}",
             "json_syntax": true,
             "schema_ok": true,
             "type": "TOOL_CALL",
@@ -266,28 +263,29 @@
         "prompt": "What is recursion?",
         "plan": {
           "task_type": "DB_QUERY",
-          "primary_tool": "get_upcoming_classes",
+          "primary_tool": "get_notifications",
           "tools": [
-            "get_upcoming_classes"
+            "get_notifications",
+            "get_ar_lessons"
           ],
-          "output_type": "TOOL_CALL"
+          "output_type": "FINAL_ANSWER"
         },
         "plan_tool_hit": false,
         "plan_task_hit": false,
         "modes": {
           "constrained": {
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_upcoming_classes\",\"arguments\":{}}",
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notifications\",\"arguments\":{}}",
             "json_syntax": true,
             "schema_ok": true,
             "type": "TOOL_CALL",
-            "tool": "get_upcoming_classes"
+            "tool": "get_notifications"
           },
           "unconstrained": {
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_upcoming_classes\",\"arguments\":{}}",
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notifications\",\"arguments\":{}}",
             "json_syntax": true,
             "schema_ok": true,
             "type": "TOOL_CALL",
-            "tool": "get_upcoming_classes"
+            "tool": "get_notifications"
           }
         }
       },
@@ -306,14 +304,14 @@
         "plan_task_hit": true,
         "modes": {
           "constrained": {
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{}}",
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{\"subject\":\"Chemistry\"}}",
             "json_syntax": true,
             "schema_ok": true,
             "type": "TOOL_CALL",
             "tool": "get_attendance"
           },
           "unconstrained": {
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{}}",
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{\"subject\":\"Chemistry\"}}",
             "json_syntax": true,
             "schema_ok": true,
             "type": "TOOL_CALL",
@@ -326,37 +324,37 @@
   "benchmark": {
     "summary": {
       "cases": 117,
-      "wall_time_sec": 26.1,
+      "wall_time_sec": 20.4,
       "json_syntax_constrained": 1.0,
-      "tool_name_accuracy_constrained": 0.4786,
+      "tool_name_accuracy_constrained": 0.6496,
       "predicted_tool_top3_constrained": [
         [
-          "calculator",
-          11
+          "get_subjects",
+          9
         ],
         [
-          "get_ar_lessons",
+          "get_attendance",
           8
         ],
         [
-          "get_progress",
-          7
+          "get_today_schedule",
+          8
         ]
       ],
       "json_syntax_unconstrained": 1.0,
-      "tool_name_accuracy_unconstrained": 0.4786,
+      "tool_name_accuracy_unconstrained": 0.6496,
       "predicted_tool_top3_unconstrained": [
         [
-          "calculator",
-          11
+          "get_subjects",
+          9
         ],
         [
-          "get_ar_lessons",
+          "get_attendance",
           8
         ],
         [
-          "get_progress",
-          7
+          "get_today_schedule",
+          8
         ]
       ]
     },
@@ -369,16 +367,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_quiz_history",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_history\",\"arguments\":{}}"
+            "tool": "get_attendance",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_quiz_history",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_history\",\"arguments\":{}}"
+            "tool": "get_attendance",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{}}"
           }
         }
       },
@@ -392,14 +390,14 @@
             "type": "TOOL_CALL",
             "tool": "get_attendance",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
             "tool": "get_attendance",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           }
         }
       },
@@ -413,14 +411,14 @@
             "type": "TOOL_CALL",
             "tool": "get_attendance",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{\"subject\":\"assignments\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
             "tool": "get_attendance",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{\"subject\":\"assignments\"}}"
           }
         }
       },
@@ -432,16 +430,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_quiz_history",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_history\",\"arguments\":{}}"
+            "tool": "get_attendance",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_quiz_history",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_history\",\"arguments\":{}}"
+            "tool": "get_attendance",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           }
         }
       },
@@ -453,16 +451,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "save_quiz",
+            "tool": "get_subjects",
             "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"save_quiz\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_subjects\",\"arguments\":{\"subject\":\"Mathematics\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "save_quiz",
+            "tool": "get_subjects",
             "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"save_quiz\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_subjects\",\"arguments\":{\"subject\":\"Mathematics\"}}"
           }
         }
       },
@@ -476,14 +474,14 @@
             "type": "TOOL_CALL",
             "tool": "get_subjects",
             "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_subjects\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_subjects\",\"arguments\":{\"subject\":\"Mathematics\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
             "tool": "get_subjects",
             "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_subjects\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_subjects\",\"arguments\":{\"subject\":\"Mathematics\"}}"
           }
         }
       },
@@ -537,16 +535,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_progress",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_progress\",\"arguments\":{}}"
+            "tool": "get_subjects",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_subjects\",\"arguments\":{}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_progress",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_progress\",\"arguments\":{}}"
+            "tool": "get_subjects",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_subjects\",\"arguments\":{}}"
           }
         }
       },
@@ -579,16 +577,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_attendance",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{}}"
+            "tool": "get_subjects",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_subjects\",\"arguments\":{}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_attendance",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{}}"
+            "tool": "get_subjects",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_subjects\",\"arguments\":{}}"
           }
         }
       },
@@ -621,16 +619,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_progress",
+            "tool": "get_ar_lessons",
             "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_progress\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_ar_lessons\",\"arguments\":{\"subject\":\"osmosis\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_progress",
+            "tool": "get_ar_lessons",
             "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_progress\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_ar_lessons\",\"arguments\":{\"subject\":\"osmosis\"}}"
           }
         }
       },
@@ -642,16 +640,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_current_datetime",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_current_datetime\",\"arguments\":{}}"
+            "tool": "get_timetable",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_timetable\",\"arguments\":{\"day\":\"Mathematics\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_current_datetime",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_current_datetime\",\"arguments\":{}}"
+            "tool": "get_timetable",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_timetable\",\"arguments\":{\"day\":\"Mathematics\"}}"
           }
         }
       },
@@ -665,14 +663,14 @@
             "type": "TOOL_CALL",
             "tool": "get_timetable",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_timetable\",\"arguments\":{\"day\":\"Wednesday\"}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_timetable\",\"arguments\":{\"day\":\"Monday\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
             "tool": "get_timetable",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_timetable\",\"arguments\":{\"day\":\"Wednesday\"}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_timetable\",\"arguments\":{\"day\":\"Monday\"}}"
           }
         }
       },
@@ -686,14 +684,14 @@
             "type": "TOOL_CALL",
             "tool": "get_timetable",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_timetable\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_timetable\",\"arguments\":{\"day\":\"Thursday\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
             "tool": "get_timetable",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_timetable\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_timetable\",\"arguments\":{\"day\":\"Thursday\"}}"
           }
         }
       },
@@ -707,14 +705,14 @@
             "type": "TOOL_CALL",
             "tool": "get_today_schedule",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_today_schedule\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_today_schedule\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
             "tool": "get_today_schedule",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_today_schedule\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_today_schedule\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           }
         }
       },
@@ -726,16 +724,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_upcoming_events",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_upcoming_events\",\"arguments\":{}}"
+            "tool": "get_today_schedule",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_today_schedule\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_upcoming_events",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_upcoming_events\",\"arguments\":{}}"
+            "tool": "get_today_schedule",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_today_schedule\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           }
         }
       },
@@ -747,16 +745,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_timetable",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_timetable\",\"arguments\":{}}"
+            "tool": "get_today_schedule",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_today_schedule\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_timetable",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_timetable\",\"arguments\":{}}"
+            "tool": "get_today_schedule",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_today_schedule\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           }
         }
       },
@@ -768,16 +766,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_upcoming_events",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_upcoming_events\",\"arguments\":{}}"
+            "tool": "get_today_schedule",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_today_schedule\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_upcoming_events",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_upcoming_events\",\"arguments\":{}}"
+            "tool": "get_today_schedule",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_today_schedule\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           }
         }
       },
@@ -810,16 +808,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_progress",
+            "tool": "get_today_schedule",
             "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_progress\",\"arguments\":{\"subject\":\"Physics\"}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_today_schedule\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_progress",
+            "tool": "get_today_schedule",
             "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_progress\",\"arguments\":{\"subject\":\"Physics\"}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_today_schedule\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           }
         }
       },
@@ -833,6 +831,27 @@
             "type": "TOOL_CALL",
             "tool": "get_upcoming_classes",
             "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_upcoming_classes\",\"arguments\":{\"subject\":\"Chemistry\"}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_upcoming_classes",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_upcoming_classes\",\"arguments\":{\"subject\":\"Chemistry\"}}"
+          }
+        }
+      },
+      {
+        "id": "bench_023",
+        "prompt": "Which period comes after the break?",
+        "expected_tool": "get_upcoming_classes",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_upcoming_classes",
+            "tool_hit": true,
             "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_upcoming_classes\",\"arguments\":{}}"
           },
           "unconstrained": {
@@ -845,27 +864,6 @@
         }
       },
       {
-        "id": "bench_023",
-        "prompt": "Which period comes after the break?",
-        "expected_tool": "get_upcoming_classes",
-        "modes": {
-          "constrained": {
-            "json_syntax": true,
-            "type": "TOOL_CALL",
-            "tool": "get_notifications",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notifications\",\"arguments\":{}}"
-          },
-          "unconstrained": {
-            "json_syntax": true,
-            "type": "TOOL_CALL",
-            "tool": "get_notifications",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notifications\",\"arguments\":{}}"
-          }
-        }
-      },
-      {
         "id": "bench_024",
         "prompt": "What chapters are in the math book?",
         "expected_tool": "get_syllabus",
@@ -873,16 +871,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_upcoming_events",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_upcoming_events\",\"arguments\":{}}"
+            "tool": "get_syllabus",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_syllabus\",\"arguments\":{\"subject\":\"Mathematics\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_upcoming_events",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_upcoming_events\",\"arguments\":{}}"
+            "tool": "get_syllabus",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_syllabus\",\"arguments\":{\"subject\":\"Mathematics\"}}"
           }
         }
       },
@@ -894,16 +892,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_subjects",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_subjects\",\"arguments\":{}}"
+            "tool": "get_syllabus",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_syllabus\",\"arguments\":{\"subject\":\"Mathematics\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_subjects",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_subjects\",\"arguments\":{}}"
+            "tool": "get_syllabus",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_syllabus\",\"arguments\":{\"subject\":\"Mathematics\"}}"
           }
         }
       },
@@ -915,16 +913,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "calculator",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{}}"
+            "tool": "get_syllabus",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_syllabus\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "calculator",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{}}"
+            "tool": "get_syllabus",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_syllabus\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           }
         }
       },
@@ -936,16 +934,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "calculator",
+            "tool": "get_ar_lessons",
             "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_ar_lessons\",\"arguments\":{}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "calculator",
+            "tool": "get_ar_lessons",
             "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_ar_lessons\",\"arguments\":{}}"
           }
         }
       },
@@ -959,14 +957,14 @@
             "type": "TOOL_CALL",
             "tool": "get_learning_materials",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_learning_materials\",\"arguments\":{\"title\":\"thermodynamics\"}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_learning_materials\",\"arguments\":{}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
             "tool": "get_learning_materials",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_learning_materials\",\"arguments\":{\"title\":\"thermodynamics\"}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_learning_materials\",\"arguments\":{}}"
           }
         }
       },
@@ -978,16 +976,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "create_quiz",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_quiz\",\"arguments\":{\"title\":\"Chemistry TermPractice\",\"subject\":\"Biology\",\"topic\":\"electromagnetic waves\"}}"
+            "tool": "get_learning_materials",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_learning_materials\",\"arguments\":{\"day\":\"osmosis\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "create_quiz",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_quiz\",\"arguments\":{\"title\":\"Chemistry TermPractice\",\"subject\":\"Biology\",\"topic\":\"electromagnetic waves\"}}"
+            "tool": "get_learning_materials",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_learning_materials\",\"arguments\":{\"day\":\"osmosis\"}}"
           }
         }
       },
@@ -999,16 +997,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_ar_lessons",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_ar_lessons\",\"arguments\":{\"subject\":\"Biology\",\"topic\":\"plant cell\"}}"
+            "tool": "get_learning_materials",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_learning_materials\",\"arguments\":{\"query\":\"osmosis\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_ar_lessons",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_ar_lessons\",\"arguments\":{\"subject\":\"Biology\",\"topic\":\"plant cell\"}}"
+            "tool": "get_learning_materials",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_learning_materials\",\"arguments\":{\"query\":\"osmosis\"}}"
           }
         }
       },
@@ -1020,16 +1018,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "retrieve_learning_materials",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"retrieve_learning_materials\",\"arguments\":{\"query\":\"water cycle\"}}"
+            "tool": "get_learning_materials",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_learning_materials\",\"arguments\":{\"day\":\"assignments\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "retrieve_learning_materials",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"retrieve_learning_materials\",\"arguments\":{\"query\":\"water cycle\"}}"
+            "tool": "get_learning_materials",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_learning_materials\",\"arguments\":{\"day\":\"assignments\"}}"
           }
         }
       },
@@ -1041,16 +1039,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_notifications",
+            "tool": "get_study_history",
             "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notifications\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_study_history\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_notifications",
+            "tool": "get_study_history",
             "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notifications\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_study_history\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           }
         }
       },
@@ -1062,16 +1060,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_progress",
-            "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_progress\",\"arguments\":{}}"
+            "tool": "get_syllabus",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_syllabus\",\"arguments\":{\"subject\":\"Mathematics\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_progress",
-            "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_progress\",\"arguments\":{}}"
+            "tool": "get_syllabus",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_syllabus\",\"arguments\":{\"subject\":\"Mathematics\"}}"
           }
         }
       },
@@ -1083,16 +1081,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_progress",
-            "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_progress\",\"arguments\":{\"subject\":\"Physics\"}}"
+            "tool": "get_quiz_results",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_results\",\"arguments\":{\"subject\":\"Mathematics\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_progress",
-            "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_progress\",\"arguments\":{\"subject\":\"Physics\"}}"
+            "tool": "get_quiz_results",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_results\",\"arguments\":{\"subject\":\"Mathematics\"}}"
           }
         }
       },
@@ -1127,14 +1125,14 @@
             "type": "TOOL_CALL",
             "tool": "get_study_history",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_study_history\",\"arguments\":{\"subject\":\"Physics\"}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_study_history\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
             "tool": "get_study_history",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_study_history\",\"arguments\":{\"subject\":\"Physics\"}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_study_history\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           }
         }
       },
@@ -1146,16 +1144,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_ar_lessons",
+            "tool": "get_today_schedule",
             "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_ar_lessons\",\"arguments\":{\"subject\":\"Biology\",\"topic\":\"plant cell\"}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_today_schedule\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_ar_lessons",
+            "tool": "get_today_schedule",
             "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_ar_lessons\",\"arguments\":{\"subject\":\"Biology\",\"topic\":\"plant cell\"}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_today_schedule\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           }
         }
       },
@@ -1167,16 +1165,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_notes",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notes\",\"arguments\":{\"subject\":\"History\"}}"
+            "tool": "get_study_history",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_study_history\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_notes",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notes\",\"arguments\":{\"subject\":\"History\"}}"
+            "tool": "get_study_history",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_study_history\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           }
         }
       },
@@ -1188,16 +1186,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "calculator",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{}}"
+            "tool": "get_study_history",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_study_history\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "calculator",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{}}"
+            "tool": "get_study_history",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_study_history\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           }
         }
       },
@@ -1211,14 +1209,14 @@
             "type": "TOOL_CALL",
             "tool": "get_quiz_history",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_history\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_history\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
             "tool": "get_quiz_history",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_history\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_history\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           }
         }
       },
@@ -1230,16 +1228,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_subjects",
+            "tool": "get_attendance",
             "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_subjects\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_subjects",
+            "tool": "get_attendance",
             "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_subjects\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           }
         }
       },
@@ -1251,16 +1249,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "save_quiz",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"save_quiz\",\"arguments\":{\"title\":\"Thermodynamics Quiz\",\"subject\":\"Data Structures\",\"topic\":\"thermodynamics\"}}"
+            "tool": "get_quiz_history",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_history\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "save_quiz",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"save_quiz\",\"arguments\":{\"title\":\"Thermodynamics Quiz\",\"subject\":\"Data Structures\",\"topic\":\"thermodynamics\"}}"
+            "tool": "get_quiz_history",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_history\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           }
         }
       },
@@ -1272,16 +1270,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_quiz_history",
-            "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_history\",\"arguments\":{}}"
+            "tool": "get_quiz_results",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_results\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_quiz_history",
-            "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_history\",\"arguments\":{}}"
+            "tool": "get_quiz_results",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_results\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           }
         }
       },
@@ -1293,16 +1291,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_current_datetime",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_current_datetime\",\"arguments\":{}}"
+            "tool": "get_quiz_results",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_results\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_current_datetime",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_current_datetime\",\"arguments\":{}}"
+            "tool": "get_quiz_results",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_results\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           }
         }
       },
@@ -1316,14 +1314,14 @@
             "type": "TOOL_CALL",
             "tool": "get_quiz_results",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_results\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_results\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
             "tool": "get_quiz_results",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_results\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_results\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           }
         }
       },
@@ -1337,14 +1335,14 @@
             "type": "TOOL_CALL",
             "tool": "get_quiz_results",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_results\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_results\",\"arguments\":{\"subject\":\"Mathematics\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
             "tool": "get_quiz_results",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_results\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_results\",\"arguments\":{\"subject\":\"Mathematics\"}}"
           }
         }
       },
@@ -1356,16 +1354,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_quiz_results",
-            "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_results\",\"arguments\":{}}"
+            "tool": "get_quiz_history",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_history\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_quiz_results",
-            "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_results\",\"arguments\":{}}"
+            "tool": "get_quiz_history",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_history\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           }
         }
       },
@@ -1377,16 +1375,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_learning_materials",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_learning_materials\",\"arguments\":{}}"
+            "tool": "get_assignments",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_assignments\",\"arguments\":{}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_learning_materials",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_learning_materials\",\"arguments\":{}}"
+            "tool": "get_assignments",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_assignments\",\"arguments\":{}}"
           }
         }
       },
@@ -1398,16 +1396,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_ar_lessons",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_ar_lessons\",\"arguments\":{\"subject\":\"History\"}}"
+            "tool": "get_assignments",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_assignments\",\"arguments\":{}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_ar_lessons",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_ar_lessons\",\"arguments\":{\"subject\":\"History\"}}"
+            "tool": "get_assignments",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_assignments\",\"arguments\":{}}"
           }
         }
       },
@@ -1419,16 +1417,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_goals",
+            "tool": "get_subjects",
             "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_goals\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_subjects\",\"arguments\":{}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_goals",
+            "tool": "get_subjects",
             "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_goals\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_subjects\",\"arguments\":{}}"
           }
         }
       },
@@ -1440,16 +1438,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_assignments",
-            "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_assignments\",\"arguments\":{}}"
+            "tool": "get_quiz_history",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_history\",\"arguments\":{}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_assignments",
-            "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_assignments\",\"arguments\":{}}"
+            "tool": "get_quiz_history",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_history\",\"arguments\":{}}"
           }
         }
       },
@@ -1463,6 +1461,27 @@
             "type": "TOOL_CALL",
             "tool": "get_exams",
             "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_exams\",\"arguments\":{\"url\":\"osmosis\"}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_exams",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_exams\",\"arguments\":{\"url\":\"osmosis\"}}"
+          }
+        }
+      },
+      {
+        "id": "bench_053",
+        "prompt": "Tell me when my biology test is.",
+        "expected_tool": "get_exams",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_exams",
+            "tool_hit": true,
             "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_exams\",\"arguments\":{}}"
           },
           "unconstrained": {
@@ -1475,27 +1494,6 @@
         }
       },
       {
-        "id": "bench_053",
-        "prompt": "Tell me when my biology test is.",
-        "expected_tool": "get_exams",
-        "modes": {
-          "constrained": {
-            "json_syntax": true,
-            "type": "TOOL_CALL",
-            "tool": "get_timetable",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_timetable\",\"arguments\":{}}"
-          },
-          "unconstrained": {
-            "json_syntax": true,
-            "type": "TOOL_CALL",
-            "tool": "get_timetable",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_timetable\",\"arguments\":{}}"
-          }
-        }
-      },
-      {
         "id": "bench_054",
         "prompt": "Are board exams scheduled yet?",
         "expected_tool": "get_exams",
@@ -1503,16 +1501,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_current_datetime",
+            "tool": "get_ar_lessons",
             "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_current_datetime\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_ar_lessons\",\"arguments\":{\"subject\":\"osmosis\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_current_datetime",
+            "tool": "get_ar_lessons",
             "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_current_datetime\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_ar_lessons\",\"arguments\":{\"subject\":\"osmosis\"}}"
           }
         }
       },
@@ -1545,16 +1543,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_current_datetime",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_current_datetime\",\"arguments\":{}}"
+            "tool": "get_attendance",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_current_datetime",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_current_datetime\",\"arguments\":{}}"
+            "tool": "get_attendance",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{}}"
           }
         }
       },
@@ -1568,14 +1566,14 @@
             "type": "TOOL_CALL",
             "tool": "get_notes",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notes\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notes\",\"arguments\":{\"subject\":\"assignments\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
             "tool": "get_notes",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notes\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notes\",\"arguments\":{\"subject\":\"assignments\"}}"
           }
         }
       },
@@ -1587,16 +1585,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_notes",
-            "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notes\",\"arguments\":{}}"
+            "tool": "get_syllabus",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_syllabus\",\"arguments\":{\"subject\":\"English\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_notes",
-            "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notes\",\"arguments\":{}}"
+            "tool": "get_syllabus",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_syllabus\",\"arguments\":{\"subject\":\"English\"}}"
           }
         }
       },
@@ -1610,14 +1608,14 @@
             "type": "TOOL_CALL",
             "tool": "get_notes",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notes\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notes\",\"arguments\":{\"subject\":\"English\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
             "tool": "get_notes",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notes\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notes\",\"arguments\":{\"subject\":\"English\"}}"
           }
         }
       },
@@ -1631,14 +1629,14 @@
             "type": "TOOL_CALL",
             "tool": "get_notes",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notes\",\"arguments\":{\"subject\":\"History\"}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notes\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
             "tool": "get_notes",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notes\",\"arguments\":{\"subject\":\"History\"}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notes\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           }
         }
       },
@@ -1650,16 +1648,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_attendance",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{}}"
+            "tool": "get_goals",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_goals\",\"arguments\":{}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_attendance",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{}}"
+            "tool": "get_goals",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_goals\",\"arguments\":{}}"
           }
         }
       },
@@ -1692,16 +1690,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_goals",
-            "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_goals\",\"arguments\":{}}"
+            "tool": "get_student_profile",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_student_profile\",\"arguments\":{}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_goals",
-            "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_goals\",\"arguments\":{}}"
+            "tool": "get_student_profile",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_student_profile\",\"arguments\":{}}"
           }
         }
       },
@@ -1734,16 +1732,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_ar_lessons",
+            "tool": "get_student_profile",
             "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_ar_lessons\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_student_profile\",\"arguments\":{\"url\":\"assignments\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_ar_lessons",
+            "tool": "get_student_profile",
             "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_ar_lessons\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_student_profile\",\"arguments\":{\"url\":\"assignments\"}}"
           }
         }
       },
@@ -1755,16 +1753,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "create_quiz",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_quiz\",\"arguments\":{}}"
+            "tool": "get_upcoming_events",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_upcoming_events\",\"arguments\":{}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "create_quiz",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_quiz\",\"arguments\":{}}"
+            "tool": "get_upcoming_events",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_upcoming_events\",\"arguments\":{}}"
           }
         }
       },
@@ -1776,16 +1774,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "create_quiz",
+            "tool": "get_notifications",
             "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_quiz\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notifications\",\"arguments\":{}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "create_quiz",
+            "tool": "get_notifications",
             "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_quiz\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notifications\",\"arguments\":{}}"
           }
         }
       },
@@ -1817,17 +1815,17 @@
         "modes": {
           "constrained": {
             "json_syntax": true,
-            "type": "SEARCH_REQUEST",
-            "tool": "web_search",
-            "tool_hit": false,
-            "text": "{\"type\":\"SEARCH_REQUEST\",\"tool\":\"web_search\",\"arguments\":{\"query\":\"renewable energy research news\"}}"
+            "type": "TOOL_CALL",
+            "tool": "get_notifications",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notifications\",\"arguments\":{}}"
           },
           "unconstrained": {
             "json_syntax": true,
-            "type": "SEARCH_REQUEST",
-            "tool": "web_search",
-            "tool_hit": false,
-            "text": "{\"type\":\"SEARCH_REQUEST\",\"tool\":\"web_search\",\"arguments\":{\"query\":\"renewable energy research news\"}}"
+            "type": "TOOL_CALL",
+            "tool": "get_notifications",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notifications\",\"arguments\":{}}"
           }
         }
       },
@@ -1839,16 +1837,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_student_profile",
+            "tool": "get_syllabus",
             "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_student_profile\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_syllabus\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_student_profile",
+            "tool": "get_syllabus",
             "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_student_profile\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_syllabus\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           }
         }
       },
@@ -1904,14 +1902,14 @@
             "type": "TOOL_CALL",
             "tool": "retrieve_learning_materials",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"retrieve_learning_materials\",\"arguments\":{\"query\":\"water cycle\"}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"retrieve_learning_materials\",\"arguments\":{\"query\":\"osmosis\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
             "tool": "retrieve_learning_materials",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"retrieve_learning_materials\",\"arguments\":{\"query\":\"water cycle\"}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"retrieve_learning_materials\",\"arguments\":{\"query\":\"osmosis\"}}"
           }
         }
       },
@@ -1925,14 +1923,14 @@
             "type": "TOOL_CALL",
             "tool": "retrieve_learning_materials",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"retrieve_learning_materials\",\"arguments\":{\"query\":\"thermodynamics\"}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"retrieve_learning_materials\",\"arguments\":{\"subject\":\"osmosis\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
             "tool": "retrieve_learning_materials",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"retrieve_learning_materials\",\"arguments\":{\"query\":\"thermodynamics\"}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"retrieve_learning_materials\",\"arguments\":{\"subject\":\"osmosis\"}}"
           }
         }
       },
@@ -1946,14 +1944,14 @@
             "type": "TOOL_CALL",
             "tool": "retrieve_learning_materials",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"retrieve_learning_materials\",\"arguments\":{\"subject\":\"Physics\"}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"retrieve_learning_materials\",\"arguments\":{\"query\":\"quadratic equations\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
             "tool": "retrieve_learning_materials",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"retrieve_learning_materials\",\"arguments\":{\"subject\":\"Physics\"}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"retrieve_learning_materials\",\"arguments\":{\"query\":\"quadratic equations\"}}"
           }
         }
       },
@@ -1964,17 +1962,17 @@
         "modes": {
           "constrained": {
             "json_syntax": true,
-            "type": "TOOL_CALL",
-            "tool": "get_student_profile",
+            "type": "SEARCH_REQUEST",
+            "tool": "web_search",
             "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_student_profile\",\"arguments\":{}}"
+            "text": "{\"type\":\"SEARCH_REQUEST\",\"tool\":\"web_search\",\"arguments\":{\"query\":\"new battery technology\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
-            "type": "TOOL_CALL",
-            "tool": "get_student_profile",
+            "type": "SEARCH_REQUEST",
+            "tool": "web_search",
             "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_student_profile\",\"arguments\":{}}"
+            "text": "{\"type\":\"SEARCH_REQUEST\",\"tool\":\"web_search\",\"arguments\":{\"query\":\"new battery technology\"}}"
           }
         }
       },
@@ -1986,16 +1984,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "calculator",
+            "tool": "get_upcoming_events",
             "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_upcoming_events\",\"arguments\":{}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "calculator",
+            "tool": "get_upcoming_events",
             "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_upcoming_events\",\"arguments\":{}}"
           }
         }
       },
@@ -2027,17 +2025,17 @@
         "modes": {
           "constrained": {
             "json_syntax": true,
-            "type": "TOOL_CALL",
-            "tool": "get_notifications",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notifications\",\"arguments\":{}}"
+            "type": "SEARCH_REQUEST",
+            "tool": "web_search",
+            "tool_hit": true,
+            "text": "{\"type\":\"SEARCH_REQUEST\",\"tool\":\"web_search\",\"arguments\":{}}"
           },
           "unconstrained": {
             "json_syntax": true,
-            "type": "TOOL_CALL",
-            "tool": "get_notifications",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notifications\",\"arguments\":{}}"
+            "type": "SEARCH_REQUEST",
+            "tool": "web_search",
+            "tool_hit": true,
+            "text": "{\"type\":\"SEARCH_REQUEST\",\"tool\":\"web_search\",\"arguments\":{}}"
           }
         }
       },
@@ -2048,17 +2046,17 @@
         "modes": {
           "constrained": {
             "json_syntax": true,
-            "type": "TOOL_CALL",
-            "tool": "save_quiz",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"save_quiz\",\"arguments\":{\"title\":\"Chemistry TermPractice\",\"subject\":\"Biology\",\"topic\":\"thermodynamics\"}}"
+            "type": "SEARCH_REQUEST",
+            "tool": "web_search",
+            "tool_hit": true,
+            "text": "{\"type\":\"SEARCH_REQUEST\",\"tool\":\"web_search\",\"arguments\":{}}"
           },
           "unconstrained": {
             "json_syntax": true,
-            "type": "TOOL_CALL",
-            "tool": "save_quiz",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"save_quiz\",\"arguments\":{\"title\":\"Chemistry TermPractice\",\"subject\":\"Biology\",\"topic\":\"thermodynamics\"}}"
+            "type": "SEARCH_REQUEST",
+            "tool": "web_search",
+            "tool_hit": true,
+            "text": "{\"type\":\"SEARCH_REQUEST\",\"tool\":\"web_search\",\"arguments\":{}}"
           }
         }
       },
@@ -2072,14 +2070,14 @@
             "type": "TOOL_CALL",
             "tool": "open_url",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"open_url\",\"arguments\":{\"url\":\"https://example.edu/physics/unit3\"}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"open_url\",\"arguments\":{\"url\":\"https://example.edu/articles/osmosis\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
             "tool": "open_url",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"open_url\",\"arguments\":{\"url\":\"https://example.edu/physics/unit3\"}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"open_url\",\"arguments\":{\"url\":\"https://example.edu/articles/osmosis\"}}"
           }
         }
       },
@@ -2091,16 +2089,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "extract_webpage",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"extract_webpage\",\"arguments\":{\"url\":\"https://example.edu/news/space\"}}"
+            "tool": "open_url",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"open_url\",\"arguments\":{\"url\":\"osmosis\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "extract_webpage",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"extract_webpage\",\"arguments\":{\"url\":\"https://example.edu/news/space\"}}"
+            "tool": "open_url",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"open_url\",\"arguments\":{\"url\":\"osmosis\"}}"
           }
         }
       },
@@ -2112,16 +2110,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "extract_webpage",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"extract_webpage\",\"arguments\":{\"url\":\"https://example.edu/news/space\"}}"
+            "tool": "open_url",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"open_url\",\"arguments\":{\"url\":\"https://example.edu/articles/osmosis\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "extract_webpage",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"extract_webpage\",\"arguments\":{\"url\":\"https://example.edu/news/space\"}}"
+            "tool": "open_url",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"open_url\",\"arguments\":{\"url\":\"https://example.edu/articles/osmosis\"}}"
           }
         }
       },
@@ -2133,16 +2131,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "extract_webpage",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"extract_webpage\",\"arguments\":{}}"
+            "tool": "open_url",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"open_url\",\"arguments\":{\"url\":\"osmosis\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "extract_webpage",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"extract_webpage\",\"arguments\":{}}"
+            "tool": "open_url",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"open_url\",\"arguments\":{\"url\":\"osmosis\"}}"
           }
         }
       },
@@ -2153,17 +2151,17 @@
         "modes": {
           "constrained": {
             "json_syntax": true,
-            "type": "TOOL_CALL",
-            "tool": "get_exams",
+            "type": "SEARCH_REQUEST",
+            "tool": "web_search",
             "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_exams\",\"arguments\":{\"url\":\"https://example.edu/blog/study-tips\"}}"
+            "text": "{\"type\":\"SEARCH_REQUEST\",\"tool\":\"web_search\",\"arguments\":{\"url\":\"https://example.edu/articles/osmosis\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
-            "type": "TOOL_CALL",
-            "tool": "get_exams",
+            "type": "SEARCH_REQUEST",
+            "tool": "web_search",
             "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_exams\",\"arguments\":{\"url\":\"https://example.edu/blog/study-tips\"}}"
+            "text": "{\"type\":\"SEARCH_REQUEST\",\"tool\":\"web_search\",\"arguments\":{\"url\":\"https://example.edu/articles/osmosis\"}}"
           }
         }
       },
@@ -2174,17 +2172,17 @@
         "modes": {
           "constrained": {
             "json_syntax": true,
-            "type": "TOOL_CALL",
-            "tool": "extract_webpage",
-            "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"extract_webpage\",\"arguments\":{\"url\":\"https://example.edu/news/space\"}}"
+            "type": "SEARCH_REQUEST",
+            "tool": "web_search",
+            "tool_hit": false,
+            "text": "{\"type\":\"SEARCH_REQUEST\",\"tool\":\"web_search\",\"arguments\":{\"url\":\"osmosis\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
-            "type": "TOOL_CALL",
-            "tool": "extract_webpage",
-            "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"extract_webpage\",\"arguments\":{\"url\":\"https://example.edu/news/space\"}}"
+            "type": "SEARCH_REQUEST",
+            "tool": "web_search",
+            "tool_hit": false,
+            "text": "{\"type\":\"SEARCH_REQUEST\",\"tool\":\"web_search\",\"arguments\":{\"url\":\"osmosis\"}}"
           }
         }
       },
@@ -2195,17 +2193,17 @@
         "modes": {
           "constrained": {
             "json_syntax": true,
-            "type": "TOOL_CALL",
-            "tool": "open_url",
+            "type": "SEARCH_REQUEST",
+            "tool": "web_search",
             "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"open_url\",\"arguments\":{\"url\":\"https://example.edu/bio/cell-structure\"}}"
+            "text": "{\"type\":\"SEARCH_REQUEST\",\"tool\":\"web_search\",\"arguments\":{\"url\":\"osmosis\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
-            "type": "TOOL_CALL",
-            "tool": "open_url",
+            "type": "SEARCH_REQUEST",
+            "tool": "web_search",
             "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"open_url\",\"arguments\":{\"url\":\"https://example.edu/bio/cell-structure\"}}"
+            "text": "{\"type\":\"SEARCH_REQUEST\",\"tool\":\"web_search\",\"arguments\":{\"url\":\"osmosis\"}}"
           }
         }
       },
@@ -2219,14 +2217,14 @@
             "type": "TOOL_CALL",
             "tool": "extract_webpage",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"extract_webpage\",\"arguments\":{\"url\":\"https://example.edu/news/space\"}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"extract_webpage\",\"arguments\":{\"url\":\"https://example.edu/blog/study-tips\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
             "tool": "extract_webpage",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"extract_webpage\",\"arguments\":{\"url\":\"https://example.edu/news/space\"}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"extract_webpage\",\"arguments\":{\"url\":\"https://example.edu/blog/study-tips\"}}"
           }
         }
       },
@@ -2240,14 +2238,14 @@
             "type": "TOOL_CALL",
             "tool": "calculator",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{\"expression\":\"(45+30)/15\"}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{\"expression\":\"assignments\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
             "tool": "calculator",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{\"expression\":\"(45+30)/15\"}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{\"expression\":\"assignments\"}}"
           }
         }
       },
@@ -2261,14 +2259,14 @@
             "type": "TOOL_CALL",
             "tool": "calculator",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{\"expression\":\"(45+30)/15\"}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{\"expression\":\"81/9\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
             "tool": "calculator",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{\"expression\":\"(45+30)/15\"}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{\"expression\":\"81/9\"}}"
           }
         }
       },
@@ -2279,17 +2277,17 @@
         "modes": {
           "constrained": {
             "json_syntax": true,
-            "type": "TOOL_CALL",
-            "tool": "calculator",
-            "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{\"expression\":\"(45+30)/15\"}}"
+            "type": "SEARCH_REQUEST",
+            "tool": "web_search",
+            "tool_hit": false,
+            "text": "{\"type\":\"SEARCH_REQUEST\",\"tool\":\"web_search\",\"arguments\":{\"expression\":\"81/9\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
-            "type": "TOOL_CALL",
-            "tool": "calculator",
-            "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{\"expression\":\"(45+30)/15\"}}"
+            "type": "SEARCH_REQUEST",
+            "tool": "web_search",
+            "tool_hit": false,
+            "text": "{\"type\":\"SEARCH_REQUEST\",\"tool\":\"web_search\",\"arguments\":{\"expression\":\"81/9\"}}"
           }
         }
       },
@@ -2301,16 +2299,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "calculator",
-            "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{}}"
+            "tool": "get_upcoming_classes",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_upcoming_classes\",\"arguments\":{}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "calculator",
-            "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{}}"
+            "tool": "get_upcoming_classes",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_upcoming_classes\",\"arguments\":{}}"
           }
         }
       },
@@ -2364,16 +2362,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "calculator",
+            "tool": "get_attendance",
             "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "calculator",
+            "tool": "get_attendance",
             "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{}}"
           }
         }
       },
@@ -2387,14 +2385,14 @@
             "type": "TOOL_CALL",
             "tool": "get_today_schedule",
             "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_today_schedule\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_today_schedule\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
             "tool": "get_today_schedule",
             "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_today_schedule\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_today_schedule\",\"arguments\":{\"subject\":\"Chemistry\"}}"
           }
         }
       },
@@ -2405,17 +2403,17 @@
         "modes": {
           "constrained": {
             "json_syntax": true,
-            "type": "TOOL_CALL",
+            "type": "SEARCH_REQUEST",
             "tool": "get_ar_lessons",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_ar_lessons\",\"arguments\":{}}"
+            "text": "{\"type\":\"SEARCH_REQUEST\",\"tool\":\"get_ar_lessons\",\"arguments\":{\"topic\":\"osmosis\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
-            "type": "TOOL_CALL",
+            "type": "SEARCH_REQUEST",
             "tool": "get_ar_lessons",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_ar_lessons\",\"arguments\":{}}"
+            "text": "{\"type\":\"SEARCH_REQUEST\",\"tool\":\"get_ar_lessons\",\"arguments\":{\"topic\":\"osmosis\"}}"
           }
         }
       },
@@ -2429,14 +2427,14 @@
             "type": "TOOL_CALL",
             "tool": "get_ar_lessons",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_ar_lessons\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_ar_lessons\",\"arguments\":{\"topic\":\"osmosis\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
             "tool": "get_ar_lessons",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_ar_lessons\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_ar_lessons\",\"arguments\":{\"topic\":\"osmosis\"}}"
           }
         }
       },
@@ -2447,17 +2445,17 @@
         "modes": {
           "constrained": {
             "json_syntax": true,
-            "type": "TOOL_CALL",
-            "tool": "get_ar_lessons",
-            "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_ar_lessons\",\"arguments\":{\"subject\":\"Biology\",\"topic\":\"plant cell\"}}"
+            "type": "FINAL_ANSWER",
+            "tool": null,
+            "tool_hit": false,
+            "text": "{\"type\":\"FINAL_ANSWER\",\"answer\":\"P\",\"arguments\":{}}"
           },
           "unconstrained": {
             "json_syntax": true,
-            "type": "TOOL_CALL",
-            "tool": "get_ar_lessons",
-            "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_ar_lessons\",\"arguments\":{\"subject\":\"Biology\",\"topic\":\"plant cell\"}}"
+            "type": "FINAL_ANSWER",
+            "tool": null,
+            "tool_hit": false,
+            "text": "{\"type\":\"FINAL_ANSWER\",\"answer\":\"P\",\"arguments\":{}}"
           }
         }
       },
@@ -2468,17 +2466,17 @@
         "modes": {
           "constrained": {
             "json_syntax": true,
-            "type": "TOOL_CALL",
+            "type": "SEARCH_REQUEST",
             "tool": "get_ar_lessons",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_ar_lessons\",\"arguments\":{\"subject\":\"Biology\",\"subject\":\"plant cell\"}}"
+            "text": "{\"type\":\"SEARCH_REQUEST\",\"tool\":\"get_ar_lessons\",\"arguments\":{\"topic\":\"osmosis\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
-            "type": "TOOL_CALL",
+            "type": "SEARCH_REQUEST",
             "tool": "get_ar_lessons",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_ar_lessons\",\"arguments\":{\"subject\":\"Biology\",\"subject\":\"plant cell\"}}"
+            "text": "{\"type\":\"SEARCH_REQUEST\",\"tool\":\"get_ar_lessons\",\"arguments\":{\"topic\":\"osmosis\"}}"
           }
         }
       },
@@ -2492,14 +2490,14 @@
             "type": "TOOL_CALL",
             "tool": "create_quiz",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_quiz\",\"arguments\":{\"title\":\"EM Waves Quiz\",\"subject\":\"Data Structures\",\"topic\":\"electromagnetic waves\"}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_quiz\",\"arguments\":{\"topic\":\"osmosis\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
             "tool": "create_quiz",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_quiz\",\"arguments\":{\"title\":\"EM Waves Quiz\",\"subject\":\"Data Structures\",\"topic\":\"electromagnetic waves\"}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_quiz\",\"arguments\":{\"topic\":\"osmosis\"}}"
           }
         }
       },
@@ -2511,16 +2509,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "create_quiz",
-            "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_quiz\",\"arguments\":{\"subject\":\"Physics\"}}"
+            "tool": "get_student_profile",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_student_profile\",\"arguments\":{\"subject\":\"osmosis\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "create_quiz",
-            "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_quiz\",\"arguments\":{\"subject\":\"Physics\"}}"
+            "tool": "get_student_profile",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_student_profile\",\"arguments\":{\"subject\":\"osmosis\"}}"
           }
         }
       },
@@ -2534,14 +2532,14 @@
             "type": "TOOL_CALL",
             "tool": "create_quiz",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_quiz\",\"arguments\":{\"title\":\"M Waves Quiz\",\"subject\":\"Data Structures\",\"topic\":\"electromagnetic waves\"}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_quiz\",\"arguments\":{\"title\":\"osmosis\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
             "tool": "create_quiz",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_quiz\",\"arguments\":{\"title\":\"M Waves Quiz\",\"subject\":\"Data Structures\",\"topic\":\"electromagnetic waves\"}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_quiz\",\"arguments\":{\"title\":\"osmosis\"}}"
           }
         }
       },
@@ -2553,16 +2551,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "calculator",
+            "tool": "get_ar_lessons",
             "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{\"subject\":\"Physics\"}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_ar_lessons\",\"arguments\":{\"topic\":\"osmosis\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "calculator",
+            "tool": "get_ar_lessons",
             "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{\"subject\":\"Physics\"}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_ar_lessons\",\"arguments\":{\"topic\":\"osmosis\"}}"
           }
         }
       },
@@ -2574,16 +2572,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "create_quiz",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_quiz\",\"arguments\":{\"title\":\"Chemistry TermodynamPractice\",\"subject\":\"Biology\",\"topic\":\"electromagnetic waves\"}}"
+            "tool": "save_quiz",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"save_quiz\",\"arguments\":{\"title\":\"Networking Quiz\",\"subject\":\"English\",\"topic\":\"networking\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "create_quiz",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_quiz\",\"arguments\":{\"title\":\"Chemistry TermodynamPractice\",\"subject\":\"Biology\",\"topic\":\"electromagnetic waves\"}}"
+            "tool": "save_quiz",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"save_quiz\",\"arguments\":{\"title\":\"Networking Quiz\",\"subject\":\"English\",\"topic\":\"networking\"}}"
           }
         }
       },
@@ -2597,14 +2595,14 @@
             "type": "TOOL_CALL",
             "tool": "save_quiz",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"save_quiz\",\"arguments\":{\"title\":\"Thermodynamics Quiz\",\"subject\":\"Physics\",\"topic\":\"thermodynamics\"}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"save_quiz\",\"arguments\":{\"title\":\"Networking Quiz\",\"subject\":\"Mathematics\",\"topic\":\"networking\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
             "tool": "save_quiz",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"save_quiz\",\"arguments\":{\"title\":\"Thermodynamics Quiz\",\"subject\":\"Physics\",\"topic\":\"thermodynamics\"}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"save_quiz\",\"arguments\":{\"title\":\"Networking Quiz\",\"subject\":\"Mathematics\",\"topic\":\"networking\"}}"
           }
         }
       },
@@ -2616,16 +2614,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "calculator",
+            "tool": "get_subjects",
             "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_subjects\",\"arguments\":{}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "calculator",
+            "tool": "get_subjects",
             "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_subjects\",\"arguments\":{}}"
           }
         }
       },
@@ -2639,14 +2637,14 @@
             "type": "TOOL_CALL",
             "tool": "save_quiz",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"save_quiz\",\"arguments\":{\"title\":\"Thermodynamics Quiz\",\"subject\":\"Physics\",\"topic\":\"thermodynamics\"}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"save_quiz\",\"arguments\":{\"title\":\"Networking Quiz\",\"subject\":\"Chemistry\",\"topic\":\"networking\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
             "tool": "save_quiz",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"save_quiz\",\"arguments\":{\"title\":\"Thermodynamics Quiz\",\"subject\":\"Physics\",\"topic\":\"thermodynamics\"}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"save_quiz\",\"arguments\":{\"title\":\"Networking Quiz\",\"subject\":\"Chemistry\",\"topic\":\"networking\"}}"
           }
         }
       },
@@ -2658,16 +2656,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "create_study_plan",
-            "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_study_plan\",\"arguments\":{}}"
+            "tool": "get_attendance",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{\"subject\":\"osmosis\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "create_study_plan",
-            "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_study_plan\",\"arguments\":{}}"
+            "tool": "get_attendance",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{\"subject\":\"osmosis\"}}"
           }
         }
       },
@@ -2681,14 +2679,14 @@
             "type": "TOOL_CALL",
             "tool": "create_study_plan",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_study_plan\",\"arguments\":{\"title\":\"Chemistry Term Plan\",\"subject\":\"Physics\",\"topic\":\"plant cell\"}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_study_plan\",\"arguments\":{\"subject\":\"Mathematics\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
             "tool": "create_study_plan",
             "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_study_plan\",\"arguments\":{\"title\":\"Chemistry Term Plan\",\"subject\":\"Physics\",\"topic\":\"plant cell\"}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_study_plan\",\"arguments\":{\"subject\":\"Mathematics\"}}"
           }
         }
       },
@@ -2700,16 +2698,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "create_study_plan",
-            "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_study_plan\",\"arguments\":{}}"
+            "tool": "get_timetable",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_timetable\",\"arguments\":{\"day\":\"Thursday\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "create_study_plan",
-            "tool_hit": true,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_study_plan\",\"arguments\":{}}"
+            "tool": "get_timetable",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_timetable\",\"arguments\":{\"day\":\"Thursday\"}}"
           }
         }
       },
@@ -2721,16 +2719,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_exams",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_exams\",\"arguments\":{\"title\":\"Chemistry Term Plan\",\"subject\":\"Physics\",\"topic\":\"thermodynamics\"}}"
+            "tool": "create_study_plan",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_study_plan\",\"arguments\":{\"url\":\"osmosis\"}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_exams",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_exams\",\"arguments\":{\"title\":\"Chemistry Term Plan\",\"subject\":\"Physics\",\"topic\":\"thermodynamics\"}}"
+            "tool": "create_study_plan",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_study_plan\",\"arguments\":{\"url\":\"osmosis\"}}"
           }
         }
       },
@@ -2742,16 +2740,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_timetable",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_timetable\",\"arguments\":{\"day\":\"Monday\"}}"
+            "tool": "open_feature",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"open_feature\",\"arguments\":{}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_timetable",
-            "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_timetable\",\"arguments\":{\"day\":\"Monday\"}}"
+            "tool": "open_feature",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"open_feature\",\"arguments\":{}}"
           }
         }
       },
@@ -2784,16 +2782,16 @@
           "constrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_progress",
+            "tool": "get_notes",
             "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_progress\",\"arguments\":{\"subject\":\"Physics\"}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notes\",\"arguments\":{}}"
           },
           "unconstrained": {
             "json_syntax": true,
             "type": "TOOL_CALL",
-            "tool": "get_progress",
+            "tool": "get_notes",
             "tool_hit": false,
-            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_progress\",\"arguments\":{\"subject\":\"Physics\"}}"
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notes\",\"arguments\":{}}"
           }
         }
       },

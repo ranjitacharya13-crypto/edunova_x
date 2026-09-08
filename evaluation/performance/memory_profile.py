@@ -47,12 +47,16 @@ def main() -> dict:
         "measurements": {},
     }
     m = report["measurements"]
-    m["baseline_rss_mib"] = _rss_mib()
+    m["python_baseline_rss_mib"] = _rss_mib()
 
     import torch
 
     report["torch_version"] = torch.__version__
     m["after_import_torch_rss_mib"] = _rss_mib()
+    try:
+        m["torch_num_threads"] = int(torch.get_num_threads())
+    except Exception:
+        m["torch_num_threads"] = None
 
     sys.path.insert(0, str(ROOT / "ai_engine"))
     from hrm.hrm import EduNovaHRM
@@ -60,15 +64,31 @@ def main() -> dict:
 
     ckpt = Path(args.checkpoint)
     tokenizer = EduNovaTokenizer.load(ckpt)
+    m["after_tokenizer_rss_mib"] = _rss_mib()
+
+    # Construction without loading weights.
+    from hrm.config import HRMConfig
+
+    cfg_payload = json.loads((ckpt / "config.json").read_text(encoding="utf-8")) if (ckpt / "config.json").exists() else {}
+    bare = EduNovaHRM(HRMConfig.from_dict(cfg_payload) if cfg_payload else None)
+    m["after_model_construct_rss_mib"] = _rss_mib()
+    del bare
+
     model = EduNovaHRM.from_pretrained(ckpt)
+    model.eval()
     weights = ckpt / "pytorch_model.pt"
     report["parameters"] = model.parameter_count()
     report["tokenizer_version"] = tokenizer.version
     m["checkpoint_disk_mib"] = round(weights.stat().st_size / (1024 * 1024), 2)
     m["after_model_load_rss_mib"] = _rss_mib()
+    m["weights_only_mib"] = round(model.parameter_count() * 4 / (1024 * 1024), 2)
 
     ids = tokenizer.prompt_ids("You are EduNova HRM.", "What is my attendance?")
     input_ids = torch.tensor([ids[: model.config.max_seq_len]], dtype=torch.long)
+    with torch.inference_mode():
+        _ = model.plan(input_ids)
+    m["after_plan_rss_mib"] = _rss_mib()
+
     started = time.monotonic()
     out = model.generate(
         input_ids,
@@ -79,12 +99,18 @@ def main() -> dict:
     )
     duration = time.monotonic() - started
     m["after_generate_rss_mib"] = _rss_mib()
+    m["peak_rss_mib"] = max(
+        m["after_generate_rss_mib"],
+        m["after_model_load_rss_mib"],
+        m["after_plan_rss_mib"],
+    )
     m["generated_tokens"] = int(out.size(1))
     m["generate_wall_time_sec"] = round(duration, 3)
     m["sample_output"] = tokenizer.decode(out[0].tolist(), skip_special=True)[:200]
-    # Weights-only floor: fp32 parameters, independent of framework overhead.
-    m["weights_only_mib"] = round(model.parameter_count() * 4 / (1024 * 1024), 2)
-    report["render_free_512_fits"] = bool(m["after_generate_rss_mib"] < 512)
+    report["render_free_512_fits"] = bool(m["peak_rss_mib"] < 512)
+    report["render_free_verdict"] = (
+        "FITS" if report["render_free_512_fits"] else "DOES_NOT_FIT — torch runtime + weights exceed 512 MiB"
+    )
 
     print(json.dumps(report, indent=2))
     if args.out:

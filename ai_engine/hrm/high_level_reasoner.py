@@ -53,6 +53,11 @@ class HighLevelReasoner:
                 self.tool_head = nn.Linear(config.d_model, config.n_tools, bias=False)
                 self.output_type_head = nn.Linear(config.d_model, config.n_output_types, bias=False)
                 self.need_tools_head = nn.Linear(config.d_model, 2, bias=False)
+                # Explicit tool-id conditioning for the decoder (gold id at
+                # train time, predicted id at inference). +n_tools*d_model
+                # parameters; still the 20M class. See docs/phase4-training.md.
+                self.tool_cond = nn.Embedding(config.n_tools, config.d_model)
+                nn.init.normal_(self.tool_cond.weight, mean=0.0, std=0.02)
 
             def forward(self, hidden, padding_mask=None):
                 """hidden: (B, T, D). padding_mask: (B, T) True = keep."""

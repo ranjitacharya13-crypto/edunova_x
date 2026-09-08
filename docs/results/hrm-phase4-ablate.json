@@ -1,0 +1,79 @@
+{
+  "note": "Tiny diagnostic model. Not comparable to the 20M checkpoint.",
+  "date": "2026-09-08T18:30:29Z",
+  "steps": 40,
+  "results": [
+    {
+      "val_loss": 8.74187092781067,
+      "val_structure_token_accuracy": 0.5401408450704225,
+      "val_tool_accuracy": 0.01282051282051282,
+      "val_task_accuracy": 0.057692307692307696,
+      "val_output_type_accuracy": 0.9166666666666666,
+      "mode": "D_lm_only",
+      "parameters": 321600,
+      "steps": 40,
+      "wall_time_sec": 0.69,
+      "lambdas": {
+        "lambda_tool": 0.0,
+        "lambda_output": 0.0,
+        "lambda_task": 0.0,
+        "lambda_need": 0.0,
+        "arg_weight": 1.0
+      }
+    },
+    {
+      "val_loss": 15.635955095291138,
+      "val_structure_token_accuracy": 0.5112676056338028,
+      "val_tool_accuracy": 0.11538461538461539,
+      "val_task_accuracy": 0.057692307692307696,
+      "val_output_type_accuracy": 0.46153846153846156,
+      "mode": "E_lm_tool",
+      "parameters": 321600,
+      "steps": 40,
+      "wall_time_sec": 0.66,
+      "lambdas": {
+        "lambda_tool": 2.0,
+        "lambda_output": 0.0,
+        "lambda_task": 0.0,
+        "lambda_need": 0.0,
+        "arg_weight": 1.0
+      }
+    },
+    {
+      "val_loss": 16.078885650634767,
+      "val_structure_token_accuracy": 0.5415492957746478,
+      "val_tool_accuracy": 0.0641025641025641,
+      "val_task_accuracy": 0.0641025641025641,
+      "val_output_type_accuracy": 0.9166666666666666,
+      "mode": "F_lm_tool_struct",
+      "parameters": 321600,
+      "steps": 40,
+      "wall_time_sec": 0.65,
+      "lambdas": {
+        "lambda_tool": 2.0,
+        "lambda_output": 0.75,
+        "lambda_task": 0.0,
+        "lambda_need": 0.0,
+        "arg_weight": 1.0
+      }
+    },
+    {
+      "val_loss": 16.50881314277649,
+      "val_structure_token_accuracy": 0.6676056338028169,
+      "val_tool_accuracy": 0.05128205128205128,
+      "val_task_accuracy": 0.5192307692307693,
+      "val_output_type_accuracy": 0.9166666666666666,
+      "mode": "G_full",
+      "parameters": 321600,
+      "steps": 40,
+      "wall_time_sec": 0.67,
+      "lambdas": {
+        "lambda_tool": 2.0,
+        "lambda_output": 0.75,
+        "lambda_task": 0.5,
+        "lambda_need": 0.25,
+        "arg_weight": 3.0
+      }
+    }
+  ]
+}
