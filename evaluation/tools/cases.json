@@ -1,0 +1,5 @@
+[
+  {"prompt": "What is my attendance?", "tool": "get_attendance"},
+  {"prompt": "What classes do I have tomorrow?", "tool": "get_upcoming_classes"},
+  {"prompt": "When are my exams?", "tool": "get_exams"}
+]

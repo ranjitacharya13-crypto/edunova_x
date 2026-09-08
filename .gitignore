@@ -32,6 +32,14 @@ __pycache__/
 *.pyc
 .venv/
 
+# HRM training weights (produced locally / CI; too large for git)
+training/checkpoints/**
+!training/checkpoints/.gitkeep
+post_training/checkpoints/**
+!post_training/checkpoints/.gitkeep
+**/*.pt
+!**/tokenizer.json
+
 # Self-hosted AI model weights — downloaded at runtime, never committed
 ai_engine/models_cache/
 **/*.gguf

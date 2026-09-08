@@ -1,0 +1,9 @@
+name: quiz_v1
+method: lora
+rank: 8
+alpha: 16
+target: quiz
+lr: 0.0001
+steps: 30
+parent: v0.1-base
+dataset: training/datasets/train.jsonl

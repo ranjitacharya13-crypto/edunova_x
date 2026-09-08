@@ -1,0 +1,16 @@
+{
+  "model_type": "edunova_hrm",
+  "architectures": ["EduNovaHRM"],
+  "architecture_version": "hrm-v1",
+  "name": "edunova-hrm-20m",
+  "vocab_size": 4096,
+  "d_model": 384,
+  "n_heads": 6,
+  "high_level_layers": 3,
+  "low_level_layers": 6,
+  "ffn_mult": 4,
+  "max_seq_len": 512,
+  "parameter_count_measured": 22789248,
+  "tokenizer_class": "EduNovaTokenizer",
+  "tokenizer_version": "edunova-tok-v1"
+}

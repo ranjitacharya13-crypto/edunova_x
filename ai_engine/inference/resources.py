@@ -33,6 +33,7 @@ MIB = 1024 * 1024
 #     reported MODEL_RESOURCE_INSUFFICIENT for configurations that fit.
 LLAMA_RUNTIME_OVERHEAD_MB = 140      # llama.cpp compute buffers + ggml scratch (base)
 TORCH_RUNTIME_OVERHEAD_MB = 900      # torch + transformers import + allocator
+HRM_RUNTIME_OVERHEAD_MB = 220        # torch CPU import without transformers/HF LLM
 SERVER_OVERHEAD_MB = 110             # FastAPI parent + supervised worker interpreter
 EMBEDDING_OVERHEAD_MB = 260          # sentence-transformers MiniLM in the same service
 SAFETY_MARGIN_MB = 64                # never run at the OOM edge
@@ -265,7 +266,14 @@ def estimate_requirement(*, runtime: str, model_path: str | Path | None, ctx: in
             weights_mb = int(Path(str(model_path)).stat().st_size / MIB) + 1
     elif expected_bytes:
         weights_mb = int(expected_bytes / MIB) + 1
-    if runtime == "torch":
+    if runtime == "hrm":
+        # Custom EduNova HRM: small dense fp32 weights + modest KV + torch CPU.
+        # 20M params * 4 bytes ≈ 80 MiB. KV ≈ 2 * layers * seq * d * 2 bytes.
+        runtime_overhead = HRM_RUNTIME_OVERHEAD_MB
+        if not weights_mb:
+            weights_mb = int(catalogue_ram_mb) if catalogue_ram_mb else 80
+        kv_mb = max(8, int(ctx * 384 * 9 * 4 / MIB) + 8)
+    elif runtime == "torch":
         runtime_overhead = TORCH_RUNTIME_OVERHEAD_MB
         kv_mb = estimate_kv_cache_mb(meta, ctx)
         if not weights_mb:

@@ -1,0 +1,6 @@
+Apache License 2.0 applies to the EduNova HRM architecture, tokenizer, and
+project-generated synthetic training data in this directory.
+
+This software is not a derivative of Llama, Qwen, GPT-2, SmolLM, or other
+third-party model weights. Do not upload student data or secrets with the
+model card.

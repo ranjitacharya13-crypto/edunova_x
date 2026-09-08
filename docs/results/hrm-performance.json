@@ -1,0 +1,37 @@
+{
+  "measured_at": "2026-09-08",
+  "hardware": "sandbox CPU, Python 3.11, torch 2.14.0 CPU",
+  "model": "edunova-hrm-20m",
+  "architecture": "hrm-v1 custom (not a third-party LLM)",
+  "parameter_count_measured": 22789248,
+  "parameter_count_estimated": 22788480,
+  "disk_fp32_bytes": 91201119,
+  "disk_fp32_mb": 86.93,
+  "idle_plus_model_rss_mb": 648.4,
+  "training_peak_rss_mb": 1290.0,
+  "one_step_train_ms": 115.8,
+  "generate_8_tokens_ms": 106.7,
+  "training": {
+    "dataset": "edunova-hrm-synthetic-v1",
+    "steps": 40,
+    "train_seconds": 17.221,
+    "steps_per_second": 2.3227,
+    "train_loss_avg": 12.572846019268036,
+    "val_loss": 7.670704523722331,
+    "task_accuracy_val": 0.6666666666666666,
+    "tool_accuracy_val": 0.6666666666666666
+  },
+  "golden_suite_after_40_steps": {
+    "cases": 10,
+    "tool_selection_accuracy": 0.4,
+    "task_accuracy": 0.1,
+    "json_validity": 0.0,
+    "latency_ms_per_case": 233,
+    "note": "40-step smoke train is not a production brain. JSON generation needs more SFT. llama.cpp remains the production fallback until golden json_validity and tool accuracy are acceptable."
+  },
+  "render_free_512mib": {
+    "hrm_fits": false,
+    "reason": "torch CPU import + 87 MiB weights + KV + FastAPI measured ~648 MiB RSS before training; training peaked at 1290 MiB. Keep LOCAL_MODEL_RUNTIME=llama_cpp on 512 MiB.",
+    "recommended_mb": 1024
+  }
+}

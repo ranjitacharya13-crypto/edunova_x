@@ -1,0 +1,32 @@
+{
+  "production": null,
+  "note": "Production inference remains llama.cpp GGUF until HRM golden JSON validity and tool accuracy pass promotion gates.",
+  "history": [
+    {
+      "event": "register",
+      "version": "v0.1-base",
+      "date": "2026-09-08T00:00:00+00:00"
+    }
+  ],
+  "models": {
+    "v0.1-base": {
+      "model_version": "v0.1-base",
+      "architecture_version": "hrm-v1",
+      "tokenizer_version": "edunova-tok-v1",
+      "dataset_version": "edunova-hrm-synthetic-v1",
+      "training_stage": "pretrain",
+      "training_configuration": "configs/model/20m.yaml",
+      "checkpoint": "training/checkpoints/edunova-hrm-20m",
+      "parent_model": null,
+      "adapters": [],
+      "evaluation": {
+        "parameter_count": 22789248,
+        "val_loss": 7.670704523722331,
+        "tool_selection_accuracy": 0.4,
+        "task_accuracy": 0.1,
+        "json_validity": 0.0
+      },
+      "date": "2026-09-08T00:00:00+00:00"
+    }
+  }
+}

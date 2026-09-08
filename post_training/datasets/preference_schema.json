@@ -1,0 +1,20 @@
+{
+  "description": "Preference pairs for future alignment. Never auto-train on raw student chats.",
+  "example": {
+    "prompt": "What is my attendance?",
+    "chosen": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{}}",
+    "rejected": "{\"type\":\"FINAL_ANSWER\",\"answer\":\"Your attendance is 97%.\"}"
+  },
+  "pipeline": [
+    "collection",
+    "authorization_or_consent",
+    "pii_detection",
+    "anonymization",
+    "sensitive_data_filtering",
+    "quality_filtering",
+    "deduplication",
+    "human_review",
+    "dataset_versioning",
+    "training"
+  ]
+}

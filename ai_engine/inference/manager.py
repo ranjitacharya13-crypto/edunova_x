@@ -95,6 +95,16 @@ def resources() -> dict[str, Any]:
 
 def model_requirement(settings: Settings, model_path: Path | None = None) -> dict[str, Any]:
     """Memory requirement of the configured model (GGUF header when the file exists)."""
+    runtime = settings.local_model_runtime
+    if runtime == "hrm":
+        return estimate_requirement(
+            runtime="hrm",
+            model_path=None,
+            ctx=min(settings.local_model_ctx_size, 512),
+            catalogue_ram_mb=80,
+            expected_bytes=0,
+            with_embeddings=False,
+        )
     entry = settings.local_model_known_entry or {}
     return estimate_requirement(
         runtime="llama_cpp",
@@ -113,8 +123,110 @@ def preflight_resources(settings: Settings, model_path: Path | None = None) -> d
     return check_model_fits(requirement, snapshot)
 
 
+def _hrm_worker(connection, settings: Settings) -> None:
+    """Supervised worker that loads the custom EduNova PyTorch HRM."""
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    phase = "BOOT"
+    state: dict[str, Any] = {"runtimeAvailable": False, "modelLoaded": False,
+                             "tokenizerLoaded": False, "warmupComplete": False,
+                             "inferenceTest": False}
+
+    def emit(new_phase: str, **facts):
+        nonlocal phase
+        phase = new_phase
+        state.update(facts)
+        connection.send({"kind": "state", "phase": phase, "facts": dict(state)})
+
+    async def run():
+        emit("BOOT", resources=resources())
+        if settings.llm_provider != "local":
+            raise ValueError("Only self-hosted inference is supported (LLM_PROVIDER=local)")
+        emit("CONFIG_LOADED")
+        requirement = model_requirement(settings, None)
+        check_model_fits(requirement, ResourceManager(settings.local_model_dir).snapshot())
+        emit("RESOURCES_CHECKED", memoryRequirement=requirement)
+        import torch  # noqa: PLC0415
+        emit("DEPENDENCIES_READY", runtimeVersion=torch.__version__, runtimeAvailable=True, runtime="hrm")
+        from hrm.inference.runtime import HRMRuntime
+        manager = HRMRuntime(settings)
+        emit("RUNTIME_READY", downloadAttempts=0, fileSizeBytes=None)
+        emit("MODEL_LOCATED", fileExists=(manager.checkpoint_dir / "pytorch_model.pt").exists())
+        emit("MODEL_VALID", fileValid=True, quantization="fp32", memoryRequirement=requirement)
+        emit("MODEL_LOADING")
+        started = time.monotonic()
+        await asyncio.to_thread(manager.load)
+        emit("MODEL_LOADED", modelLoaded=True, tokenizerLoaded=True,
+             modelLoadMs=round((time.monotonic() - started) * 1000),
+             parameterCount=manager.snapshot().get("parameterCount"),
+             fileSizeBytes=manager.file_size_bytes, runtime="hrm")
+        emit("WARMUP_RUNNING")
+        started = time.monotonic()
+        answer = await manager.generate(system_prompt="Answer briefly.", user_prompt="What is 2 + 2?",
+                                        max_tokens=24, temperature=0)
+        if not answer.strip() or not (manager.last_generation_metrics or {}).get("tokens"):
+            raise ValueError("Warmup did not generate decoded tokens")
+        warmup = {"ok": True, "prompt": "What is 2 + 2?", "answer": answer,
+                  "durationMs": round((time.monotonic() - started) * 1000),
+                  "generation": manager.last_generation_metrics}
+        emit("WARMUP_SUCCESS", warmupComplete=True, warmupMs=warmup["durationMs"], lastSelfTest=warmup)
+        answer = await manager.generate(system_prompt="Answer briefly.",
+                                        user_prompt="Name one thing students can learn.",
+                                        max_tokens=32, temperature=0)
+        if not answer.strip() or not (manager.last_generation_metrics or {}).get("tokens"):
+            raise ValueError("Independent inference test returned no decoded tokens")
+        emit("INFERENCE_TEST_SUCCESS", inferenceTest=True)
+        emit("READY", resources=resources(), runtime="hrm")
+        while True:
+            command = await asyncio.to_thread(connection.recv)
+            if command["kind"] == "stop":
+                return
+            if command["kind"] == "cancel":
+                continue
+            try:
+                emit("SERVING")
+
+                def on_token(piece):
+                    if connection.poll():
+                        control = connection.recv()
+                        if control.get("kind") in {"cancel", "stop"}:
+                            raise LLMResponseError("Generation cancelled", status_code=499, error_type="REQUEST_CANCELLED")
+                    connection.send({"kind": "token", "delta": piece})
+
+                text = await manager.generate(**command["arguments"], on_token=on_token)
+                connection.send({"kind": "result", "text": text, "metrics": manager.last_generation_metrics})
+                emit("READY", resources=resources())
+            except Exception as exc:  # noqa: BLE001
+                connection.send({"kind": "error", "code": getattr(exc, "error_type", "INFERENCE_FAILED"),
+                                 "message": safe_error(exc), "metrics": manager.last_generation_metrics})
+                emit("READY")
+
+    try:
+        asyncio.run(run())
+    except (EOFError, BrokenPipeError):
+        pass
+    except Exception as exc:  # noqa: BLE001
+        failure = {
+            "BOOT": "CONFIG_FAILED", "CONFIG_LOADED": "MODEL_RESOURCE_INSUFFICIENT",
+            "RESOURCES_CHECKED": "DEPENDENCY_FAILED", "DEPENDENCIES_READY": "MODEL_DOWNLOAD_FAILED",
+            "RUNTIME_READY": "MODEL_INVALID", "MODEL_LOCATED": "MODEL_INVALID",
+            "MODEL_VALID": "MODEL_LOAD_FAILED", "MODEL_LOADING": "MODEL_LOAD_FAILED",
+            "MODEL_LOADED": "WARMUP_FAILED", "WARMUP_RUNNING": "WARMUP_FAILED",
+            "WARMUP_SUCCESS": "INFERENCE_FAILED",
+        }.get(phase, "INFERENCE_FAILED")
+        if isinstance(exc, ResourceInsufficient):
+            failure = "MODEL_RESOURCE_INSUFFICIENT"
+            state["resourceReport"] = exc.report()
+        elif isinstance(exc, MemoryError):
+            failure = "OUT_OF_MEMORY"
+        emit(failure, lastError=safe_error(exc), failureStage=phase)
+    finally:
+        connection.close()
+
+
 def _worker(connection, settings: Settings) -> None:
     """Child entry point. Only trusted parent commands arrive over the pipe."""
+    if getattr(settings, "local_model_runtime", "llama_cpp") == "hrm":
+        return _hrm_worker(connection, settings)
     logging.getLogger("httpx").setLevel(logging.WARNING)
     phase = "BOOT"
     state: dict[str, Any] = {"runtimeAvailable": False, "modelLoaded": False,
@@ -338,8 +450,11 @@ class ModelManager:
         self._transition("BOOT")
         # Memory rule: NEVER spawn a worker for a model the container cannot hold.
         try:
-            from agent.local_llm import LocalModelManager
-            check = preflight_resources(self.settings, LocalModelManager(self.settings).model_path)
+            if self.settings.local_model_runtime == "hrm":
+                check = preflight_resources(self.settings, None)
+            else:
+                from agent.local_llm import LocalModelManager
+                check = preflight_resources(self.settings, LocalModelManager(self.settings).model_path)
             self.facts["memoryRequirement"] = {k: v for k, v in check.items() if k != "fits"}
         except ResourceInsufficient as exc:
             self.facts["resourceReport"] = exc.report()
@@ -472,7 +587,7 @@ class ModelManager:
 
     def snapshot(self, include_source=False):
         snap = {**self.facts, "state": self.state, "publicState": self.public_state,
-                "lifecycle": self.phase, "phase": self.phase, "runtime": "llama_cpp",
+                "lifecycle": self.phase, "phase": self.phase, "runtime": self.settings.local_model_runtime,
                 "modelId": self.facts.get("effectiveModelId", self.settings.local_model_id),
                 "ready": self.is_ready(), "inferenceAvailable": self.is_ready(),
                 "lastError": self.last_error or None, "errorDetail": self.error_detail or None,

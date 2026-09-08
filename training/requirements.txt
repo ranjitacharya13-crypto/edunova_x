@@ -1,0 +1,6 @@
+# Training / post-training for EduNova HRM (not used by Render Free inference).
+--extra-index-url https://download.pytorch.org/whl/cpu
+--prefer-binary
+torch==2.8.0+cpu ; platform_system == "Linux" or platform_system == "Windows"
+torch==2.8.0 ; platform_system == "Darwin"
+numpy>=1.26.0,<3.0.0

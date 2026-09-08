@@ -6,6 +6,13 @@ EduNova AI operates as a **UNIFIED DATA-AWARE AGENT** capable of intelligently c
 3. **CONVERSATION CONTEXT** (Multi-turn topic resolution & memory)
 4. **MODEL KNOWLEDGE** (General educational & scientific concepts)
 
+> **Custom EduNova HRM (PyTorch)** lives in `ai_engine/hrm/`. It is a
+> two-level hierarchical reasoner owned by this project (not Llama/Qwen/GPT-2).
+> Render Free still boots the llama.cpp GGUF path (`LOCAL_MODEL_RUNTIME=llama_cpp`)
+> because torch import overhead does not fit 512 MiB. Set
+> `LOCAL_MODEL_RUNTIME=hrm` on a ≥1 GiB instance after training a checkpoint.
+> See `docs/model.md`.
+>
 > **Self-hosted, two-process since v6.0; sized for Render FREE (512 MiB).**
 > The AI brain is an open-source model — **SmolLM2-135M-Instruct GGUF
 > Q4_K_M** (`bartowski/…`, ~101 MB weights, integrity-pinned in `config.py`) —

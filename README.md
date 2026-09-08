@@ -9,6 +9,26 @@ when current web research is necessary.
 See **[AGENT_ARCHITECTURE.md](./AGENT_ARCHITECTURE.md)** for configuration,
 API examples, security controls, deployment details, and tests.
 
+## Custom EduNova HRM (PyTorch)
+
+EduNova includes a **project-owned hierarchical reasoning model**
+(`ai_engine/hrm/`) — not a renamed third-party LLM. It plans tool use,
+emits structured JSON, and relies on the existing database / RAG / web
+tools instead of memorizing student data.
+
+Production on Render Free (512 MiB) still serves the existing llama.cpp
+GGUF runtime; PyTorch HRM needs ≥1 GiB. Train and evaluate locally:
+
+```bash
+python -m venv .venv
+.venv/bin/pip install -r training/requirements.txt
+.venv/bin/python training/train.py --config configs/model/20m.yaml
+.venv/bin/python training/evaluate.py --checkpoint training/checkpoints/edunova-hrm-20m
+.venv/bin/python -m unittest ai_engine.tests.test_hrm tests.hrm.test_e2e_workflows -v
+```
+
+Docs: [docs/model.md](./docs/model.md) · [docs/training.md](./docs/training.md) · [docs/architecture.md](./docs/architecture.md)
+
 ## 📦 One-Step Installation
 
 EduNova X is now available as a globally installable CLI tool or a direct-download package.

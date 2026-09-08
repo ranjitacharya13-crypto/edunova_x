@@ -1,0 +1,11 @@
+{
+  "name": "edunova-hrm-synthetic-v1",
+  "version": "dataset-v1",
+  "license": "project-generated; no private student data",
+  "source": "training/datasets/generate_synthetic.py",
+  "count": 78,
+  "train": 66,
+  "val": 12,
+  "filtering": "synthetic only; no PII",
+  "deduplication": "prompt uniqueness within generator"
+}
