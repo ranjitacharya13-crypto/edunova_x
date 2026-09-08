@@ -1,0 +1,25 @@
+preset: 100m
+name: edunova-hrm-100m
+architecture_version: hrm-v1
+vocab_size: 4096
+d_model: 640
+n_heads: 10
+high_level_layers: 6
+low_level_layers: 12
+ffn_mult: 4
+max_seq_len: 512
+dropout: 0.0
+tie_embeddings: false
+gradient_checkpointing: true
+lr: 0.00015
+weight_decay: 0.01
+batch_size: 1
+epochs: 1
+max_steps: 80
+warmup_steps: 8
+grad_clip: 1.0
+mixed_precision: false
+seed: 13
+stage: pretrain
+# BLOCKED on Render Free 512 MiB: PyTorch + 100M fp32 weights will not fit.
+# Use 20m on CPU-limited hosts.

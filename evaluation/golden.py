@@ -1,0 +1,75 @@
+"""Stable golden cases. Every model version must be scored against this suite."""
+
+GOLDEN_CASES = [
+    {
+        "id": "attendance",
+        "prompt": "What is my attendance?",
+        "task_type": "DB_QUERY",
+        "tools": ["get_attendance"],
+        "workflow": "student_information",
+    },
+    {
+        "id": "tomorrow_classes",
+        "prompt": "What classes do I have tomorrow?",
+        "task_type": "DB_QUERY",
+        "tools": ["get_upcoming_classes", "get_timetable"],
+        "workflow": "student_information",
+    },
+    {
+        "id": "unit3",
+        "prompt": "Explain Unit 3 from my syllabus.",
+        "task_type": "RAG_QUERY",
+        "tools": ["get_syllabus", "retrieve_learning_materials"],
+        "workflow": "syllabus",
+    },
+    {
+        "id": "web_ai",
+        "prompt": "What are the latest developments in AI research this week?",
+        "task_type": "WEB_QUERY",
+        "tools": ["web_search"],
+        "workflow": "web",
+    },
+    {
+        "id": "quiz_unit2",
+        "prompt": "Create a 10-question medium quiz from Unit 2.",
+        "task_type": "QUIZ",
+        "tools": ["retrieve_learning_materials", "get_syllabus"],
+        "workflow": "quiz",
+    },
+    {
+        "id": "study_plan",
+        "prompt": "Make me a study plan based on my exams and weak subjects.",
+        "task_type": "STUDY_PLAN",
+        "tools": ["get_exams", "get_progress", "get_syllabus", "get_goals"],
+        "workflow": "study_plan",
+    },
+    {
+        "id": "ar_cpu",
+        "prompt": "Show me CPU architecture as an AR model.",
+        "task_type": "AR",
+        "tools": ["get_ar_lessons"],
+        "workflow": "ar",
+    },
+    {
+        "id": "multi_quiz_week",
+        "prompt": "Analyze my recent quiz performance and tell me what I should study this week.",
+        "task_type": "MULTI_TOOL",
+        "tools": ["get_quiz_results", "get_progress", "get_learning_materials"],
+        "workflow": "multi_tool",
+    },
+    {
+        "id": "knowledge_recursion",
+        "prompt": "What is recursion?",
+        "task_type": "EXPLANATION",
+        "tools": [],
+        "workflow": "knowledge",
+    },
+    {
+        "id": "no_web_for_attendance",
+        "prompt": "What is my attendance?",
+        "task_type": "DB_QUERY",
+        "tools": ["get_attendance"],
+        "forbidden_tools": ["web_search"],
+        "workflow": "grounding",
+    },
+]

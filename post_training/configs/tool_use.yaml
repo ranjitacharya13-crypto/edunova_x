@@ -1,0 +1,9 @@
+name: tool_use_v1
+method: lora
+rank: 8
+alpha: 16
+target: tool_use
+lr: 0.0001
+steps: 40
+parent: v0.1-base
+dataset: training/datasets/train.jsonl

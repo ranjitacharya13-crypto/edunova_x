@@ -1,0 +1,26 @@
+# EduNova HRM 20M — default size for low-resource CPU.
+# Target: ~20 million parameters. Actual count is measured at init.
+preset: 20m
+name: edunova-hrm-20m
+architecture_version: hrm-v1
+vocab_size: 4096
+d_model: 384
+n_heads: 6
+high_level_layers: 3
+low_level_layers: 6
+ffn_mult: 4
+max_seq_len: 512
+dropout: 0.0
+tie_embeddings: false
+gradient_checkpointing: false
+# Training
+lr: 0.0003
+weight_decay: 0.01
+batch_size: 4
+epochs: 2
+max_steps: 200
+warmup_steps: 10
+grad_clip: 1.0
+mixed_precision: false
+seed: 13
+stage: pretrain

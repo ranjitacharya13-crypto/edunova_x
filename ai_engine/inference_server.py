@@ -148,7 +148,7 @@ def _status_payload() -> dict[str, Any]:
         "inference_test": bool(snap.get("inferenceTest")),
         "ready": ready,
         "model": snap.get("modelId"),
-        "runtime": "llama_cpp",
+        "runtime": settings.local_model_runtime,
         "runtime_version": snap.get("runtimeVersion"),
         "quantization": snap.get("quantization") or (snap.get("memoryRequirement") or {}).get("quantization"),
         "context_size": snap.get("contextSize"),
@@ -326,6 +326,33 @@ async def generate_stream(payload: GenerateRequest, request: Request, x_ai_inter
 
     return StreamingResponse(events(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no", "Connection": "keep-alive"})
+
+
+@app.get("/model/version")
+async def model_version(x_ai_internal_token: str | None = Header(default=None)) -> dict[str, Any]:
+    _authorize(x_ai_internal_token)
+    snap = manager.snapshot()
+    return {
+        "model_version": snap.get("modelId"),
+        "architecture_version": snap.get("architectureVersion") or (
+            "hrm-v1" if settings.local_model_runtime == "hrm" else "llama_cpp-gguf"
+        ),
+        "runtime": settings.local_model_runtime,
+        "tokenizer_version": snap.get("tokenizerVersion"),
+        "parameter_count": snap.get("parameterCount"),
+        "parent_model": None,
+        "state": public_state(manager.phase),
+    }
+
+
+@app.post("/plan")
+async def plan(payload: GenerateRequest, x_ai_internal_token: str | None = Header(default=None)) -> dict[str, Any]:
+    """High-level HRM plan (task/tools). llama.cpp runtimes return NOT_IMPLEMENTED."""
+    _authorize(x_ai_internal_token)
+    return JSONResponse(
+        status_code=501,
+        content={"code": "NOT_IMPLEMENTED", "message": "Dedicated /plan is served in-process by HRMPlanner during HRM training/tests; chat uses POST /generate"},
+    )
 
 
 @app.post("/embeddings")

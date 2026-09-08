@@ -1,0 +1,6 @@
+name: rag_v1
+method: sft
+lr: 0.00005
+steps: 30
+parent: v0.1-base
+dataset: training/datasets/train.jsonl

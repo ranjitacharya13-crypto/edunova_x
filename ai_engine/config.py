@@ -470,6 +470,16 @@ class Settings:
     # Network backstop for one generation round-trip (streaming keeps the
     # connection active; this is not an answer-length limit).
     inference_request_timeout: int = 600
+    # ---- Custom EduNova HRM (PyTorch, project-owned architecture) ----------
+    # LOCAL_MODEL_RUNTIME=hrm selects this path. Default production remains
+    # llama_cpp on Render Free because torch import overhead does not fit
+    # 512 MiB. Missing checkpoints fail honestly unless hrm_allow_untrained.
+    hrm_config_path: str = ""
+    hrm_checkpoint: str = ""
+    hrm_size: str = "20m"
+    hrm_allow_untrained: bool = False
+    hrm_fallback_to_llama: bool = True
+    max_tool_steps: int = 8
     cors_origins: tuple[str, ...] = (
         "http://localhost:5173",
         "http://127.0.0.1:5173",
@@ -611,8 +621,10 @@ class Settings:
     @property
     def llm_configuration_error(self) -> str | None:
         if self.llm_provider == "local":
-            if self.local_model_runtime not in {"torch", "llama_cpp"}:
+            if self.local_model_runtime not in {"torch", "llama_cpp", "hrm"}:
                 return "unsupported_runtime"
+            if self.local_model_runtime == "hrm":
+                return None
             if self.local_model_runtime == "torch":
                 # The torch runtime loads a HuggingFace repo id or a local
                 # directory that already contains a model (config.json).
@@ -727,6 +739,8 @@ def _normalize_runtime(raw: str | None) -> str:
         return "llama_cpp"
     if value in {"pytorch", "transformers", "hf", "torch"}:
         return "torch"
+    if value in {"hrm", "edunova_hrm", "edunova-hrm", "custom"}:
+        return "hrm"
     return value or "llama_cpp"  # unknown values fail validation; never silently choose a runtime
 
 
@@ -891,4 +905,10 @@ def load_settings() -> Settings:
         inference_url=_first_env("AI_INFERENCE_URL", "INFERENCE_SERVICE_URL", default="").rstrip("/"),
         inference_request_timeout=_integer("AI_INFERENCE_REQUEST_TIMEOUT", 600, 15, 3600),
         cors_origins=cors_origins,
+        hrm_config_path=_clean_env_value(os.getenv("HRM_CONFIG_PATH", "")),
+        hrm_checkpoint=_clean_env_value(os.getenv("HRM_CHECKPOINT", "")),
+        hrm_size=_clean_env_value(os.getenv("HRM_SIZE", "20m")) or "20m",
+        hrm_allow_untrained=_boolean("HRM_ALLOW_UNTRAINED", False),
+        hrm_fallback_to_llama=_boolean("HRM_FALLBACK_TO_LLAMA", True),
+        max_tool_steps=_integer("MAX_TOOL_STEPS", 8, 1, 16),
     )

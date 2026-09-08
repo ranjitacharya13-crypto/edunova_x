@@ -1,0 +1,12 @@
+[
+  {
+    "size": "20m",
+    "name": "edunova-hrm-20m",
+    "estimated_params": 22788480,
+    "measured_params": 22789248,
+    "disk_fp32_mb": 86.93,
+    "one_step_train_ms": 115.8,
+    "generate_8_tokens_ms": 106.7,
+    "rss_mb": 648.4
+  }
+]

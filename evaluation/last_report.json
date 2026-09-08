@@ -1,0 +1,170 @@
+{
+  "checkpoint": "training/checkpoints/edunova-hrm-20m",
+  "parameter_count": 22789248,
+  "cases": 10,
+  "tool_selection_accuracy": 0.4,
+  "task_accuracy": 0.1,
+  "json_validity": 0.0,
+  "latency_ms_total": 2338,
+  "latency_ms_per_case": 233,
+  "rss_mb": 646.1,
+  "rss_delta_mb": 16.1,
+  "results": [
+    {
+      "id": "attendance",
+      "prompt": "What is my attendance?",
+      "expected_task": "DB_QUERY",
+      "predicted_task": "EXPLANATION",
+      "task_match": false,
+      "expected_tools": [
+        "get_attendance"
+      ],
+      "predicted_tools": [
+        "get_attendance"
+      ],
+      "tool_hit": true,
+      "json_valid": false,
+      "output_type": null
+    },
+    {
+      "id": "tomorrow_classes",
+      "prompt": "What classes do I have tomorrow?",
+      "expected_task": "DB_QUERY",
+      "predicted_task": "EXPLANATION",
+      "task_match": false,
+      "expected_tools": [
+        "get_timetable",
+        "get_upcoming_classes"
+      ],
+      "predicted_tools": [
+        "get_attendance"
+      ],
+      "tool_hit": false,
+      "json_valid": false,
+      "output_type": null
+    },
+    {
+      "id": "unit3",
+      "prompt": "Explain Unit 3 from my syllabus.",
+      "expected_task": "RAG_QUERY",
+      "predicted_task": "EXPLANATION",
+      "task_match": false,
+      "expected_tools": [
+        "get_syllabus",
+        "retrieve_learning_materials"
+      ],
+      "predicted_tools": [],
+      "tool_hit": false,
+      "json_valid": false,
+      "output_type": null
+    },
+    {
+      "id": "web_ai",
+      "prompt": "What are the latest developments in AI research this week?",
+      "expected_task": "WEB_QUERY",
+      "predicted_task": "EXPLANATION",
+      "task_match": false,
+      "expected_tools": [
+        "web_search"
+      ],
+      "predicted_tools": [
+        "get_attendance"
+      ],
+      "tool_hit": false,
+      "json_valid": false,
+      "output_type": null
+    },
+    {
+      "id": "quiz_unit2",
+      "prompt": "Create a 10-question medium quiz from Unit 2.",
+      "expected_task": "QUIZ",
+      "predicted_task": "EXPLANATION",
+      "task_match": false,
+      "expected_tools": [
+        "get_syllabus",
+        "retrieve_learning_materials"
+      ],
+      "predicted_tools": [],
+      "tool_hit": false,
+      "json_valid": false,
+      "output_type": null
+    },
+    {
+      "id": "study_plan",
+      "prompt": "Make me a study plan based on my exams and weak subjects.",
+      "expected_task": "STUDY_PLAN",
+      "predicted_task": "EXPLANATION",
+      "task_match": false,
+      "expected_tools": [
+        "get_exams",
+        "get_goals",
+        "get_progress",
+        "get_syllabus"
+      ],
+      "predicted_tools": [
+        "get_exams"
+      ],
+      "tool_hit": true,
+      "json_valid": false,
+      "output_type": null
+    },
+    {
+      "id": "ar_cpu",
+      "prompt": "Show me CPU architecture as an AR model.",
+      "expected_task": "AR",
+      "predicted_task": "EXPLANATION",
+      "task_match": false,
+      "expected_tools": [
+        "get_ar_lessons"
+      ],
+      "predicted_tools": [],
+      "tool_hit": false,
+      "json_valid": false,
+      "output_type": null
+    },
+    {
+      "id": "multi_quiz_week",
+      "prompt": "Analyze my recent quiz performance and tell me what I should study this week.",
+      "expected_task": "MULTI_TOOL",
+      "predicted_task": "EXPLANATION",
+      "task_match": false,
+      "expected_tools": [
+        "get_learning_materials",
+        "get_progress",
+        "get_quiz_results"
+      ],
+      "predicted_tools": [],
+      "tool_hit": false,
+      "json_valid": false,
+      "output_type": null
+    },
+    {
+      "id": "knowledge_recursion",
+      "prompt": "What is recursion?",
+      "expected_task": "EXPLANATION",
+      "predicted_task": "EXPLANATION",
+      "task_match": true,
+      "expected_tools": [],
+      "predicted_tools": [],
+      "tool_hit": true,
+      "json_valid": false,
+      "output_type": null
+    },
+    {
+      "id": "no_web_for_attendance",
+      "prompt": "What is my attendance?",
+      "expected_task": "DB_QUERY",
+      "predicted_task": "EXPLANATION",
+      "task_match": false,
+      "expected_tools": [
+        "get_attendance"
+      ],
+      "predicted_tools": [
+        "get_attendance"
+      ],
+      "tool_hit": true,
+      "json_valid": false,
+      "output_type": null
+    }
+  ]
+}

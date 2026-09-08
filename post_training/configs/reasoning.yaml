@@ -1,0 +1,6 @@
+name: reasoning_v1
+method: sft
+lr: 0.00005
+steps: 40
+parent: v0.1-base
+dataset: training/datasets/train.jsonl
