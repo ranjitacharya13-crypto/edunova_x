@@ -1,0 +1,43 @@
+{
+  "dataset_version": "edunova-hrm-sft-v2",
+  "rows": {
+    "train": 197,
+    "val": 60,
+    "total": 257
+  },
+  "train_rows_per_tool": {
+    "get_attendance": 6,
+    "get_student_profile": 6,
+    "get_subjects": 6,
+    "get_timetable": 6,
+    "get_today_schedule": 6,
+    "get_upcoming_classes": 6,
+    "get_syllabus": 6,
+    "get_learning_materials": 6,
+    "get_progress": 7,
+    "get_study_history": 6,
+    "get_quiz_history": 6,
+    "get_quiz_results": 7,
+    "get_assignments": 6,
+    "get_exams": 8,
+    "get_notes": 6,
+    "get_goals": 6,
+    "get_upcoming_events": 6,
+    "get_notifications": 6,
+    "retrieve_learning_materials": 8,
+    "web_search": 6,
+    "open_url": 6,
+    "extract_webpage": 6,
+    "calculator": 6,
+    "get_current_datetime": 6,
+    "get_ar_lessons": 6,
+    "create_quiz": 6,
+    "save_quiz": 6,
+    "create_study_plan": 6,
+    "open_feature": 6
+  },
+  "golden_overlap": [],
+  "benchmark_overlap": [],
+  "completion_format": "{\"type\":...} structured JSON; decoder starts at <assistant>; tokenizer edunova-tok-v2",
+  "pii": "synthetic only, no student records"
+}

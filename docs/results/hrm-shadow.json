@@ -1,0 +1,164 @@
+{
+  "date": "2026-09-08T17:53:12Z",
+  "offline_only": true,
+  "note": "Shadow comparison only. Production serves llama.cpp alone; HRM is not promoted.",
+  "cases": 24,
+  "hrm": {
+    "checkpoint": "post_training/checkpoints/edunova-hrm-20m-sft-r600",
+    "wall_time_sec": 2.2,
+    "schema_ok_rate": 1.0,
+    "tool_hit_rate": 0.4583,
+    "outputs": {
+      "How many lectures did I bunk last month?": {
+        "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_history\",\"arguments\":{}}",
+        "schema_ok": true,
+        "type": "TOOL_CALL",
+        "tool": "get_quiz_history"
+      },
+      "Am I above the attendance cutoff?": {
+        "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{}}",
+        "schema_ok": true,
+        "type": "TOOL_CALL",
+        "tool": "get_attendance"
+      },
+      "Give me my attendance numbers.": {
+        "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{}}",
+        "schema_ok": true,
+        "type": "TOOL_CALL",
+        "tool": "get_attendance"
+      },
+      "What fraction of classes have I attended?": {
+        "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_history\",\"arguments\":{}}",
+        "schema_ok": true,
+        "type": "TOOL_CALL",
+        "tool": "get_quiz_history"
+      },
+      "Which batch do I belong to?": {
+        "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"save_quiz\",\"arguments\":{}}",
+        "schema_ok": true,
+        "type": "TOOL_CALL",
+        "tool": "save_quiz"
+      },
+      "Show me my enrollment info.": {
+        "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_subjects\",\"arguments\":{}}",
+        "schema_ok": true,
+        "type": "TOOL_CALL",
+        "tool": "get_subjects"
+      },
+      "What class am I studying in?": {
+        "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_student_profile\",\"arguments\":{}}",
+        "schema_ok": true,
+        "type": "TOOL_CALL",
+        "tool": "get_student_profile"
+      },
+      "Check my profile on EduNova.": {
+        "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_student_profile\",\"arguments\":{}}",
+        "schema_ok": true,
+        "type": "TOOL_CALL",
+        "tool": "get_student_profile"
+      },
+      "What am I studying this semester?": {
+        "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_progress\",\"arguments\":{}}",
+        "schema_ok": true,
+        "type": "TOOL_CALL",
+        "tool": "get_progress"
+      },
+      "Name my enrolled subjects.": {
+        "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_subjects\",\"arguments\":{}}",
+        "schema_ok": true,
+        "type": "TOOL_CALL",
+        "tool": "get_subjects"
+      },
+      "Which subjects are on my registration?": {
+        "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{}}",
+        "schema_ok": true,
+        "type": "TOOL_CALL",
+        "tool": "get_attendance"
+      },
+      "How many subjects do I have?": {
+        "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_subjects\",\"arguments\":{}}",
+        "schema_ok": true,
+        "type": "TOOL_CALL",
+        "tool": "get_subjects"
+      },
+      "What's my schedule on Thursday?": {
+        "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_progress\",\"arguments\":{}}",
+        "schema_ok": true,
+        "type": "TOOL_CALL",
+        "tool": "get_progress"
+      },
+      "Display the week view of my classes.": {
+        "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_current_datetime\",\"arguments\":{}}",
+        "schema_ok": true,
+        "type": "TOOL_CALL",
+        "tool": "get_current_datetime"
+      },
+      "Show Saturday's class grid.": {
+        "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_timetable\",\"arguments\":{\"day\":\"Wednesday\"}}",
+        "schema_ok": true,
+        "type": "TOOL_CALL",
+        "tool": "get_timetable"
+      },
+      "Read out my weekly lecture plan.": {
+        "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_timetable\",\"arguments\":{}}",
+        "schema_ok": true,
+        "type": "TOOL_CALL",
+        "tool": "get_timetable"
+      },
+      "Any classes left today?": {
+        "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_today_schedule\",\"arguments\":{}}",
+        "schema_ok": true,
+        "type": "TOOL_CALL",
+        "tool": "get_today_schedule"
+      },
+      "What's happening in school today?": {
+        "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_upcoming_events\",\"arguments\":{}}",
+        "schema_ok": true,
+        "type": "TOOL_CALL",
+        "tool": "get_upcoming_events"
+      },
+      "Give me this day's schedule.": {
+        "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_timetable\",\"arguments\":{}}",
+        "schema_ok": true,
+        "type": "TOOL_CALL",
+        "tool": "get_timetable"
+      },
+      "Which lectures are lined up for today?": {
+        "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_upcoming_events\",\"arguments\":{}}",
+        "schema_ok": true,
+        "type": "TOOL_CALL",
+        "tool": "get_upcoming_events"
+      },
+      "What lecture do I have after this one?": {
+        "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_upcoming_classes\",\"arguments\":{}}",
+        "schema_ok": true,
+        "type": "TOOL_CALL",
+        "tool": "get_upcoming_classes"
+      },
+      "Show the classes starting later today.": {
+        "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_progress\",\"arguments\":{\"subject\":\"Physics\"}}",
+        "schema_ok": true,
+        "type": "TOOL_CALL",
+        "tool": "get_progress"
+      },
+      "When is my next chemistry lecture?": {
+        "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_upcoming_classes\",\"arguments\":{}}",
+        "schema_ok": true,
+        "type": "TOOL_CALL",
+        "tool": "get_upcoming_classes"
+      },
+      "Which period comes after the break?": {
+        "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notifications\",\"arguments\":{}}",
+        "schema_ok": true,
+        "type": "TOOL_CALL",
+        "tool": "get_notifications"
+      }
+    }
+  },
+  "llama_cpp": {
+    "status": "NOT IMPLEMENTED",
+    "reason": "no --llama-model GGUF path given",
+    "outputs": {}
+  },
+  "agreement": null
+}

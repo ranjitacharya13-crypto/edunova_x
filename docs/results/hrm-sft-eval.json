@@ -1,0 +1,2823 @@
+{
+  "checkpoint": "post_training/checkpoints/edunova-hrm-20m-sft-r600",
+  "tokenizer_version": "edunova-tok-v2",
+  "parameters": 22789248,
+  "guided_wrapper": false,
+  "modes": [
+    "constrained",
+    "unconstrained"
+  ],
+  "date": "2026-09-08T17:53:07Z",
+  "golden": {
+    "summary": {
+      "cases": 10,
+      "plan_tool_accuracy": 0.5,
+      "plan_task_accuracy": 0.5,
+      "wall_time_sec": 2.1,
+      "json_syntax_constrained": 1.0,
+      "schema_constrained": 1.0,
+      "json_syntax_unconstrained": 1.0,
+      "schema_unconstrained": 1.0
+    },
+    "cases": [
+      {
+        "id": "attendance",
+        "prompt": "What is my attendance?",
+        "plan": {
+          "task_type": "DB_QUERY",
+          "primary_tool": "get_attendance",
+          "tools": [
+            "get_attendance"
+          ],
+          "output_type": "TOOL_CALL"
+        },
+        "plan_tool_hit": true,
+        "plan_task_hit": true,
+        "modes": {
+          "constrained": {
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{}}",
+            "json_syntax": true,
+            "schema_ok": true,
+            "type": "TOOL_CALL",
+            "tool": "get_attendance"
+          },
+          "unconstrained": {
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{}}",
+            "json_syntax": true,
+            "schema_ok": true,
+            "type": "TOOL_CALL",
+            "tool": "get_attendance"
+          }
+        }
+      },
+      {
+        "id": "tomorrow_classes",
+        "prompt": "What classes do I have tomorrow?",
+        "plan": {
+          "task_type": "DB_QUERY",
+          "primary_tool": "get_today_schedule",
+          "tools": [
+            "get_today_schedule",
+            "open_feature"
+          ],
+          "output_type": "TOOL_CALL"
+        },
+        "plan_tool_hit": false,
+        "plan_task_hit": true,
+        "modes": {
+          "constrained": {
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"open_feature\",\"arguments\":{}}",
+            "json_syntax": true,
+            "schema_ok": true,
+            "type": "TOOL_CALL",
+            "tool": "open_feature"
+          },
+          "unconstrained": {
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"open_feature\",\"arguments\":{}}",
+            "json_syntax": true,
+            "schema_ok": true,
+            "type": "TOOL_CALL",
+            "tool": "open_feature"
+          }
+        }
+      },
+      {
+        "id": "unit3",
+        "prompt": "Explain Unit 3 from my syllabus.",
+        "plan": {
+          "task_type": "RAG_QUERY",
+          "primary_tool": "get_syllabus",
+          "tools": [
+            "get_syllabus"
+          ],
+          "output_type": "TOOL_CALL"
+        },
+        "plan_tool_hit": true,
+        "plan_task_hit": true,
+        "modes": {
+          "constrained": {
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_syllabus\",\"arguments\":{\"subject\":\"Physics\"}}",
+            "json_syntax": true,
+            "schema_ok": true,
+            "type": "TOOL_CALL",
+            "tool": "get_syllabus"
+          },
+          "unconstrained": {
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_syllabus\",\"arguments\":{\"subject\":\"Physics\"}}",
+            "json_syntax": true,
+            "schema_ok": true,
+            "type": "TOOL_CALL",
+            "tool": "get_syllabus"
+          }
+        }
+      },
+      {
+        "id": "web_ai",
+        "prompt": "What are the latest developments in AI research this week?",
+        "plan": {
+          "task_type": "DB_QUERY",
+          "primary_tool": "get_quiz_results",
+          "tools": [
+            "get_quiz_results"
+          ],
+          "output_type": "TOOL_CALL"
+        },
+        "plan_tool_hit": false,
+        "plan_task_hit": false,
+        "modes": {
+          "constrained": {
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_results\",\"arguments\":{}}",
+            "json_syntax": true,
+            "schema_ok": true,
+            "type": "TOOL_CALL",
+            "tool": "get_quiz_results"
+          },
+          "unconstrained": {
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_results\",\"arguments\":{}}",
+            "json_syntax": true,
+            "schema_ok": true,
+            "type": "TOOL_CALL",
+            "tool": "get_quiz_results"
+          }
+        }
+      },
+      {
+        "id": "quiz_unit2",
+        "prompt": "Create a 10-question medium quiz from Unit 2.",
+        "plan": {
+          "task_type": "QUIZ",
+          "primary_tool": "create_quiz",
+          "tools": [
+            "create_quiz"
+          ],
+          "output_type": "TOOL_CALL"
+        },
+        "plan_tool_hit": false,
+        "plan_task_hit": true,
+        "modes": {
+          "constrained": {
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_quiz\",\"arguments\":{\"title\":\"Arrays Quiz\",\"subject\":\"Data Structures\",\"topic\":\"arrays\"}}",
+            "json_syntax": true,
+            "schema_ok": true,
+            "type": "TOOL_CALL",
+            "tool": "create_quiz"
+          },
+          "unconstrained": {
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_quiz\",\"arguments\":{\"title\":\"Arrays Quiz\",\"subject\":\"Data Structures\",\"topic\":\"arrays\"}}",
+            "json_syntax": true,
+            "schema_ok": true,
+            "type": "TOOL_CALL",
+            "tool": "create_quiz"
+          }
+        }
+      },
+      {
+        "id": "study_plan",
+        "prompt": "Make me a study plan based on my exams and weak subjects.",
+        "plan": {
+          "task_type": "DB_QUERY",
+          "primary_tool": "get_exams",
+          "tools": [
+            "get_exams"
+          ],
+          "output_type": "TOOL_CALL"
+        },
+        "plan_tool_hit": true,
+        "plan_task_hit": false,
+        "modes": {
+          "constrained": {
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_exams\",\"arguments\":{}}",
+            "json_syntax": true,
+            "schema_ok": true,
+            "type": "TOOL_CALL",
+            "tool": "get_exams"
+          },
+          "unconstrained": {
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_exams\",\"arguments\":{}}",
+            "json_syntax": true,
+            "schema_ok": true,
+            "type": "TOOL_CALL",
+            "tool": "get_exams"
+          }
+        }
+      },
+      {
+        "id": "ar_cpu",
+        "prompt": "Show me CPU architecture as an AR model.",
+        "plan": {
+          "task_type": "SUMMARY",
+          "primary_tool": "none",
+          "tools": [
+            "get_quiz_history"
+          ],
+          "output_type": "TOOL_CALL"
+        },
+        "plan_tool_hit": false,
+        "plan_task_hit": false,
+        "modes": {
+          "constrained": {
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_history\",\"arguments\":{}}",
+            "json_syntax": true,
+            "schema_ok": true,
+            "type": "TOOL_CALL",
+            "tool": "get_quiz_history"
+          },
+          "unconstrained": {
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_history\",\"arguments\":{}}",
+            "json_syntax": true,
+            "schema_ok": true,
+            "type": "TOOL_CALL",
+            "tool": "get_quiz_history"
+          }
+        }
+      },
+      {
+        "id": "multi_quiz_week",
+        "prompt": "Analyze my recent quiz performance and tell me what I should study this week.",
+        "plan": {
+          "task_type": "DB_QUERY",
+          "primary_tool": "get_quiz_results",
+          "tools": [
+            "get_quiz_results"
+          ],
+          "output_type": "TOOL_CALL"
+        },
+        "plan_tool_hit": true,
+        "plan_task_hit": false,
+        "modes": {
+          "constrained": {
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_results\",\"arguments\":{}}",
+            "json_syntax": true,
+            "schema_ok": true,
+            "type": "TOOL_CALL",
+            "tool": "get_quiz_results"
+          },
+          "unconstrained": {
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_results\",\"arguments\":{}}",
+            "json_syntax": true,
+            "schema_ok": true,
+            "type": "TOOL_CALL",
+            "tool": "get_quiz_results"
+          }
+        }
+      },
+      {
+        "id": "knowledge_recursion",
+        "prompt": "What is recursion?",
+        "plan": {
+          "task_type": "DB_QUERY",
+          "primary_tool": "get_upcoming_classes",
+          "tools": [
+            "get_upcoming_classes"
+          ],
+          "output_type": "TOOL_CALL"
+        },
+        "plan_tool_hit": false,
+        "plan_task_hit": false,
+        "modes": {
+          "constrained": {
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_upcoming_classes\",\"arguments\":{}}",
+            "json_syntax": true,
+            "schema_ok": true,
+            "type": "TOOL_CALL",
+            "tool": "get_upcoming_classes"
+          },
+          "unconstrained": {
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_upcoming_classes\",\"arguments\":{}}",
+            "json_syntax": true,
+            "schema_ok": true,
+            "type": "TOOL_CALL",
+            "tool": "get_upcoming_classes"
+          }
+        }
+      },
+      {
+        "id": "no_web_for_attendance",
+        "prompt": "What is my attendance?",
+        "plan": {
+          "task_type": "DB_QUERY",
+          "primary_tool": "get_attendance",
+          "tools": [
+            "get_attendance"
+          ],
+          "output_type": "TOOL_CALL"
+        },
+        "plan_tool_hit": true,
+        "plan_task_hit": true,
+        "modes": {
+          "constrained": {
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{}}",
+            "json_syntax": true,
+            "schema_ok": true,
+            "type": "TOOL_CALL",
+            "tool": "get_attendance"
+          },
+          "unconstrained": {
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{}}",
+            "json_syntax": true,
+            "schema_ok": true,
+            "type": "TOOL_CALL",
+            "tool": "get_attendance"
+          }
+        }
+      }
+    ]
+  },
+  "benchmark": {
+    "summary": {
+      "cases": 117,
+      "wall_time_sec": 26.1,
+      "json_syntax_constrained": 1.0,
+      "tool_name_accuracy_constrained": 0.4786,
+      "predicted_tool_top3_constrained": [
+        [
+          "calculator",
+          11
+        ],
+        [
+          "get_ar_lessons",
+          8
+        ],
+        [
+          "get_progress",
+          7
+        ]
+      ],
+      "json_syntax_unconstrained": 1.0,
+      "tool_name_accuracy_unconstrained": 0.4786,
+      "predicted_tool_top3_unconstrained": [
+        [
+          "calculator",
+          11
+        ],
+        [
+          "get_ar_lessons",
+          8
+        ],
+        [
+          "get_progress",
+          7
+        ]
+      ]
+    },
+    "cases": [
+      {
+        "id": "bench_000",
+        "prompt": "How many lectures did I bunk last month?",
+        "expected_tool": "get_attendance",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_quiz_history",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_history\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_quiz_history",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_history\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_001",
+        "prompt": "Am I above the attendance cutoff?",
+        "expected_tool": "get_attendance",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_attendance",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_attendance",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_002",
+        "prompt": "Give me my attendance numbers.",
+        "expected_tool": "get_attendance",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_attendance",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_attendance",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_003",
+        "prompt": "What fraction of classes have I attended?",
+        "expected_tool": "get_attendance",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_quiz_history",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_history\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_quiz_history",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_history\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_004",
+        "prompt": "Which batch do I belong to?",
+        "expected_tool": "get_student_profile",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "save_quiz",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"save_quiz\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "save_quiz",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"save_quiz\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_005",
+        "prompt": "Show me my enrollment info.",
+        "expected_tool": "get_student_profile",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_subjects",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_subjects\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_subjects",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_subjects\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_006",
+        "prompt": "What class am I studying in?",
+        "expected_tool": "get_student_profile",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_student_profile",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_student_profile\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_student_profile",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_student_profile\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_007",
+        "prompt": "Check my profile on EduNova.",
+        "expected_tool": "get_student_profile",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_student_profile",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_student_profile\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_student_profile",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_student_profile\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_008",
+        "prompt": "What am I studying this semester?",
+        "expected_tool": "get_subjects",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_progress",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_progress\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_progress",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_progress\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_009",
+        "prompt": "Name my enrolled subjects.",
+        "expected_tool": "get_subjects",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_subjects",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_subjects\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_subjects",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_subjects\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_010",
+        "prompt": "Which subjects are on my registration?",
+        "expected_tool": "get_subjects",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_attendance",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_attendance",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_011",
+        "prompt": "How many subjects do I have?",
+        "expected_tool": "get_subjects",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_subjects",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_subjects\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_subjects",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_subjects\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_012",
+        "prompt": "What's my schedule on Thursday?",
+        "expected_tool": "get_timetable",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_progress",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_progress\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_progress",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_progress\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_013",
+        "prompt": "Display the week view of my classes.",
+        "expected_tool": "get_timetable",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_current_datetime",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_current_datetime\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_current_datetime",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_current_datetime\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_014",
+        "prompt": "Show Saturday's class grid.",
+        "expected_tool": "get_timetable",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_timetable",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_timetable\",\"arguments\":{\"day\":\"Wednesday\"}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_timetable",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_timetable\",\"arguments\":{\"day\":\"Wednesday\"}}"
+          }
+        }
+      },
+      {
+        "id": "bench_015",
+        "prompt": "Read out my weekly lecture plan.",
+        "expected_tool": "get_timetable",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_timetable",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_timetable\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_timetable",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_timetable\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_016",
+        "prompt": "Any classes left today?",
+        "expected_tool": "get_today_schedule",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_today_schedule",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_today_schedule\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_today_schedule",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_today_schedule\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_017",
+        "prompt": "What's happening in school today?",
+        "expected_tool": "get_today_schedule",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_upcoming_events",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_upcoming_events\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_upcoming_events",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_upcoming_events\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_018",
+        "prompt": "Give me this day's schedule.",
+        "expected_tool": "get_today_schedule",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_timetable",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_timetable\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_timetable",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_timetable\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_019",
+        "prompt": "Which lectures are lined up for today?",
+        "expected_tool": "get_today_schedule",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_upcoming_events",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_upcoming_events\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_upcoming_events",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_upcoming_events\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_020",
+        "prompt": "What lecture do I have after this one?",
+        "expected_tool": "get_upcoming_classes",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_upcoming_classes",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_upcoming_classes\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_upcoming_classes",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_upcoming_classes\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_021",
+        "prompt": "Show the classes starting later today.",
+        "expected_tool": "get_upcoming_classes",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_progress",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_progress\",\"arguments\":{\"subject\":\"Physics\"}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_progress",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_progress\",\"arguments\":{\"subject\":\"Physics\"}}"
+          }
+        }
+      },
+      {
+        "id": "bench_022",
+        "prompt": "When is my next chemistry lecture?",
+        "expected_tool": "get_upcoming_classes",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_upcoming_classes",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_upcoming_classes\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_upcoming_classes",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_upcoming_classes\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_023",
+        "prompt": "Which period comes after the break?",
+        "expected_tool": "get_upcoming_classes",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_notifications",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notifications\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_notifications",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notifications\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_024",
+        "prompt": "What chapters are in the math book?",
+        "expected_tool": "get_syllabus",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_upcoming_events",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_upcoming_events\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_upcoming_events",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_upcoming_events\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_025",
+        "prompt": "Show the course outline for history.",
+        "expected_tool": "get_syllabus",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_subjects",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_subjects\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_subjects",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_subjects\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_026",
+        "prompt": "List units from my physics curriculum.",
+        "expected_tool": "get_syllabus",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "calculator",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "calculator",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_027",
+        "prompt": "Which topics are included in the biology course?",
+        "expected_tool": "get_syllabus",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "calculator",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "calculator",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_028",
+        "prompt": "Open my uploaded file on trigonometry.",
+        "expected_tool": "get_learning_materials",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_learning_materials",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_learning_materials\",\"arguments\":{\"title\":\"thermodynamics\"}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_learning_materials",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_learning_materials\",\"arguments\":{\"title\":\"thermodynamics\"}}"
+          }
+        }
+      },
+      {
+        "id": "bench_029",
+        "prompt": "Show the document I uploaded about volcanoes.",
+        "expected_tool": "get_learning_materials",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "create_quiz",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_quiz\",\"arguments\":{\"title\":\"Chemistry TermPractice\",\"subject\":\"Biology\",\"topic\":\"electromagnetic waves\"}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "create_quiz",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_quiz\",\"arguments\":{\"title\":\"Chemistry TermPractice\",\"subject\":\"Biology\",\"topic\":\"electromagnetic waves\"}}"
+          }
+        }
+      },
+      {
+        "id": "bench_030",
+        "prompt": "Find uploaded revision notes for English.",
+        "expected_tool": "get_learning_materials",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_ar_lessons",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_ar_lessons\",\"arguments\":{\"subject\":\"Biology\",\"topic\":\"plant cell\"}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_ar_lessons",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_ar_lessons\",\"arguments\":{\"subject\":\"Biology\",\"topic\":\"plant cell\"}}"
+          }
+        }
+      },
+      {
+        "id": "bench_031",
+        "prompt": "Get the PDF I added for chemical equations.",
+        "expected_tool": "get_learning_materials",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "retrieve_learning_materials",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"retrieve_learning_materials\",\"arguments\":{\"query\":\"water cycle\"}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "retrieve_learning_materials",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"retrieve_learning_materials\",\"arguments\":{\"query\":\"water cycle\"}}"
+          }
+        }
+      },
+      {
+        "id": "bench_032",
+        "prompt": "Am I getting better at physics?",
+        "expected_tool": "get_progress",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_notifications",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notifications\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_notifications",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notifications\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_033",
+        "prompt": "Where do I stand in my courses?",
+        "expected_tool": "get_progress",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_progress",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_progress\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_progress",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_progress\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_034",
+        "prompt": "Show how I'm performing overall.",
+        "expected_tool": "get_progress",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_progress",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_progress\",\"arguments\":{\"subject\":\"Physics\"}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_progress",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_progress\",\"arguments\":{\"subject\":\"Physics\"}}"
+          }
+        }
+      },
+      {
+        "id": "bench_035",
+        "prompt": "Which subjects need more work from me?",
+        "expected_tool": "get_progress",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_subjects",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_subjects\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_subjects",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_subjects\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_036",
+        "prompt": "How long did I study last night?",
+        "expected_tool": "get_study_history",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_study_history",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_study_history\",\"arguments\":{\"subject\":\"Physics\"}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_study_history",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_study_history\",\"arguments\":{\"subject\":\"Physics\"}}"
+          }
+        }
+      },
+      {
+        "id": "bench_037",
+        "prompt": "Show sessions from the past week.",
+        "expected_tool": "get_study_history",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_ar_lessons",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_ar_lessons\",\"arguments\":{\"subject\":\"Biology\",\"topic\":\"plant cell\"}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_ar_lessons",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_ar_lessons\",\"arguments\":{\"subject\":\"Biology\",\"topic\":\"plant cell\"}}"
+          }
+        }
+      },
+      {
+        "id": "bench_038",
+        "prompt": "When did I last open chemistry notes?",
+        "expected_tool": "get_study_history",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_notes",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notes\",\"arguments\":{\"subject\":\"History\"}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_notes",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notes\",\"arguments\":{\"subject\":\"History\"}}"
+          }
+        }
+      },
+      {
+        "id": "bench_039",
+        "prompt": "What have I studied recently?",
+        "expected_tool": "get_study_history",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "calculator",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "calculator",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_040",
+        "prompt": "List quizzes I attempted in May.",
+        "expected_tool": "get_quiz_history",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_quiz_history",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_history\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_quiz_history",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_history\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_041",
+        "prompt": "Which tests have I completed?",
+        "expected_tool": "get_quiz_history",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_subjects",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_subjects\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_subjects",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_subjects\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_042",
+        "prompt": "Show quiz attempts for biology.",
+        "expected_tool": "get_quiz_history",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "save_quiz",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"save_quiz\",\"arguments\":{\"title\":\"Thermodynamics Quiz\",\"subject\":\"Data Structures\",\"topic\":\"thermodynamics\"}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "save_quiz",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"save_quiz\",\"arguments\":{\"title\":\"Thermodynamics Quiz\",\"subject\":\"Data Structures\",\"topic\":\"thermodynamics\"}}"
+          }
+        }
+      },
+      {
+        "id": "bench_043",
+        "prompt": "Have I practiced any math quizzes?",
+        "expected_tool": "get_quiz_history",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_quiz_history",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_history\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_quiz_history",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_history\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_044",
+        "prompt": "Did I pass the last physics test?",
+        "expected_tool": "get_quiz_results",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_current_datetime",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_current_datetime\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_current_datetime",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_current_datetime\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_045",
+        "prompt": "Show scores from my recent quizzes.",
+        "expected_tool": "get_quiz_results",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_quiz_results",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_results\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_quiz_results",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_results\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_046",
+        "prompt": "What percentage did I get in the math quiz?",
+        "expected_tool": "get_quiz_results",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_quiz_results",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_results\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_quiz_results",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_results\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_047",
+        "prompt": "Give me the results of my quiz attempts.",
+        "expected_tool": "get_quiz_results",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_quiz_results",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_results\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_quiz_results",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_quiz_results\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_048",
+        "prompt": "What homework is pending submission?",
+        "expected_tool": "get_assignments",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_learning_materials",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_learning_materials\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_learning_materials",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_learning_materials\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_049",
+        "prompt": "Show assignments with deadlines this week.",
+        "expected_tool": "get_assignments",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_ar_lessons",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_ar_lessons\",\"arguments\":{\"subject\":\"History\"}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_ar_lessons",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_ar_lessons\",\"arguments\":{\"subject\":\"History\"}}"
+          }
+        }
+      },
+      {
+        "id": "bench_050",
+        "prompt": "Do I need to submit anything tomorrow?",
+        "expected_tool": "get_assignments",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_goals",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_goals\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_goals",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_goals\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_051",
+        "prompt": "List unfinished assignments.",
+        "expected_tool": "get_assignments",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_assignments",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_assignments\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_assignments",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_assignments\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_052",
+        "prompt": "What exams do I have in December?",
+        "expected_tool": "get_exams",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_exams",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_exams\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_exams",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_exams\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_053",
+        "prompt": "Tell me when my biology test is.",
+        "expected_tool": "get_exams",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_timetable",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_timetable\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_timetable",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_timetable\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_054",
+        "prompt": "Are board exams scheduled yet?",
+        "expected_tool": "get_exams",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_current_datetime",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_current_datetime\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_current_datetime",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_current_datetime\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_055",
+        "prompt": "List my test dates.",
+        "expected_tool": "get_exams",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_current_datetime",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_current_datetime\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_current_datetime",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_current_datetime\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_056",
+        "prompt": "How is my presence record this term?",
+        "expected_tool": "get_attendance",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_current_datetime",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_current_datetime\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_current_datetime",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_current_datetime\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_057",
+        "prompt": "Open notes I saved for algebra.",
+        "expected_tool": "get_notes",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_notes",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notes\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_notes",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notes\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_058",
+        "prompt": "Do I have notes on the French Revolution?",
+        "expected_tool": "get_notes",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_notes",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notes\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_notes",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notes\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_059",
+        "prompt": "Show my saved short notes.",
+        "expected_tool": "get_notes",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_notes",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notes\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_notes",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notes\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_060",
+        "prompt": "Find my chemistry revision notes.",
+        "expected_tool": "get_notes",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_notes",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notes\",\"arguments\":{\"subject\":\"History\"}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_notes",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notes\",\"arguments\":{\"subject\":\"History\"}}"
+          }
+        }
+      },
+      {
+        "id": "bench_061",
+        "prompt": "What targets am I working toward?",
+        "expected_tool": "get_goals",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_attendance",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_attendance",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_062",
+        "prompt": "Show my goal list.",
+        "expected_tool": "get_goals",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_goals",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_goals\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_goals",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_goals\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_063",
+        "prompt": "Remind me what I aimed to finish this month.",
+        "expected_tool": "get_goals",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_goals",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_goals\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_goals",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_goals\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_064",
+        "prompt": "Which goals are still open?",
+        "expected_tool": "get_goals",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_goals",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_goals\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_goals",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_goals\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_065",
+        "prompt": "Is the science fair coming up?",
+        "expected_tool": "get_upcoming_events",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_ar_lessons",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_ar_lessons\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_ar_lessons",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_ar_lessons\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_066",
+        "prompt": "What events are on the school calendar?",
+        "expected_tool": "get_upcoming_events",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "create_quiz",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_quiz\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "create_quiz",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_quiz\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_067",
+        "prompt": "Show functions happening next month.",
+        "expected_tool": "get_upcoming_events",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "create_quiz",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_quiz\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "create_quiz",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_quiz\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_068",
+        "prompt": "Any seminars I should attend soon?",
+        "expected_tool": "get_upcoming_events",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_upcoming_events",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_upcoming_events\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_upcoming_events",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_upcoming_events\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_069",
+        "prompt": "Read my new messages from school.",
+        "expected_tool": "get_notifications",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "SEARCH_REQUEST",
+            "tool": "web_search",
+            "tool_hit": false,
+            "text": "{\"type\":\"SEARCH_REQUEST\",\"tool\":\"web_search\",\"arguments\":{\"query\":\"renewable energy research news\"}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "SEARCH_REQUEST",
+            "tool": "web_search",
+            "tool_hit": false,
+            "text": "{\"type\":\"SEARCH_REQUEST\",\"tool\":\"web_search\",\"arguments\":{\"query\":\"renewable energy research news\"}}"
+          }
+        }
+      },
+      {
+        "id": "bench_070",
+        "prompt": "Any updates in my inbox?",
+        "expected_tool": "get_notifications",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_student_profile",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_student_profile\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_student_profile",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_student_profile\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_071",
+        "prompt": "Show teacher announcements for this week.",
+        "expected_tool": "get_notifications",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_notifications",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notifications\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_notifications",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notifications\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_072",
+        "prompt": "What did I get notified about today?",
+        "expected_tool": "get_notifications",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_today_schedule",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_today_schedule\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_today_schedule",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_today_schedule\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_073",
+        "prompt": "Find explanations of entropy in my materials.",
+        "expected_tool": "retrieve_learning_materials",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "retrieve_learning_materials",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"retrieve_learning_materials\",\"arguments\":{\"query\":\"water cycle\"}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "retrieve_learning_materials",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"retrieve_learning_materials\",\"arguments\":{\"query\":\"water cycle\"}}"
+          }
+        }
+      },
+      {
+        "id": "bench_074",
+        "prompt": "Search study content for Ohm's law.",
+        "expected_tool": "retrieve_learning_materials",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "retrieve_learning_materials",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"retrieve_learning_materials\",\"arguments\":{\"query\":\"thermodynamics\"}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "retrieve_learning_materials",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"retrieve_learning_materials\",\"arguments\":{\"query\":\"thermodynamics\"}}"
+          }
+        }
+      },
+      {
+        "id": "bench_075",
+        "prompt": "Retrieve learning content on plate tectonics.",
+        "expected_tool": "retrieve_learning_materials",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "retrieve_learning_materials",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"retrieve_learning_materials\",\"arguments\":{\"subject\":\"Physics\"}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "retrieve_learning_materials",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"retrieve_learning_materials\",\"arguments\":{\"subject\":\"Physics\"}}"
+          }
+        }
+      },
+      {
+        "id": "bench_076",
+        "prompt": "Look up material about integration by parts.",
+        "expected_tool": "retrieve_learning_materials",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_student_profile",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_student_profile\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_student_profile",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_student_profile\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_077",
+        "prompt": "Search current events in AI policy.",
+        "expected_tool": "web_search",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "calculator",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "calculator",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_078",
+        "prompt": "Find news about recent Mars missions online.",
+        "expected_tool": "web_search",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "SEARCH_REQUEST",
+            "tool": "web_search",
+            "tool_hit": true,
+            "text": "{\"type\":\"SEARCH_REQUEST\",\"tool\":\"web_search\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "SEARCH_REQUEST",
+            "tool": "web_search",
+            "tool_hit": true,
+            "text": "{\"type\":\"SEARCH_REQUEST\",\"tool\":\"web_search\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_079",
+        "prompt": "Look up this week's Nobel announcements.",
+        "expected_tool": "web_search",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_notifications",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notifications\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_notifications",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_notifications\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_080",
+        "prompt": "Search the internet for new vaccine research.",
+        "expected_tool": "web_search",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "save_quiz",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"save_quiz\",\"arguments\":{\"title\":\"Chemistry TermPractice\",\"subject\":\"Biology\",\"topic\":\"thermodynamics\"}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "save_quiz",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"save_quiz\",\"arguments\":{\"title\":\"Chemistry TermPractice\",\"subject\":\"Biology\",\"topic\":\"thermodynamics\"}}"
+          }
+        }
+      },
+      {
+        "id": "bench_081",
+        "prompt": "Open https://example.edu/geo/latitude.",
+        "expected_tool": "open_url",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "open_url",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"open_url\",\"arguments\":{\"url\":\"https://example.edu/physics/unit3\"}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "open_url",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"open_url\",\"arguments\":{\"url\":\"https://example.edu/physics/unit3\"}}"
+          }
+        }
+      },
+      {
+        "id": "bench_082",
+        "prompt": "Visit https://example.edu/cs/recursion page.",
+        "expected_tool": "open_url",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "extract_webpage",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"extract_webpage\",\"arguments\":{\"url\":\"https://example.edu/news/space\"}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "extract_webpage",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"extract_webpage\",\"arguments\":{\"url\":\"https://example.edu/news/space\"}}"
+          }
+        }
+      },
+      {
+        "id": "bench_083",
+        "prompt": "Open the link https://example.edu/news/exam-dates.",
+        "expected_tool": "open_url",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "extract_webpage",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"extract_webpage\",\"arguments\":{\"url\":\"https://example.edu/news/space\"}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "extract_webpage",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"extract_webpage\",\"arguments\":{\"url\":\"https://example.edu/news/space\"}}"
+          }
+        }
+      },
+      {
+        "id": "bench_084",
+        "prompt": "Load https://example.edu/bio/ecosystems.",
+        "expected_tool": "open_url",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "extract_webpage",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"extract_webpage\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "extract_webpage",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"extract_webpage\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_085",
+        "prompt": "Extract text from https://example.edu/math/vectors.",
+        "expected_tool": "extract_webpage",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_exams",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_exams\",\"arguments\":{\"url\":\"https://example.edu/blog/study-tips\"}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_exams",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_exams\",\"arguments\":{\"url\":\"https://example.edu/blog/study-tips\"}}"
+          }
+        }
+      },
+      {
+        "id": "bench_086",
+        "prompt": "Scrape https://example.edu/chem/acids-bases.",
+        "expected_tool": "extract_webpage",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "extract_webpage",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"extract_webpage\",\"arguments\":{\"url\":\"https://example.edu/news/space\"}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "extract_webpage",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"extract_webpage\",\"arguments\":{\"url\":\"https://example.edu/news/space\"}}"
+          }
+        }
+      },
+      {
+        "id": "bench_087",
+        "prompt": "Read and extract https://example.edu/history/ww2 summary.",
+        "expected_tool": "extract_webpage",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "open_url",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"open_url\",\"arguments\":{\"url\":\"https://example.edu/bio/cell-structure\"}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "open_url",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"open_url\",\"arguments\":{\"url\":\"https://example.edu/bio/cell-structure\"}}"
+          }
+        }
+      },
+      {
+        "id": "bench_088",
+        "prompt": "Pull main content from https://example.edu/physics/optics.",
+        "expected_tool": "extract_webpage",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "extract_webpage",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"extract_webpage\",\"arguments\":{\"url\":\"https://example.edu/news/space\"}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "extract_webpage",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"extract_webpage\",\"arguments\":{\"url\":\"https://example.edu/news/space\"}}"
+          }
+        }
+      },
+      {
+        "id": "bench_089",
+        "prompt": "What is 55 times 19?",
+        "expected_tool": "calculator",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "calculator",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{\"expression\":\"(45+30)/15\"}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "calculator",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{\"expression\":\"(45+30)/15\"}}"
+          }
+        }
+      },
+      {
+        "id": "bench_090",
+        "prompt": "Compute 1000 divided by 8.",
+        "expected_tool": "calculator",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "calculator",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{\"expression\":\"(45+30)/15\"}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "calculator",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{\"expression\":\"(45+30)/15\"}}"
+          }
+        }
+      },
+      {
+        "id": "bench_091",
+        "prompt": "Evaluate (12 + 8) squared.",
+        "expected_tool": "calculator",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "calculator",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{\"expression\":\"(45+30)/15\"}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "calculator",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{\"expression\":\"(45+30)/15\"}}"
+          }
+        }
+      },
+      {
+        "id": "bench_092",
+        "prompt": "How much is 20 percent of 450?",
+        "expected_tool": "calculator",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "calculator",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "calculator",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_093",
+        "prompt": "What's the date today?",
+        "expected_tool": "get_current_datetime",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_current_datetime",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_current_datetime\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_current_datetime",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_current_datetime\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_094",
+        "prompt": "Current time please.",
+        "expected_tool": "get_current_datetime",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_current_datetime",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_current_datetime\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_current_datetime",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_current_datetime\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_095",
+        "prompt": "Which month is it?",
+        "expected_tool": "get_current_datetime",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "calculator",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "calculator",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_096",
+        "prompt": "Tell me the day today.",
+        "expected_tool": "get_current_datetime",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_today_schedule",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_today_schedule\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_today_schedule",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_today_schedule\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_097",
+        "prompt": "Show AR content for the human skeleton.",
+        "expected_tool": "get_ar_lessons",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_ar_lessons",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_ar_lessons\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_ar_lessons",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_ar_lessons\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_098",
+        "prompt": "Is there an AR lesson on electric motors?",
+        "expected_tool": "get_ar_lessons",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_ar_lessons",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_ar_lessons\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_ar_lessons",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_ar_lessons\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_099",
+        "prompt": "Find an AR model of a plant cell.",
+        "expected_tool": "get_ar_lessons",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_ar_lessons",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_ar_lessons\",\"arguments\":{\"subject\":\"Biology\",\"topic\":\"plant cell\"}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_ar_lessons",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_ar_lessons\",\"arguments\":{\"subject\":\"Biology\",\"topic\":\"plant cell\"}}"
+          }
+        }
+      },
+      {
+        "id": "bench_100",
+        "prompt": "Look for AR lessons about the solar system.",
+        "expected_tool": "get_ar_lessons",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_ar_lessons",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_ar_lessons\",\"arguments\":{\"subject\":\"Biology\",\"subject\":\"plant cell\"}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_ar_lessons",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_ar_lessons\",\"arguments\":{\"subject\":\"Biology\",\"subject\":\"plant cell\"}}"
+          }
+        }
+      },
+      {
+        "id": "bench_101",
+        "prompt": "Build a practice test on trigonometric ratios.",
+        "expected_tool": "create_quiz",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "create_quiz",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_quiz\",\"arguments\":{\"title\":\"EM Waves Quiz\",\"subject\":\"Data Structures\",\"topic\":\"electromagnetic waves\"}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "create_quiz",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_quiz\",\"arguments\":{\"title\":\"EM Waves Quiz\",\"subject\":\"Data Structures\",\"topic\":\"electromagnetic waves\"}}"
+          }
+        }
+      },
+      {
+        "id": "bench_102",
+        "prompt": "Make questions on cellular respiration.",
+        "expected_tool": "create_quiz",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "create_quiz",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_quiz\",\"arguments\":{\"subject\":\"Physics\"}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "create_quiz",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_quiz\",\"arguments\":{\"subject\":\"Physics\"}}"
+          }
+        }
+      },
+      {
+        "id": "bench_103",
+        "prompt": "Set a quiz about World War 2.",
+        "expected_tool": "create_quiz",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "create_quiz",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_quiz\",\"arguments\":{\"title\":\"M Waves Quiz\",\"subject\":\"Data Structures\",\"topic\":\"electromagnetic waves\"}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "create_quiz",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_quiz\",\"arguments\":{\"title\":\"M Waves Quiz\",\"subject\":\"Data Structures\",\"topic\":\"electromagnetic waves\"}}"
+          }
+        }
+      },
+      {
+        "id": "bench_104",
+        "prompt": "Prepare practice questions on sorting algorithms.",
+        "expected_tool": "create_quiz",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "calculator",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{\"subject\":\"Physics\"}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "calculator",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{\"subject\":\"Physics\"}}"
+          }
+        }
+      },
+      {
+        "id": "bench_105",
+        "prompt": "Keep this geography quiz saved.",
+        "expected_tool": "save_quiz",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "create_quiz",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_quiz\",\"arguments\":{\"title\":\"Chemistry TermodynamPractice\",\"subject\":\"Biology\",\"topic\":\"electromagnetic waves\"}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "create_quiz",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_quiz\",\"arguments\":{\"title\":\"Chemistry TermodynamPractice\",\"subject\":\"Biology\",\"topic\":\"electromagnetic waves\"}}"
+          }
+        }
+      },
+      {
+        "id": "bench_106",
+        "prompt": "Store the motion quiz in my library.",
+        "expected_tool": "save_quiz",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "save_quiz",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"save_quiz\",\"arguments\":{\"title\":\"Thermodynamics Quiz\",\"subject\":\"Physics\",\"topic\":\"thermodynamics\"}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "save_quiz",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"save_quiz\",\"arguments\":{\"title\":\"Thermodynamics Quiz\",\"subject\":\"Physics\",\"topic\":\"thermodynamics\"}}"
+          }
+        }
+      },
+      {
+        "id": "bench_107",
+        "prompt": "Save my fractions practice test.",
+        "expected_tool": "save_quiz",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "calculator",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "calculator",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"calculator\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_108",
+        "prompt": "Save this data structures quiz for revision.",
+        "expected_tool": "save_quiz",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "save_quiz",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"save_quiz\",\"arguments\":{\"title\":\"Thermodynamics Quiz\",\"subject\":\"Physics\",\"topic\":\"thermodynamics\"}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "save_quiz",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"save_quiz\",\"arguments\":{\"title\":\"Thermodynamics Quiz\",\"subject\":\"Physics\",\"topic\":\"thermodynamics\"}}"
+          }
+        }
+      },
+      {
+        "id": "bench_109",
+        "prompt": "Draft a prep schedule for my math final.",
+        "expected_tool": "create_study_plan",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "create_study_plan",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_study_plan\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "create_study_plan",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_study_plan\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_110",
+        "prompt": "Plan my studies for the chemistry unit test.",
+        "expected_tool": "create_study_plan",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "create_study_plan",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_study_plan\",\"arguments\":{\"title\":\"Chemistry Term Plan\",\"subject\":\"Physics\",\"topic\":\"plant cell\"}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "create_study_plan",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_study_plan\",\"arguments\":{\"title\":\"Chemistry Term Plan\",\"subject\":\"Physics\",\"topic\":\"plant cell\"}}"
+          }
+        }
+      },
+      {
+        "id": "bench_111",
+        "prompt": "Make a weekly schedule for biology revision.",
+        "expected_tool": "create_study_plan",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "create_study_plan",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_study_plan\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "create_study_plan",
+            "tool_hit": true,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"create_study_plan\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_112",
+        "prompt": "Organize my preparation for the history exam.",
+        "expected_tool": "create_study_plan",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_exams",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_exams\",\"arguments\":{\"title\":\"Chemistry Term Plan\",\"subject\":\"Physics\",\"topic\":\"thermodynamics\"}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_exams",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_exams\",\"arguments\":{\"title\":\"Chemistry Term Plan\",\"subject\":\"Physics\",\"topic\":\"thermodynamics\"}}"
+          }
+        }
+      },
+      {
+        "id": "bench_113",
+        "prompt": "Jump to the timetable tab.",
+        "expected_tool": "open_feature",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_timetable",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_timetable\",\"arguments\":{\"day\":\"Monday\"}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_timetable",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_timetable\",\"arguments\":{\"day\":\"Monday\"}}"
+          }
+        }
+      },
+      {
+        "id": "bench_114",
+        "prompt": "Open the progress dashboard in the app.",
+        "expected_tool": "open_feature",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_progress",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_progress\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_progress",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_progress\",\"arguments\":{}}"
+          }
+        }
+      },
+      {
+        "id": "bench_115",
+        "prompt": "Switch to the AR section.",
+        "expected_tool": "open_feature",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_progress",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_progress\",\"arguments\":{\"subject\":\"Physics\"}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_progress",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_progress\",\"arguments\":{\"subject\":\"Physics\"}}"
+          }
+        }
+      },
+      {
+        "id": "bench_116",
+        "prompt": "Take me to the assignments screen.",
+        "expected_tool": "open_feature",
+        "modes": {
+          "constrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_assignments",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_assignments\",\"arguments\":{}}"
+          },
+          "unconstrained": {
+            "json_syntax": true,
+            "type": "TOOL_CALL",
+            "tool": "get_assignments",
+            "tool_hit": false,
+            "text": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_assignments\",\"arguments\":{}}"
+          }
+        }
+      }
+    ]
+  }
+}

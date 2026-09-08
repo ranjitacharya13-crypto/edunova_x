@@ -1,0 +1,117 @@
+{"id": "bench_000", "prompt": "How many lectures did I bunk last month?", "tool": "get_attendance"}
+{"id": "bench_001", "prompt": "Am I above the attendance cutoff?", "tool": "get_attendance"}
+{"id": "bench_002", "prompt": "Give me my attendance numbers.", "tool": "get_attendance"}
+{"id": "bench_003", "prompt": "What fraction of classes have I attended?", "tool": "get_attendance"}
+{"id": "bench_004", "prompt": "Which batch do I belong to?", "tool": "get_student_profile"}
+{"id": "bench_005", "prompt": "Show me my enrollment info.", "tool": "get_student_profile"}
+{"id": "bench_006", "prompt": "What class am I studying in?", "tool": "get_student_profile"}
+{"id": "bench_007", "prompt": "Check my profile on EduNova.", "tool": "get_student_profile"}
+{"id": "bench_008", "prompt": "What am I studying this semester?", "tool": "get_subjects"}
+{"id": "bench_009", "prompt": "Name my enrolled subjects.", "tool": "get_subjects"}
+{"id": "bench_010", "prompt": "Which subjects are on my registration?", "tool": "get_subjects"}
+{"id": "bench_011", "prompt": "How many subjects do I have?", "tool": "get_subjects"}
+{"id": "bench_012", "prompt": "What's my schedule on Thursday?", "tool": "get_timetable"}
+{"id": "bench_013", "prompt": "Display the week view of my classes.", "tool": "get_timetable"}
+{"id": "bench_014", "prompt": "Show Saturday's class grid.", "tool": "get_timetable"}
+{"id": "bench_015", "prompt": "Read out my weekly lecture plan.", "tool": "get_timetable"}
+{"id": "bench_016", "prompt": "Any classes left today?", "tool": "get_today_schedule"}
+{"id": "bench_017", "prompt": "What's happening in school today?", "tool": "get_today_schedule"}
+{"id": "bench_018", "prompt": "Give me this day's schedule.", "tool": "get_today_schedule"}
+{"id": "bench_019", "prompt": "Which lectures are lined up for today?", "tool": "get_today_schedule"}
+{"id": "bench_020", "prompt": "What lecture do I have after this one?", "tool": "get_upcoming_classes"}
+{"id": "bench_021", "prompt": "Show the classes starting later today.", "tool": "get_upcoming_classes"}
+{"id": "bench_022", "prompt": "When is my next chemistry lecture?", "tool": "get_upcoming_classes"}
+{"id": "bench_023", "prompt": "Which period comes after the break?", "tool": "get_upcoming_classes"}
+{"id": "bench_024", "prompt": "What chapters are in the math book?", "tool": "get_syllabus"}
+{"id": "bench_025", "prompt": "Show the course outline for history.", "tool": "get_syllabus"}
+{"id": "bench_026", "prompt": "List units from my physics curriculum.", "tool": "get_syllabus"}
+{"id": "bench_027", "prompt": "Which topics are included in the biology course?", "tool": "get_syllabus"}
+{"id": "bench_028", "prompt": "Open my uploaded file on trigonometry.", "tool": "get_learning_materials"}
+{"id": "bench_029", "prompt": "Show the document I uploaded about volcanoes.", "tool": "get_learning_materials"}
+{"id": "bench_030", "prompt": "Find uploaded revision notes for English.", "tool": "get_learning_materials"}
+{"id": "bench_031", "prompt": "Get the PDF I added for chemical equations.", "tool": "get_learning_materials"}
+{"id": "bench_032", "prompt": "Am I getting better at physics?", "tool": "get_progress"}
+{"id": "bench_033", "prompt": "Where do I stand in my courses?", "tool": "get_progress"}
+{"id": "bench_034", "prompt": "Show how I'm performing overall.", "tool": "get_progress"}
+{"id": "bench_035", "prompt": "Which subjects need more work from me?", "tool": "get_progress"}
+{"id": "bench_036", "prompt": "How long did I study last night?", "tool": "get_study_history"}
+{"id": "bench_037", "prompt": "Show sessions from the past week.", "tool": "get_study_history"}
+{"id": "bench_038", "prompt": "When did I last open chemistry notes?", "tool": "get_study_history"}
+{"id": "bench_039", "prompt": "What have I studied recently?", "tool": "get_study_history"}
+{"id": "bench_040", "prompt": "List quizzes I attempted in May.", "tool": "get_quiz_history"}
+{"id": "bench_041", "prompt": "Which tests have I completed?", "tool": "get_quiz_history"}
+{"id": "bench_042", "prompt": "Show quiz attempts for biology.", "tool": "get_quiz_history"}
+{"id": "bench_043", "prompt": "Have I practiced any math quizzes?", "tool": "get_quiz_history"}
+{"id": "bench_044", "prompt": "Did I pass the last physics test?", "tool": "get_quiz_results"}
+{"id": "bench_045", "prompt": "Show scores from my recent quizzes.", "tool": "get_quiz_results"}
+{"id": "bench_046", "prompt": "What percentage did I get in the math quiz?", "tool": "get_quiz_results"}
+{"id": "bench_047", "prompt": "Give me the results of my quiz attempts.", "tool": "get_quiz_results"}
+{"id": "bench_048", "prompt": "What homework is pending submission?", "tool": "get_assignments"}
+{"id": "bench_049", "prompt": "Show assignments with deadlines this week.", "tool": "get_assignments"}
+{"id": "bench_050", "prompt": "Do I need to submit anything tomorrow?", "tool": "get_assignments"}
+{"id": "bench_051", "prompt": "List unfinished assignments.", "tool": "get_assignments"}
+{"id": "bench_052", "prompt": "What exams do I have in December?", "tool": "get_exams"}
+{"id": "bench_053", "prompt": "Tell me when my biology test is.", "tool": "get_exams"}
+{"id": "bench_054", "prompt": "Are board exams scheduled yet?", "tool": "get_exams"}
+{"id": "bench_055", "prompt": "List my test dates.", "tool": "get_exams"}
+{"id": "bench_056", "prompt": "How is my presence record this term?", "tool": "get_attendance"}
+{"id": "bench_057", "prompt": "Open notes I saved for algebra.", "tool": "get_notes"}
+{"id": "bench_058", "prompt": "Do I have notes on the French Revolution?", "tool": "get_notes"}
+{"id": "bench_059", "prompt": "Show my saved short notes.", "tool": "get_notes"}
+{"id": "bench_060", "prompt": "Find my chemistry revision notes.", "tool": "get_notes"}
+{"id": "bench_061", "prompt": "What targets am I working toward?", "tool": "get_goals"}
+{"id": "bench_062", "prompt": "Show my goal list.", "tool": "get_goals"}
+{"id": "bench_063", "prompt": "Remind me what I aimed to finish this month.", "tool": "get_goals"}
+{"id": "bench_064", "prompt": "Which goals are still open?", "tool": "get_goals"}
+{"id": "bench_065", "prompt": "Is the science fair coming up?", "tool": "get_upcoming_events"}
+{"id": "bench_066", "prompt": "What events are on the school calendar?", "tool": "get_upcoming_events"}
+{"id": "bench_067", "prompt": "Show functions happening next month.", "tool": "get_upcoming_events"}
+{"id": "bench_068", "prompt": "Any seminars I should attend soon?", "tool": "get_upcoming_events"}
+{"id": "bench_069", "prompt": "Read my new messages from school.", "tool": "get_notifications"}
+{"id": "bench_070", "prompt": "Any updates in my inbox?", "tool": "get_notifications"}
+{"id": "bench_071", "prompt": "Show teacher announcements for this week.", "tool": "get_notifications"}
+{"id": "bench_072", "prompt": "What did I get notified about today?", "tool": "get_notifications"}
+{"id": "bench_073", "prompt": "Find explanations of entropy in my materials.", "tool": "retrieve_learning_materials"}
+{"id": "bench_074", "prompt": "Search study content for Ohm's law.", "tool": "retrieve_learning_materials"}
+{"id": "bench_075", "prompt": "Retrieve learning content on plate tectonics.", "tool": "retrieve_learning_materials"}
+{"id": "bench_076", "prompt": "Look up material about integration by parts.", "tool": "retrieve_learning_materials"}
+{"id": "bench_077", "prompt": "Search current events in AI policy.", "tool": "web_search"}
+{"id": "bench_078", "prompt": "Find news about recent Mars missions online.", "tool": "web_search"}
+{"id": "bench_079", "prompt": "Look up this week's Nobel announcements.", "tool": "web_search"}
+{"id": "bench_080", "prompt": "Search the internet for new vaccine research.", "tool": "web_search"}
+{"id": "bench_081", "prompt": "Open https://example.edu/geo/latitude.", "tool": "open_url"}
+{"id": "bench_082", "prompt": "Visit https://example.edu/cs/recursion page.", "tool": "open_url"}
+{"id": "bench_083", "prompt": "Open the link https://example.edu/news/exam-dates.", "tool": "open_url"}
+{"id": "bench_084", "prompt": "Load https://example.edu/bio/ecosystems.", "tool": "open_url"}
+{"id": "bench_085", "prompt": "Extract text from https://example.edu/math/vectors.", "tool": "extract_webpage"}
+{"id": "bench_086", "prompt": "Scrape https://example.edu/chem/acids-bases.", "tool": "extract_webpage"}
+{"id": "bench_087", "prompt": "Read and extract https://example.edu/history/ww2 summary.", "tool": "extract_webpage"}
+{"id": "bench_088", "prompt": "Pull main content from https://example.edu/physics/optics.", "tool": "extract_webpage"}
+{"id": "bench_089", "prompt": "What is 55 times 19?", "tool": "calculator"}
+{"id": "bench_090", "prompt": "Compute 1000 divided by 8.", "tool": "calculator"}
+{"id": "bench_091", "prompt": "Evaluate (12 + 8) squared.", "tool": "calculator"}
+{"id": "bench_092", "prompt": "How much is 20 percent of 450?", "tool": "calculator"}
+{"id": "bench_093", "prompt": "What's the date today?", "tool": "get_current_datetime"}
+{"id": "bench_094", "prompt": "Current time please.", "tool": "get_current_datetime"}
+{"id": "bench_095", "prompt": "Which month is it?", "tool": "get_current_datetime"}
+{"id": "bench_096", "prompt": "Tell me the day today.", "tool": "get_current_datetime"}
+{"id": "bench_097", "prompt": "Show AR content for the human skeleton.", "tool": "get_ar_lessons"}
+{"id": "bench_098", "prompt": "Is there an AR lesson on electric motors?", "tool": "get_ar_lessons"}
+{"id": "bench_099", "prompt": "Find an AR model of a plant cell.", "tool": "get_ar_lessons"}
+{"id": "bench_100", "prompt": "Look for AR lessons about the solar system.", "tool": "get_ar_lessons"}
+{"id": "bench_101", "prompt": "Build a practice test on trigonometric ratios.", "tool": "create_quiz"}
+{"id": "bench_102", "prompt": "Make questions on cellular respiration.", "tool": "create_quiz"}
+{"id": "bench_103", "prompt": "Set a quiz about World War 2.", "tool": "create_quiz"}
+{"id": "bench_104", "prompt": "Prepare practice questions on sorting algorithms.", "tool": "create_quiz"}
+{"id": "bench_105", "prompt": "Keep this geography quiz saved.", "tool": "save_quiz"}
+{"id": "bench_106", "prompt": "Store the motion quiz in my library.", "tool": "save_quiz"}
+{"id": "bench_107", "prompt": "Save my fractions practice test.", "tool": "save_quiz"}
+{"id": "bench_108", "prompt": "Save this data structures quiz for revision.", "tool": "save_quiz"}
+{"id": "bench_109", "prompt": "Draft a prep schedule for my math final.", "tool": "create_study_plan"}
+{"id": "bench_110", "prompt": "Plan my studies for the chemistry unit test.", "tool": "create_study_plan"}
+{"id": "bench_111", "prompt": "Make a weekly schedule for biology revision.", "tool": "create_study_plan"}
+{"id": "bench_112", "prompt": "Organize my preparation for the history exam.", "tool": "create_study_plan"}
+{"id": "bench_113", "prompt": "Jump to the timetable tab.", "tool": "open_feature"}
+{"id": "bench_114", "prompt": "Open the progress dashboard in the app.", "tool": "open_feature"}
+{"id": "bench_115", "prompt": "Switch to the AR section.", "tool": "open_feature"}
+{"id": "bench_116", "prompt": "Take me to the assignments screen.", "tool": "open_feature"}

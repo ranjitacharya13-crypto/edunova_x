@@ -1,0 +1,20 @@
+{
+  "date": "2026-09-08T17:53:49Z",
+  "python": "3.11.2",
+  "checkpoint": "post_training/checkpoints/edunova-hrm-20m-sft-r600",
+  "measurements": {
+    "baseline_rss_mib": 11.4,
+    "after_import_torch_rss_mib": 486.9,
+    "checkpoint_disk_mib": 86.98,
+    "after_model_load_rss_mib": 619.9,
+    "after_generate_rss_mib": 626.2,
+    "generated_tokens": 8,
+    "generate_wall_time_sec": 0.068,
+    "sample_output": "{\"type\":\"TOOL_CALL\",\"tool\":\"get_attendance\",\"arguments\":{}}",
+    "weights_only_mib": 86.93
+  },
+  "torch_version": "2.14.0+cu130",
+  "parameters": 22789248,
+  "tokenizer_version": "edunova-tok-v2",
+  "render_free_512_fits": false
+}

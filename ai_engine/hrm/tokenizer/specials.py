@@ -66,6 +66,61 @@ TOOL_TOKENS = [
     "create_study_plan",
 ]
 
+# Atomic JSON scaffolding tokens (added in edunova-tok-v2). The v1 byte
+# encoder never emitted multi-character tokens, so the decoder had to spell
+# `{"type":"TOOL_CALL",...}` byte-by-byte. v2 encodes these atomically.
+JSON_WRAPPER_TOKENS = [
+    '{"type":"',
+    '","tool":"',
+    '","arguments":',
+    '","answer":"',
+    '","query":"',
+    '","subject":"',
+    '{"',
+    '":"',
+    '","',
+    '":{',
+    '"}',
+    '":[',
+    '"]',
+    '}}',
+]
+
+JSON_FIELD_TOKENS = [
+    '"type"',
+    '"tool"',
+    '"arguments"',
+    '"answer"',
+    '"query"',
+    '"subject"',
+    '"unit"',
+    '"count"',
+    '"difficulty"',
+    '"title"',
+    '"questions"',
+    '"question"',
+    '"options"',
+    '"answerIndex"',
+    '"explanation"',
+    '"topic"',
+    '"objects"',
+    '"name"',
+    '"position"',
+    '"description"',
+    '"connections"',
+    '"from"',
+    '"to"',
+    '"interactions"',
+    '"schedule"',
+    '"day"',
+    '"time"',
+    '"task"',
+    '"message"',
+    '"url"',
+    '"expression"',
+    '"view"',
+]
+
 EDU_TERMS = [
     "syllabus",
     "attendance",

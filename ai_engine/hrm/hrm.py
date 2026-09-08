@@ -120,16 +120,33 @@ def _model_class():
             temperature: float = 0.2,
             eos_id: int | None = None,
             on_token=None,
+            start_token_id: int | None = None,
+            forced_prefix_ids=None,
+            logit_bias=None,
         ):
+            """Autoregressive decode conditioned on the encoder prompt.
+
+            start_token_id: first decoder token. SFT checkpoints are trained
+            with the decoder starting at <assistant> (see preprocessing
+            .prepare.encode_completion); pass tokenizer's <assistant> id for
+            them. Defaults to <bos> for backwards compatibility.
+            forced_prefix_ids: optional token ids teacher-forced as the first
+            generated tokens (e.g. the {"type":"<OUTPUT_TYPE> wrapper taken
+            from the model's own output-type head at inference time).
+            logit_bias: optional (vocab,) tensor added to each step's logits
+            (used by constrained decoding to mask invalid continuations).
+            """
             self.eval()
             eos_id = self.config.eos_id if eos_id is None else eos_id
+            start = self.config.bos_id if start_token_id is None else int(start_token_id)
+            prefix = [int(t) for t in (forced_prefix_ids or [])]
             padding = input_ids.ne(self.config.pad_id)
             memory_pack = self.high(self.tok_emb(input_ids), padding)
             memory = memory_pack["memory"]
             b = input_ids.size(0)
-            generated = torch.full((b, 1), self.config.bos_id, dtype=torch.long, device=input_ids.device)
+            generated = torch.full((b, 1), start, dtype=torch.long, device=input_ids.device)
             kv_caches = [{} for _ in range(self.config.low_level_layers)]
-            for _ in range(max_new_tokens):
+            for step in range(max_new_tokens):
                 tok = generated[:, -1:]
                 hidden = self.tok_emb(tok)
                 if generated.size(1) == 1:
@@ -142,9 +159,17 @@ def _model_class():
                     embedding_weight=self.tok_emb.weight if self.config.tie_embeddings else None,
                 )
                 logits = low["logits"][:, -1]
-                if temperature and temperature > 0:
-                    logits = logits / max(1e-5, temperature)
-                    probs = torch.softmax(logits.float(), dim=-1)
+                if logit_bias is not None:
+                    # callable(step, logits) -> bias tensor to add (or None);
+                    # a plain tensor is added directly.
+                    bias = logit_bias(step, logits) if callable(logit_bias) else logit_bias
+                    if bias is not None:
+                        logits = logits + bias.to(logits.device)
+                if step < len(prefix):
+                    next_id = torch.full((b, 1), prefix[step], dtype=torch.long, device=input_ids.device)
+                elif temperature and temperature > 0:
+                    scaled = logits / max(1e-5, temperature)
+                    probs = torch.softmax(scaled.float(), dim=-1)
                     next_id = torch.multinomial(probs, num_samples=1)
                 else:
                     next_id = logits.argmax(dim=-1, keepdim=True)

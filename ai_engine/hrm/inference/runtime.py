@@ -132,6 +132,13 @@ class HRMRuntime:
                 if on_token is not None:
                     on_token(piece)
 
+        # SFT (edunova-tok-v2) checkpoints are teacher-forced with the
+        # decoder starting at <assistant>; legacy v1 checkpoints used <bos>.
+        start_id = self._tokenizer.bos_id
+        if str(getattr(self._tokenizer, "version", "")).startswith("edunova-tok-v"):
+            major = str(getattr(self._tokenizer, "version", "")).rsplit("-v", 1)[-1]
+            if major.isdigit() and int(major) >= 2:
+                start_id = self._tokenizer.token_to_id.get("<assistant>", start_id)
         with self._lock:
             out_ids = self._model.generate(
                 input_ids,
@@ -139,6 +146,7 @@ class HRMRuntime:
                 temperature=temp,
                 eos_id=self._tokenizer.eos_id,
                 on_token=_cb,
+                start_token_id=start_id,
             )
         text = self._tokenizer.decode(out_ids[0].tolist(), skip_special=True).strip()
         if json_schema and text:
