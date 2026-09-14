@@ -750,7 +750,9 @@ function ChatMessage({ message, onRetry, onConfirmAction, retryDisabled }) {
   // Retrying cannot fix a deployment/resource failure; only show the button
   // when the failure is transient (model busy, network blip, inference error).
   const NON_RETRYABLE = new Set(["MODEL_RESOURCE_INSUFFICIENT", "OUT_OF_MEMORY", "MODEL_STARTUP_FAILED", "MODEL_FAILED",
-    "MODEL_DOWNLOAD_FAILED", "MODEL_INVALID", "MODEL_LOAD_FAILED", "WARMUP_FAILED", "DEPENDENCY_FAILED", "CONFIG_FAILED", "AUTH_FAILED", "PERMISSION_DENIED"]);
+    "MODEL_DOWNLOAD_FAILED", "MODEL_INVALID", "MODEL_LOAD_FAILED", "WARMUP_FAILED", "DEPENDENCY_FAILED", "CONFIG_FAILED", "AUTH_FAILED", "PERMISSION_DENIED",
+    "MODEL_STORAGE_NOT_WRITABLE", "MODEL_STORAGE_INSUFFICIENT_DISK", "MODEL_CHECKSUM_FAILED", "MODEL_PARTIAL_DOWNLOAD",
+    "MODEL_DOWNLOAD_TIMEOUT", "MODEL_NETWORK_FAILED", "MODEL_NOT_FOUND"]);
   const canRetry = isError && !NON_RETRYABLE.has(String(message.errorCode || "").toUpperCase());
 
   return (

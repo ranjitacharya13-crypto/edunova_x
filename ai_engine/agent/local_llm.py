@@ -5,14 +5,26 @@ This module is imported ONLY by the persistent inference service worker
 orchestrator (``main.py``) never imports it; it reaches the model through the
 authenticated HTTP/SSE client in ``agent/remote_llm.py``.
 
-``LocalModelManager`` owns exactly three things and has NO lifecycle state
+``LocalModelManager`` owns exactly four things and has NO lifecycle state
 machine of its own (the supervised ``ModelManager`` is the single authority):
 
-- download-once into ``LOCAL_MODEL_DIR`` (persistent disk), verify size /
-  GGUF magic / sha256, never re-download a valid cached file;
+- STORAGE validation of ``LOCAL_MODEL_DIR`` (mkdir + write + read + rename +
+  delete probes + free-space check) BEFORE any network access, so a bad cache
+  path fails in milliseconds as ``MODEL_STORAGE_NOT_WRITABLE`` /
+  ``MODEL_STORAGE_INSUFFICIENT_DISK`` instead of masquerading as a download
+  failure;
+- download-once into ``LOCAL_MODEL_DIR``, verify size / GGUF magic / sha256,
+  never re-download a valid cached file;
 - load with mmap (``_load_model``);
 - single-flight generation with real token streaming and grammar-constrained
   JSON (``generate``).
+
+Storage contract (this is where the 2026-09 /var/data/models outage came
+from): the resolved directory is proven writable with real filesystem probes
+BEFORE the cache is read or a single byte is downloaded. An operator-pinned
+directory that cannot be created/written is a deployment configuration bug:
+it fails loudly with the exact path and the platform-specific fix, and is
+NEVER silently re-pointed at another directory.
 
 Download contract (this is where the previous HTTP 404 outage came from):
 - the resolved URL is validated with a preflight HEAD **before** any bytes are
@@ -24,6 +36,19 @@ Download contract (this is where the previous HTTP 404 outage came from):
   partial file is resumed via HTTP Range when the server supports it;
 - the finished file is validated on size, GGUF magic and (for catalogue models)
   sha256, then atomically renamed into place.
+
+Error-code contract (failures are classified, never collapsed):
+- ``MODEL_URL_INVALID``               no/invalid model source configured
+- ``MODEL_FILE_NOT_FOUND`` / ``MODEL_HTTP_404`` the file is absent upstream
+- ``MODEL_HTTP_401`` / ``MODEL_HTTP_403`` gated/private repository
+- ``MODEL_NETWORK_FAILED``            DNS / TLS / transport unreachable
+- ``MODEL_STORAGE_NOT_WRITABLE``      cache dir cannot be created/written
+- ``MODEL_STORAGE_INSUFFICIENT_DISK`` not enough free space for the weights
+- ``MODEL_DOWNLOAD_TIMEOUT``          exceeded LOCAL_MODEL_DOWNLOAD_TIMEOUT
+- ``MODEL_PARTIAL_DOWNLOAD``          transfer ended before the expected size
+- ``MODEL_CHECKSUM_FAILED``           sha256 verification failed
+- ``MODEL_FORMAT_INVALID``            not a GGUF file (error page / garbage)
+- ``MODEL_SIZE_MISMATCH``             upstream size differs from the pinned size
 
 Failure contract (no silent fake answers):
 - model not ready yet   -> LLMResponseError(status=503, error_type="model_loading")
@@ -39,6 +64,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+import errno
 import hashlib
 import inspect
 import json
@@ -46,8 +72,10 @@ import logging
 import os
 from pathlib import Path
 import re
+import shutil
 import threading
 import time
+import uuid
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -62,6 +90,35 @@ _USER_AGENT = "EduNovaLocalModel/1.0 (+self-hosted)"
 _FILENAME_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 _MIN_MODEL_BYTES = 10 * 1024 * 1024  # default floor; see Settings.local_model_min_bytes
 _GGUF_MAGIC = b"GGUF"
+
+# ---------------------------------------------------------------------------
+# Machine-readable model-source failure codes. Every download/storage failure
+# carries EXACTLY ONE of these; nothing is collapsed into a generic
+# MODEL_DOWNLOAD_FAILED. The supervisor (inference/manager.py) maps them onto
+# terminal lifecycle states, /health surfaces them as ``errorCode``, and the
+# frontend renders a precise, actionable message per code.
+# ---------------------------------------------------------------------------
+CODE_MODEL_URL_INVALID = "MODEL_URL_INVALID"
+CODE_MODEL_FILE_NOT_FOUND = "MODEL_FILE_NOT_FOUND"
+CODE_MODEL_NETWORK_FAILED = "MODEL_NETWORK_FAILED"
+CODE_MODEL_STORAGE_NOT_WRITABLE = "MODEL_STORAGE_NOT_WRITABLE"
+CODE_MODEL_STORAGE_INSUFFICIENT_DISK = "MODEL_STORAGE_INSUFFICIENT_DISK"
+CODE_MODEL_DOWNLOAD_TIMEOUT = "MODEL_DOWNLOAD_TIMEOUT"
+CODE_MODEL_PARTIAL_DOWNLOAD = "MODEL_PARTIAL_DOWNLOAD"
+CODE_MODEL_CHECKSUM_FAILED = "MODEL_CHECKSUM_FAILED"
+CODE_MODEL_FORMAT_INVALID = "MODEL_FORMAT_INVALID"
+CODE_MODEL_SIZE_MISMATCH = "MODEL_SIZE_MISMATCH"
+
+
+def http_status_code(status: int) -> str:
+    """Failure code for an upstream HTTP status (401/403/404/429/5xx/…)."""
+    return f"MODEL_HTTP_{int(status)}"
+
+
+# Extra free-space headroom required ON TOP of the model file itself: the
+# streaming download writes the full ``.part`` file next to the final path
+# before the atomic rename, and the ``.verified`` marker adds a few bytes.
+_STORAGE_HEADROOM_BYTES = 32 * 1024 * 1024
 
 # HTTP statuses that mean "this will never work" — retrying is pointless and
 # only delays the operator seeing the real configuration problem.
@@ -142,6 +199,11 @@ class ModelSourceError(RuntimeError):
     production logs; ``report()`` returns the same facts as a dict for the
     health endpoint. Neither ever contains credentials: the URL is sanitized
     by ``Settings.local_model_safe_url``.
+
+    ``code`` is the machine-readable classification (see the ``CODE_*``
+    constants): storage, network, HTTP status, timeout, checksum and format
+    failures are DISTINCT codes so no failure class is collapsed into a
+    generic "download failed".
     """
 
     def __init__(
@@ -154,6 +216,7 @@ class ModelSourceError(RuntimeError):
         stage: str = "download",
         hint: str = "",
         permanent: bool = False,
+        code: str = "",
     ):
         self.model = model
         self.url = url
@@ -162,11 +225,37 @@ class ModelSourceError(RuntimeError):
         self.stage = stage
         self.hint = hint
         self.permanent = permanent
+        self.code = code or self._default_code()
         super().__init__(self.render())
+
+    def _default_code(self) -> str:
+        """Derive a specific code from stage/status when none was supplied."""
+        if self.status is not None and self.status >= 400:
+            if self.status in (404, 410):
+                return CODE_MODEL_FILE_NOT_FOUND
+            return http_status_code(self.status)
+        if self.stage == "storage":
+            if "not enough" in self.reason.lower() or "disk" in self.reason.lower():
+                return CODE_MODEL_STORAGE_INSUFFICIENT_DISK
+            return CODE_MODEL_STORAGE_NOT_WRITABLE
+        if self.stage == "configuration":
+            return CODE_MODEL_URL_INVALID
+        if self.stage == "preflight":
+            return CODE_MODEL_NETWORK_FAILED
+        if self.stage == "verification":
+            if "checksum" in self.reason.lower():
+                return CODE_MODEL_CHECKSUM_FAILED
+            if "gguf" in self.reason.lower():
+                return CODE_MODEL_FORMAT_INVALID
+            return CODE_MODEL_PARTIAL_DOWNLOAD
+        if "timeout" in self.reason.lower():
+            return CODE_MODEL_DOWNLOAD_TIMEOUT
+        return "MODEL_DOWNLOAD_FAILED"
 
     def render(self) -> str:
         lines = [
             "MODEL_STARTUP_ERROR",
+            f"Code: {self.code}",
             f"Model: {self.model or 'unknown'}",
             f"URL: {self.url or 'not-configured'}",
             f"Status: {self.status if self.status is not None else 'n/a'}",
@@ -179,7 +268,7 @@ class ModelSourceError(RuntimeError):
 
     def report(self) -> dict[str, Any]:
         return {
-            "code": "MODEL_STARTUP_ERROR",
+            "code": self.code,
             "model": self.model,
             "url": self.url,
             "status": self.status,
@@ -243,6 +332,10 @@ class LocalModelManager:
         self.last_inference_at: float | None = None
         self.last_generation_metrics: dict[str, Any] | None = None
         self.source_check: dict[str, Any] | None = None
+        # Last storage validation report (path, probes, free bytes). Written by
+        # validate_storage(); surfaced in snapshot()/health so operators can
+        # see the ACTUAL writable cache path and its free space.
+        self.storage_check: dict[str, Any] | None = None
         # Self-healing state for a stale/broken LOCAL_MODEL_FILE override (the
         # production incident: the env pinned a filename that was never
         # published in the repo -> permanent HTTP 404 -> "model unavailable").
@@ -301,6 +394,149 @@ class LocalModelManager:
         """
         return self.model_path.with_suffix(self.model_path.suffix + ".verified")
 
+    # ---------------------------------------------------------- storage ---
+    def _storage_error(
+        self,
+        reason: str,
+        *,
+        hint: str = "",
+        code: str = CODE_MODEL_STORAGE_NOT_WRITABLE,
+        permanent: bool = True,
+    ) -> ModelSourceError:
+        return self._source_error(
+            reason=reason, stage="storage", permanent=permanent, code=code, hint=hint
+        )
+
+    def _storage_hint(self) -> str:
+        return (
+            "Set LOCAL_MODEL_DIR to a directory this process can create and write "
+            "(on Render native runtimes use a path under the source tree, e.g. the "
+            "default ./models_cache -> /opt/render/project/src/ai_engine/models_cache; "
+            "/var/data is only writable when a persistent disk is mounted there, and "
+            "persistent disks require a paid Render plan)."
+        )
+
+    def validate_storage(self, *, required_bytes: int | None = None) -> dict[str, Any]:
+        """Prove the model cache directory is usable BEFORE any network access.
+
+        Runs the full probe chain the deployment contract requires:
+        resolve -> mkdir -p -> write -> read -> rename -> delete -> free space.
+        Raises ``ModelSourceError`` with code ``MODEL_STORAGE_NOT_WRITABLE``
+        (or ``MODEL_STORAGE_INSUFFICIENT_DISK``) naming the exact path; the
+        failure is permanent for the process (a deployment configuration bug)
+        and is never silently re-pointed at another directory.
+
+        ``required_bytes`` defaults to the pinned catalogue size of the
+        configured model (plus headroom for the streamed ``.part`` file), so
+        an instance with a full disk fails BEFORE a 100 MB download, with the
+        real free/needed numbers.
+        """
+        directory = self.model_dir
+        if required_bytes is None:
+            required_bytes = self.settings.local_model_expected_size or (
+                2 * self.settings.local_model_min_bytes
+            )
+        needed = int(required_bytes) + _STORAGE_HEADROOM_BYTES
+
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise self._storage_error(
+                f"model cache directory cannot be created: {directory} "
+                f"({exc.__class__.__name__}: {exc.strerror or exc})",
+                hint=self._storage_hint(),
+            ) from exc
+
+        probe = directory / f".edunova-storage-probe-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+        renamed = probe.with_suffix(".renamed")
+        payload = f"edunova-storage-probe:{time.time()}".encode("utf-8")
+        step = "write"
+        try:
+            try:
+                probe.write_bytes(payload)                                   # write
+                step = "read"
+                if probe.read_bytes() != payload:                            # read
+                    raise OSError("probe content mismatch after read-back")
+                step = "rename"
+                probe.replace(renamed)                                       # rename
+                if not renamed.exists():
+                    raise OSError("renamed probe is missing")
+                step = "delete"
+                renamed.unlink()                                             # delete
+            except OSError as exc:
+                raise self._storage_error(
+                    f"model cache directory is not writable: {directory} "
+                    f"(probe failed at {step}: {exc.__class__.__name__}: {exc.strerror or exc})",
+                    hint=self._storage_hint(),
+                ) from exc
+        finally:
+            # Never leave probe artifacts behind, whatever happened above.
+            for leftover in (probe, renamed):
+                try:
+                    leftover.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+        try:
+            usage = shutil.disk_usage(directory)
+            free_bytes = int(usage.free)
+        except OSError as exc:
+            raise self._storage_error(
+                f"cannot stat free disk space for model cache directory: {directory} "
+                f"({exc.__class__.__name__})",
+                hint=self._storage_hint(),
+            ) from exc
+        if free_bytes < needed:
+            raise self._storage_error(
+                f"not enough disk space for the model: {free_bytes} bytes free at "
+                f"{directory} but {needed} bytes are needed "
+                f"({int(required_bytes)} byte model + "
+                f"{_STORAGE_HEADROOM_BYTES} byte download headroom)",
+                code=CODE_MODEL_STORAGE_INSUFFICIENT_DISK,
+                hint="Free disk space at LOCAL_MODEL_DIR or use a smaller quantization.",
+            ) from None
+
+        report = {
+            "path": str(directory),
+            "writable": True,
+            "probes": ["mkdir", "write", "read", "rename", "delete"],
+            "freeBytes": free_bytes,
+            "requiredBytes": int(required_bytes),
+            "headroomBytes": _STORAGE_HEADROOM_BYTES,
+            "checkedAt": _iso(time.time()),
+        }
+        self.storage_check = report
+        logger.info(
+            "LOCAL_MODEL_STORAGE_OK dir=%s free_mb=%s required_mb=%s",
+            directory,
+            free_bytes // (1024 * 1024),
+            int(required_bytes) // (1024 * 1024),
+        )
+        return report
+
+    def storage_report(self) -> dict[str, Any]:
+        """Read-only storage facts for diagnostics (no write probes).
+
+        Combines the last full ``validate_storage()`` report (when the
+        supervisor already ran it) with a cheap existence/free-space stat so
+        /health and /api/ai/diagnose can always show the resolved cache path.
+        """
+        directory = self.model_dir
+        exists = directory.exists()
+        free_bytes: int | None = None
+        if exists:
+            try:
+                free_bytes = int(shutil.disk_usage(directory).free)
+            except OSError:
+                free_bytes = None
+        return {
+            "path": str(directory),
+            "exists": exists,
+            "freeBytes": free_bytes,
+            "expectedModelBytes": self.settings.local_model_expected_size or None,
+            "lastCheck": self.storage_check,
+        }
+
     # ---------------------------------------------------------- snapshot --
     def snapshot(self, include_source: bool = False) -> dict[str, Any]:
         """File/runtime facts for the supervisor (no lifecycle state lives here)."""
@@ -319,6 +555,7 @@ class LocalModelManager:
             "integrityPinned": bool(self.settings.local_model_expected_sha256),
             "downloadedBytes": self.downloaded_bytes or None,
             "downloadAttempts": self.download_attempts or None,
+            "storage": self.storage_report(),
             "runtimeAvailable": runtime_available(),
             "runtimeVersion": runtime_version(),
             "modelLoaded": self._llama is not None,
@@ -454,6 +691,7 @@ class LocalModelManager:
                 reason="no model source configured",
                 stage="configuration",
                 permanent=True,
+                code=CODE_MODEL_URL_INVALID,
                 hint="Set LOCAL_MODEL_REPO + LOCAL_MODEL_FILE, or LOCAL_MODEL_URL.",
             )
 
@@ -473,8 +711,12 @@ class LocalModelManager:
                     )
             except httpx.HTTPError as exc:
                 raise self._source_error(
-                    reason=f"model host unreachable ({exc.__class__.__name__})",
+                    reason=(
+                        "model host unreachable — network failure while checking the "
+                        f"model URL ({exc.__class__.__name__}: {str(exc)[:120]})"
+                    ),
                     stage="preflight",
+                    code=CODE_MODEL_NETWORK_FAILED,
                     hint="Check outbound network/DNS from the AI service.",
                 ) from exc
 
@@ -485,6 +727,7 @@ class LocalModelManager:
                     status=status,
                     stage="preflight",
                     permanent=status in _PERMANENT_HTTP_STATUSES,
+                    code=http_status_code(status),
                     hint=self._hint_for_status(status),
                 )
 
@@ -520,6 +763,7 @@ class LocalModelManager:
                     status=status,
                     stage="preflight",
                     permanent=True,
+                    code=CODE_MODEL_SIZE_MISMATCH,
                     hint="Clear LOCAL_MODEL_BYTES/LOCAL_MODEL_SHA256 or point at the pinned revision.",
                 )
             logger.info(
@@ -576,6 +820,14 @@ class LocalModelManager:
         return True
 
     async def _download_if_needed(self) -> None:
+        # STAGE 1 — storage: prove the cache directory is usable (mkdir +
+        # write/read/rename/delete probes + free space) BEFORE the cache is
+        # trusted or a single byte is fetched. The 2026-09 production outage
+        # (LOCAL_MODEL_DIR=/var/data/models on a Render free instance) failed
+        # HERE but was reported as a generic MODEL_DOWNLOAD_FAILED; the code
+        # path below now fails as MODEL_STORAGE_NOT_WRITABLE with the exact
+        # path, within milliseconds, before any network access.
+        storage = self.validate_storage()
         path = self.model_path
         if path.exists() and self._validate_cached_file(path):
             logger.info(
@@ -596,21 +848,12 @@ class LocalModelManager:
                 except OSError:
                     pass
 
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            raise self._source_error(
-                reason=f"model cache directory is not writable: {self.model_dir}",
-                stage="storage",
-                permanent=True,
-                hint="Point LOCAL_MODEL_DIR at a writable path (e.g. a Render persistent disk).",
-            ) from exc
-
         self.downloaded_bytes = 0
         part = path.with_suffix(path.suffix + ".part")
         timeout = httpx.Timeout(60.0, read=180.0, connect=15.0)
         attempts = self.settings.local_model_download_retries + 1
         deadline = time.time() + self.settings.local_model_download_timeout
+        download_started = time.monotonic()
         last_error: ModelSourceError | None = None
 
         async with httpx.AsyncClient(
@@ -619,11 +862,12 @@ class LocalModelManager:
             check = await self.preflight(client)  # raises on 404/403/... — no retry
             expected_total = self.settings.local_model_expected_size or check.get("contentLength") or 0
             logger.info(
-                "LOCAL_MODEL_DOWNLOAD_START model=%s url=%s bytes=%s dest=%s",
+                "LOCAL_MODEL_DOWNLOAD_START model=%s url=%s bytes=%s dest=%s disk_free_mb=%s",
                 self.settings.local_model_id,
                 self.safe_url,
                 expected_total or "unknown",
                 path,
+                (storage.get("freeBytes") or 0) // (1024 * 1024),
             )
 
             for attempt in range(1, attempts + 1):
@@ -634,10 +878,27 @@ class LocalModelManager:
                         part=part,
                         resume=bool(check.get("acceptRanges")) and attempt > 1,
                         deadline=deadline,
+                        expected_total=expected_total,
                     )
                     break
                 except ModelSourceError as exc:
                     last_error = exc
+                    logger.error(
+                        "LOCAL_MODEL_DOWNLOAD_FAILED code=%s status=%s stage=%s "
+                        "downloaded_bytes=%s expected_bytes=%s dest=%s disk_free_mb=%s "
+                        "attempt=%s/%s elapsed_s=%s reason=%s",
+                        exc.code,
+                        exc.status if exc.status is not None else "n/a",
+                        exc.stage,
+                        self.downloaded_bytes,
+                        expected_total or "unknown",
+                        part,
+                        self._free_mb(part.parent),
+                        attempt,
+                        attempts,
+                        round(time.monotonic() - download_started, 1),
+                        exc.reason,
+                    )
                     if exc.permanent or attempt >= attempts or time.time() >= deadline:
                         raise
                     backoff = min(30, 2 ** attempt)
@@ -661,13 +922,25 @@ class LocalModelManager:
                 self.verified_marker_path.write_text(expected_sha, encoding="utf-8")
             except OSError:
                 pass
+        elapsed = time.monotonic() - download_started
         logger.info(
-            "LOCAL_MODEL_DOWNLOADED file=%s bytes=%s attempts=%s verified=%s",
+            "LOCAL_MODEL_DOWNLOADED file=%s bytes=%s attempts=%s verified=%s "
+            "elapsed_s=%s rate_mb_s=%s disk_free_mb=%s",
             path.name,
             self.file_size_bytes,
             self.download_attempts,
             "sha256" if expected_sha else "size+magic",
+            round(elapsed, 1),
+            round(self.file_size_bytes / (1024 * 1024) / max(0.001, elapsed), 2),
+            self._free_mb(path.parent),
         )
+
+    @staticmethod
+    def _free_mb(directory: Path) -> int | None:
+        try:
+            return shutil.disk_usage(directory).free // (1024 * 1024)
+        except OSError:
+            return None
 
     async def _download_once(
         self,
@@ -676,6 +949,7 @@ class LocalModelManager:
         part: Path,
         resume: bool,
         deadline: float,
+        expected_total: int = 0,
     ) -> None:
         url = self.download_url
         headers = {"User-Agent": _USER_AGENT}
@@ -687,6 +961,8 @@ class LocalModelManager:
         elif part.exists():
             part.unlink(missing_ok=True)
 
+        started_at = time.monotonic()
+        next_progress_log = self.downloaded_bytes + 16 * 1024 * 1024
         try:
             async with client.stream("GET", url, headers=headers) as response:
                 if response.status_code >= 400:
@@ -698,6 +974,7 @@ class LocalModelManager:
                         status=status,
                         stage="download",
                         permanent=status in _PERMANENT_HTTP_STATUSES,
+                        code=http_status_code(status),
                         hint=self._hint_for_status(status),
                     )
                 append = response.status_code == 206 and offset > 0
@@ -708,6 +985,20 @@ class LocalModelManager:
                     async for chunk in response.aiter_bytes(4 * 1024 * 1024):
                         handle.write(chunk)
                         self.downloaded_bytes += len(chunk)
+                        if self.downloaded_bytes >= next_progress_log:
+                            elapsed = max(0.001, time.monotonic() - started_at)
+                            total = expected_total or 0
+                            logger.info(
+                                "LOCAL_MODEL_DOWNLOAD_PROGRESS bytes=%s total=%s pct=%s "
+                                "rate_mb_s=%s dest=%s",
+                                self.downloaded_bytes,
+                                total or "unknown",
+                                (f"{min(99, int(self.downloaded_bytes * 100 / total))}%"
+                                 if total else "n/a"),
+                                round(self.downloaded_bytes / (1024 * 1024) / elapsed, 2),
+                                part,
+                            )
+                            next_progress_log = self.downloaded_bytes + 16 * 1024 * 1024
                         if time.time() > deadline:
                             raise self._source_error(
                                 reason=(
@@ -715,6 +1006,7 @@ class LocalModelManager:
                                     f"({self.settings.local_model_download_timeout}s)"
                                 ),
                                 stage="download",
+                                code=CODE_MODEL_DOWNLOAD_TIMEOUT,
                                 hint="Raise LOCAL_MODEL_DOWNLOAD_TIMEOUT or use a smaller quant.",
                             )
         except ModelSourceError:
@@ -723,11 +1015,27 @@ class LocalModelManager:
             raise self._source_error(
                 reason=f"transport failure while downloading ({exc.__class__.__name__})",
                 stage="download",
+                code=CODE_MODEL_NETWORK_FAILED,
             ) from exc
         except OSError as exc:
+            # A write failure inside the transfer is a storage failure, not a
+            # network one. ENOSPC (disk full) gets its own code so the
+            # operator sees free-space numbers, not a generic download error.
+            if getattr(exc, "errno", None) == errno.ENOSPC:
+                raise self._source_error(
+                    reason=(
+                        f"disk filled while downloading the model at {part.parent} "
+                        f"(downloaded {self.downloaded_bytes} bytes)"
+                    ),
+                    stage="storage",
+                    code=CODE_MODEL_STORAGE_INSUFFICIENT_DISK,
+                    permanent=True,
+                    hint="Free disk space at LOCAL_MODEL_DIR or use a smaller quantization.",
+                ) from exc
             raise self._source_error(
                 reason=f"cannot write model cache file ({exc.__class__.__name__})",
                 stage="storage",
+                code=CODE_MODEL_STORAGE_NOT_WRITABLE,
                 permanent=True,
                 hint="Ensure LOCAL_MODEL_DIR has enough free disk and is writable.",
             ) from exc
@@ -739,27 +1047,41 @@ class LocalModelManager:
             raise self._source_error(
                 reason="downloaded file disappeared before verification",
                 stage="verification",
+                code=CODE_MODEL_PARTIAL_DOWNLOAD,
             ) from exc
 
-        def _fail(reason: str, permanent: bool = False) -> ModelSourceError:
+        def _fail(reason: str, permanent: bool = False, code: str = CODE_MODEL_PARTIAL_DOWNLOAD) -> ModelSourceError:
             part.unlink(missing_ok=True)
-            return self._source_error(reason=reason, stage="verification", permanent=permanent)
+            return self._source_error(reason=reason, stage="verification", permanent=permanent, code=code)
 
         if size < self.settings.local_model_min_bytes:
             raise _fail(
                 f"downloaded file is only {size} bytes — the URL served an error page, not a model",
                 permanent=True,
+                code=CODE_MODEL_FORMAT_INVALID,
             )
         if expected_total and size != expected_total:
-            raise _fail(f"downloaded {size} bytes but expected exactly {expected_total}")
+            raise _fail(
+                f"downloaded {size} bytes but expected exactly {expected_total} "
+                "(the transfer ended early)",
+                code=CODE_MODEL_PARTIAL_DOWNLOAD,
+            )
         if not _has_gguf_magic(part):
-            raise _fail("downloaded file is not a GGUF model (missing GGUF magic header)", permanent=True)
+            raise _fail(
+                "downloaded file is not a GGUF model (missing GGUF magic header)",
+                permanent=True,
+                code=CODE_MODEL_FORMAT_INVALID,
+            )
 
         expected_sha = self.settings.local_model_expected_sha256
         if expected_sha:
             digest = _sha256_file(part)
             if digest != expected_sha:
-                raise _fail("model checksum mismatch (sha256 verification failed)", permanent=True)
+                raise _fail(
+                    "model checksum mismatch (sha256 verification failed)",
+                    permanent=True,
+                    code=CODE_MODEL_CHECKSUM_FAILED,
+                )
             logger.info("LOCAL_MODEL_CHECKSUM_OK sha256=%s…", expected_sha[:12])
 
     async def _load_model(self) -> None:

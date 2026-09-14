@@ -16,8 +16,8 @@ def build_retrieval_tool(settings, index):
         corpus = await client.execute_remote("get_learning_documents", {}, context)
         db_ms = round((time.monotonic() - started) * 1000)
         if index is None:
-            from inference.rag import RagError
-            raise RagError("Semantic retrieval is disabled")
+            from inference.rag import RagDisabledError
+            raise RagDisabledError("Semantic retrieval is disabled on this instance")
         started = time.monotonic()
         # Reconcile current ACLs/deletions before querying cached embeddings.
         await asyncio.to_thread(index.sync_documents, owner, corpus.get("documents", []))

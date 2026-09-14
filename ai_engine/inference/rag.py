@@ -29,6 +29,20 @@ class RagError(RuntimeError):
     code = "RAG_FAILED"
 
 
+class RagDisabledError(RagError):
+    """Semantic retrieval is intentionally OFF for this instance (RAG_ENABLED
+    is false on the 512 MiB free runtime by design — see Settings.rag_enabled).
+
+    This is a capacity gate, NOT a failure of the student's data: the
+    database tools remain authoritative and available. The router treats it as
+    a non-fatal degradation so study plans / syllabus answers still succeed,
+    while the failed observation stays in context so the model states the
+    limitation honestly instead of pretending passages were searched.
+    """
+
+    code = "RAG_DISABLED"
+
+
 def chunk_text(text: str, *, window: int = 1200, overlap: int = 180) -> list[str]:
     if window < 40 or not 0 <= overlap < window // 2:
         raise ValueError("Invalid chunk window/overlap")

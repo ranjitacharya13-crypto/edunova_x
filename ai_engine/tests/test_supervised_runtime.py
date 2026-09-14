@@ -220,7 +220,10 @@ async def test_actual_worker_startup_deadline_terminates_native_process():
     manager = ModelManager(replace(Settings(), local_model_startup_timeout=0.2), worker_target=_blocked_worker)
     manager.ensure_loading()
     await asyncio.wait_for(manager._load_task, 5)
-    assert manager.phase in {'RUNTIME_FAILED', 'CONFIG_FAILED'}
+    # The hard startup budget may expire in any pre-READY phase (the parent
+    # storage-validation stages included) — what the contract pins down is a
+    # TERMINAL, permanent failure that also terminated the worker process.
+    assert manager.phase in {'RUNTIME_FAILED', 'CONFIG_FAILED', 'MODEL_DOWNLOAD_FAILED', 'MODEL_STORAGE_NOT_WRITABLE'}
     assert 'deadline' in manager.last_error
     assert not manager._process.is_alive()
     first = manager.snapshot()['startupDurationMs']

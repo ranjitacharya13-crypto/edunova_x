@@ -42,11 +42,13 @@ PHASES = {
     "CONFIG_LOADED": (30, "Valid local runtime/model configuration", "CONFIG_FAILED"),
     "RESOURCES_CHECKED": (30, "Container memory proven sufficient", "MODEL_RESOURCE_INSUFFICIENT"),
     "DEPENDENCIES_READY": (30, "llama.cpp runtime import completed", "DEPENDENCY_FAILED"),
+    "STORAGE_VALIDATING": (30, "Model cache directory probed (mkdir/write/read/rename/delete)", "MODEL_STORAGE_NOT_WRITABLE"),
+    "STORAGE_VALIDATED": (30, "Cache directory writable with enough free space", "MODEL_DOWNLOAD_FAILED"),
     "RUNTIME_READY": (1800, "Model located (cache hit) or downloaded once", "MODEL_DOWNLOAD_FAILED"),
     "MODEL_LOCATED": (120, "Integrity (size/sha256/GGUF magic) validated", "MODEL_INVALID"),
     "MODEL_VALID": (10, "Load scheduled", "MODEL_LOAD_FAILED"),
     "MODEL_LOADING": (180, "Weights and tokenizer mmapped", "MODEL_LOAD_FAILED"),
-    "MODEL_LOADED": (10, "Warmup started", "WARMUP_FAILED"),
+    "MODEL_LOADED": (10, "Warmup started", "MODEL_LOAD_FAILED"),
     "WARMUP_RUNNING": (120, "Real decoded tokens for 'What is 2 + 2?'", "WARMUP_FAILED"),
     "WARMUP_SUCCESS": (120, "Independent inference test passed", "INFERENCE_FAILED"),
     "INFERENCE_TEST_SUCCESS": (10, "Readiness published", "INFERENCE_FAILED"),
@@ -57,9 +59,33 @@ FAILURES = {
     "CONFIG_FAILED", "DEPENDENCY_FAILED", "RUNTIME_FAILED", "MODEL_NOT_FOUND",
     "MODEL_INVALID", "MODEL_DOWNLOAD_FAILED", "MODEL_LOAD_FAILED", "OUT_OF_MEMORY",
     "MODEL_RESOURCE_INSUFFICIENT", "WARMUP_FAILED", "INFERENCE_FAILED",
+    # Specific, classified source failures (agent.local_llm.ModelSourceError.code)
+    # — a storage problem is NEVER reported as a generic download failure:
+    "MODEL_STORAGE_NOT_WRITABLE", "MODEL_STORAGE_INSUFFICIENT_DISK",
+    "MODEL_CHECKSUM_FAILED", "MODEL_DOWNLOAD_TIMEOUT", "MODEL_PARTIAL_DOWNLOAD",
+    "MODEL_NETWORK_FAILED",
 }
 # Public state names (requirement 15): MODEL_NOT_READY / MODEL_LOADING / MODEL_READY / MODEL_FAILED.
 PUBLIC_STATES = {"BOOT": "MODEL_NOT_READY", "READY": "MODEL_READY", "SERVING": "MODEL_READY"}
+
+# ModelSourceError.code -> terminal lifecycle state. Unmapped codes (e.g.
+# MODEL_HTTP_401/403/429/5xx, MODEL_URL_INVALID, MODEL_FORMAT_INVALID,
+# MODEL_SIZE_MISMATCH) keep their phase-derived state; the specific code and
+# reason always ride along in ``lastError``/``modelSourceReport``.
+_SOURCE_FAILURE_ALIASES = {
+    "MODEL_STORAGE_NOT_WRITABLE": "MODEL_STORAGE_NOT_WRITABLE",
+    "MODEL_STORAGE_INSUFFICIENT_DISK": "MODEL_STORAGE_INSUFFICIENT_DISK",
+    "MODEL_CHECKSUM_FAILED": "MODEL_CHECKSUM_FAILED",
+    "MODEL_DOWNLOAD_TIMEOUT": "MODEL_DOWNLOAD_TIMEOUT",
+    "MODEL_PARTIAL_DOWNLOAD": "MODEL_PARTIAL_DOWNLOAD",
+    "MODEL_NETWORK_FAILED": "MODEL_NETWORK_FAILED",
+    "MODEL_FILE_NOT_FOUND": "MODEL_NOT_FOUND",
+    "MODEL_HTTP_404": "MODEL_NOT_FOUND",
+    "MODEL_HTTP_410": "MODEL_NOT_FOUND",
+    "MODEL_URL_INVALID": "CONFIG_FAILED",
+    "MODEL_FORMAT_INVALID": "MODEL_INVALID",
+    "MODEL_SIZE_MISMATCH": "MODEL_INVALID",
+}
 
 
 def public_state(phase: str) -> str:
@@ -225,6 +251,15 @@ def _hrm_worker(connection, settings: Settings) -> None:
 
 def _worker(connection, settings: Settings) -> None:
     """Child entry point. Only trusted parent commands arrive over the pipe."""
+    # The spawned worker has NO inherited logging handlers (uvicorn configures
+    # only the parent). Without this, every diagnostic this process emits —
+    # download start/progress/completion, checksum results, grammar warnings,
+    # first-token latency — is silently lost from the production log.
+    if not logging.getLogger().handlers:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        )
     if getattr(settings, "local_model_runtime", "llama_cpp") == "hrm":
         return _hrm_worker(connection, settings)
     logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -260,6 +295,16 @@ def _worker(connection, settings: Settings) -> None:
 
         import llama_cpp
         emit("DEPENDENCIES_READY", runtimeVersion=llama_cpp.__version__, runtimeAvailable=True)
+
+        # STAGE: storage. Prove LOCAL_MODEL_DIR is usable (mkdir + write +
+        # read + rename + delete + free space) BEFORE the cache is trusted or
+        # any bytes are downloaded. This is the root-cause fix for the
+        # /var/data/models outage: an unwritable cache dir now fails HERE as
+        # MODEL_STORAGE_NOT_WRITABLE (with the exact path), in milliseconds,
+        # instead of collapsing into MODEL_DOWNLOAD_FAILED.
+        emit("STORAGE_VALIDATING")
+        storage = await asyncio.to_thread(manager.validate_storage)
+        emit("STORAGE_VALIDATED", storage=storage)
 
         try:
             await manager._download_if_needed()
@@ -348,6 +393,8 @@ def _worker(connection, settings: Settings) -> None:
         failure = {
             "BOOT": "CONFIG_FAILED", "CONFIG_LOADED": "MODEL_RESOURCE_INSUFFICIENT",
             "RESOURCES_CHECKED": "DEPENDENCY_FAILED", "DEPENDENCIES_READY": "MODEL_DOWNLOAD_FAILED",
+            "STORAGE_VALIDATING": "MODEL_STORAGE_NOT_WRITABLE",
+            "STORAGE_VALIDATED": "MODEL_DOWNLOAD_FAILED",
             "RUNTIME_READY": "MODEL_INVALID", "MODEL_LOCATED": "MODEL_INVALID",
             "MODEL_VALID": "MODEL_LOAD_FAILED", "MODEL_LOADING": "MODEL_LOAD_FAILED",
             "MODEL_LOADED": "WARMUP_FAILED", "WARMUP_RUNNING": "WARMUP_FAILED",
@@ -358,8 +405,17 @@ def _worker(connection, settings: Settings) -> None:
             state["resourceReport"] = exc.report()
         elif isinstance(exc, MemoryError):
             failure = "OUT_OF_MEMORY"
-        elif isinstance(exc, FileNotFoundError) or getattr(exc, "status", None) == 404:
-            failure = "MODEL_NOT_FOUND"
+        else:
+            from agent.local_llm import ModelSourceError  # noqa: PLC0415
+            if isinstance(exc, ModelSourceError):
+                # Classified source failure (storage / network / HTTP / timeout /
+                # checksum / format). Map the SPECIFIC code onto the lifecycle
+                # instead of collapsing everything into MODEL_DOWNLOAD_FAILED,
+                # and attach the structured report for /health.
+                failure = _SOURCE_FAILURE_ALIASES.get(exc.code, failure)
+                state["modelSourceReport"] = exc.report()
+            elif isinstance(exc, FileNotFoundError) or getattr(exc, "status", None) == 404:
+                failure = "MODEL_NOT_FOUND"
         emit(failure, lastError=safe_error(exc), failureStage=phase)
     finally:
         connection.close()
@@ -418,6 +474,8 @@ class ModelManager:
         self.state = "ready" if phase in {"READY", "SERVING"} else "error" if phase in FAILURES else "loading"
         if phase == "RUNTIME_READY":
             self.state = "downloading"
+        if phase in {"STORAGE_VALIDATING", "STORAGE_VALIDATED"}:
+            self.state = "starting"
         if phase in {"WARMUP_RUNNING", "WARMUP_SUCCESS"}:
             self.state = "warming"
         if phase in FAILURES:
@@ -427,6 +485,7 @@ class ModelManager:
             self.error_detail = phase
             self.error_report = {"code": phase if phase == "MODEL_RESOURCE_INSUFFICIENT" else
                                  ("MODEL_STARTUP_FAILED" if self.ready_at is None else "INFERENCE_FAILED"),
+                                 "errorCode": phase,
                                  "stage": phase, "reason": self.last_error, "permanent": True}
             if self.facts.get("resourceReport"):
                 self.error_report.update(self.facts["resourceReport"])
@@ -454,7 +513,8 @@ class ModelManager:
                 check = preflight_resources(self.settings, None)
             else:
                 from agent.local_llm import LocalModelManager
-                check = preflight_resources(self.settings, LocalModelManager(self.settings).model_path)
+                mgr = LocalModelManager(self.settings)
+                check = preflight_resources(self.settings, mgr.model_path)
             self.facts["memoryRequirement"] = {k: v for k, v in check.items() if k != "fits"}
         except ResourceInsufficient as exc:
             self.facts["resourceReport"] = exc.report()
@@ -465,6 +525,34 @@ class ModelManager:
         except Exception as exc:  # noqa: BLE001 — detection failure is a config failure, not a crash
             self._transition("CONFIG_FAILED", {"lastError": safe_error(exc), "failureStage": "BOOT"})
             return
+        # STAGE: storage — validated in the PARENT before any worker is
+        # spawned, so an unwritable LOCAL_MODEL_DIR fails in milliseconds as
+        # MODEL_STORAGE_NOT_WRITABLE (exact path in the error) instead of
+        # failing inside the download stage as a generic MODEL_DOWNLOAD_FAILED.
+        # This is the root-cause fix for the /var/data/models production
+        # outage: the path was never probed before use. A probe failure is a
+        # permanent deployment configuration bug — never silently re-pointed.
+        if self.settings.local_model_runtime == "llama_cpp":
+            self._transition("STORAGE_VALIDATING")
+            try:
+                from agent.local_llm import LocalModelManager, ModelSourceError
+
+                storage = LocalModelManager(self.settings).validate_storage()
+                self.facts["storage"] = storage
+                self._transition("STORAGE_VALIDATED", {"storage": storage})
+            except ModelSourceError as exc:
+                report = exc.report()
+                log.error("MODEL_STORAGE_INVALID code=%s model=%s stage=%s", exc.code, exc.model, exc.stage)
+                self._transition(
+                    _SOURCE_FAILURE_ALIASES.get(exc.code, "MODEL_DOWNLOAD_FAILED"),
+                    {"lastError": safe_error(exc), "failureStage": "STORAGE_VALIDATING",
+                     "modelSourceReport": report},
+                )
+                return
+            except Exception as exc:  # noqa: BLE001 — probe crash is a storage failure, never hidden
+                self._transition("MODEL_STORAGE_NOT_WRITABLE",
+                                 {"lastError": safe_error(exc), "failureStage": "STORAGE_VALIDATING"})
+                return
         context = mp.get_context("spawn")
         self._pipe, child = context.Pipe()
         self._process = context.Process(target=self.worker_target, args=(child, self.settings), daemon=True)

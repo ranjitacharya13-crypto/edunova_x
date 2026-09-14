@@ -725,6 +725,17 @@ def _model_stage_checks() -> dict[str, Any]:
         magic_ok = bool(exists and _has_gguf_magic(path))
         known = bool(entry.get("sha256")) or bool(settings.local_model_sha256)
         artifact_ok = exists and size >= mgr.settings.local_model_min_bytes and magic_ok
+        # Storage stage: the resolved cache directory + the supervisor's real
+        # probe result (mkdir/write/read/rename/delete + free space). This is
+        # the stage that used to be invisible while /var/data/models was
+        # failing, so a storage problem looked like a download problem.
+        storage_facts = llm.manager.facts.get("storage") or mgr.storage_report()
+        stages["storage"] = {
+            "ok": True,
+            "resolvedDir": str(mgr.model_dir),
+            **({"lastProbe": storage_facts} if storage_facts else {}),
+            "configuredDir": settings.local_model_dir,
+        }
         stages["model_artifact"] = {
             "ok": artifact_ok,
             "pathExists": exists,
@@ -747,6 +758,7 @@ def _model_stage_checks() -> dict[str, Any]:
         }
     except Exception as exc:  # noqa: BLE001 — diagnostics never raises
         stages["model_artifact"] = {"ok": False, "error": safe_error_local(exc)}
+        stages["storage"] = {"ok": False, "error": safe_error_local(exc)}
     stages["runtime"] = {
         # llm.status() is async, so read the supervisor's synchronous facts
         # instead of awaiting a coroutine (which would crash the diagnostic).

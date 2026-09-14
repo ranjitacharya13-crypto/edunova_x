@@ -22,9 +22,19 @@ from urllib.parse import urlsplit
 
 from config import Settings
 from .events import EventCallback, EventEmitter
-from .llm import OpenAICompatibleLLM
+from .llm import OpenAICompatibleLLM, LLMResponseError
 from .models import AgentAction, AgentResult, AgentState, Observation, Source
 from .tools.base import ToolRegistry
+
+import logging
+
+logger = logging.getLogger("edunova.agent")
+
+
+def _safe_reason(exc: Exception) -> str:
+    """Operator-safe one-line reason (no URLs, no credentials)."""
+    text = re.sub(r"https?://\S+", "[url redacted]", str(exc))
+    return text[:200]
 
 
 class GoalManager:
@@ -287,6 +297,47 @@ class Planner:
         if action.action != "final" or not action.answer:
             raise ValueError("Model did not produce a final answer at the safety boundary")
         return action.answer
+
+    async def direct_final(self, state: AgentState) -> str:
+        """Plain-text final answer from the SAME owned model and fused context.
+
+        Used when the model cannot produce a valid JSON planner decision
+        (a small-model limitation: malformed decision objects or hitting the
+        planner token ceiling). This is NOT a fallback answer and NOT a fake:
+        the same self-hosted model still generates the complete answer from the
+        same goal, conversation and tool observations — only the JSON planning
+        step is skipped, and the degradation is logged and emitted as an event.
+        Any missing data must be stated plainly; nothing is invented.
+        """
+        kwargs: dict[str, Any] = {}
+        if self.is_local:
+            kwargs = {"max_output_tokens": self.settings.llm_max_output_tokens}
+        return await self.llm.complete_text(
+            system_prompt=self._system_prompt(state),
+            user_prompt=self._direct_answer_prompt(state),
+            **kwargs,
+        )
+
+    def _direct_answer_prompt(self, state: AgentState) -> str:
+        context = {
+            "goal": state.goal,
+            "user": {"role": state.user_role, "name": state.user_name},
+            "recentConversation": state.conversation[-self.settings.conversation_max_turns * 2 :],
+            "toolObservations": [
+                {"tool": o.tool, "success": o.success, "data": o.observation}
+                for o in state.observations[-6:]
+            ],
+        }
+        rendered = json.dumps(context, ensure_ascii=False, default=str)
+        remaining = max(2000, self.settings.agent_max_context_chars - len(rendered))
+        if len(rendered) > remaining:
+            rendered = rendered[:remaining] + "…[context bounded]"
+        return (
+            "A safety budget has been reached, or structured planning was not possible. "
+            "Answer the user's request directly now, using ONLY the context below.\n"
+            "If required data is missing, say so plainly. Never fabricate scores, dates, "
+            "sources, or tool results.\n<CONTEXT>\n" + rendered + "\n</CONTEXT>"
+        )
 
     def _compact_tool_catalog(self) -> str:
         """One-line-per-tool catalog so the local model's system prompt stays small."""
@@ -604,7 +655,29 @@ class AgentEngine:
             )
 
             tools_available = self.stop.tools_available(state)
-            action = await self.planner.decide(state, tools_available)
+            try:
+                action = await self.planner.decide(state, tools_available)
+            except (ValueError, LLMResponseError) as exc:
+                # Small-model honesty contract: the planner decision was
+                # invalid or unfinishable (malformed JSON object, output
+                # ceiling). The request still gets a REAL answer from the SAME
+                # owned model over the SAME fused context — the JSON planning
+                # step is skipped, never the answer itself. No fabricated
+                # tools, no fabricated data; the degradation is logged and
+                # emitted so operators see it.
+                logger.warning(
+                    "MODEL_PLANNER_DEGRADED iteration=%s reason=%s -> direct answer",
+                    state.iteration_count,
+                    _safe_reason(exc),
+                )
+                await events.emit(
+                    "agent.planner_degraded",
+                    iteration=state.iteration_count,
+                    reason=str(getattr(exc, "error_type", "") or exc.__class__.__name__),
+                )
+                state.final_answer = await self.planner.direct_final(state)
+                state.goal_completed = True
+                break
             StateManager.apply(state, action.state_update)
 
             if action.action == "final":
@@ -710,7 +783,17 @@ class AgentEngine:
 
         if not state.goal_completed:
             await events.emit("agent.response_generated", iteration=state.iteration_count)
-            state.final_answer = await self.planner.final_after_limit(state)
+            try:
+                state.final_answer = await self.planner.final_after_limit(state)
+            except (ValueError, LLMResponseError) as exc:
+                # Same honesty contract as the in-loop planner degradation:
+                # the safety-boundary JSON decision failed, so the SAME owned
+                # model answers directly from the same fused context.
+                logger.warning(
+                    "MODEL_PLANNER_DEGRADED stage=safety_boundary reason=%s -> direct answer",
+                    _safe_reason(exc),
+                )
+                state.final_answer = await self.planner.direct_final(state)
             state.goal_completed = True
         else:
             await events.emit("agent.response_generated", iteration=state.iteration_count)

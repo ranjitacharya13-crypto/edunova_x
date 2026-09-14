@@ -116,8 +116,14 @@ class InProcessLLM:
             "download": {
                 "attempts": snap.get("downloadAttempts"),
                 "downloaded_bytes": snap.get("downloadedBytes"),
+                "expected_bytes": snap.get("expectedSizeBytes"),
                 "cache_reused": bool(snap.get("downloadAttempts") == 0 and snap.get("fileSizeBytes")),
             },
+            # Top-level progress fields consumed by the frontend status hook
+            # (describeModelProgress) so the UI shows real download percentages.
+            "downloadedBytes": snap.get("downloadedBytes"),
+            "expectedSizeBytes": snap.get("expectedSizeBytes"),
+            "storage": snap.get("storage"),
             "available_ram_mb": self._resource_manager.snapshot().get("ram_available_mb"),
             "history": snap.get("history", []),
             "permanentFailure": manager.phase in FAILURES,
