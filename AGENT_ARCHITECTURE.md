@@ -77,11 +77,13 @@ EduNova AI operates as a **UNIFIED DATA-AWARE AGENT** capable of intelligently c
 ## 0. Model runtime — one authoritative lifecycle
 
 ```text
-edunova-api (Node)      edunova-ai (FastAPI orchestrator)        edunova-inference (FastAPI)
-POST /api/ai/chat  -->  IntentRouter / ToolRegistry / RAG   -->  inference/manager.ModelManager
-POST /api/ai/stream     agent/remote_llm.RemoteInferenceLLM        └─ supervised llama.cpp worker
-GET  /api/ai/ready      GET /health /ready /model/status           agent/local_llm.LocalModelManager
-GET  /api/ai/model/status   /system/resources /metrics              (weights engine only)
+edunova-api (Node)      edunova-ai (FastAPI orchestrator + OWNED model, one process)
+POST /api/ai/chat  -->  IntentRouter / ToolRegistry / RAG
+POST /api/ai/stream     agent/remote_llm.RemoteInferenceLLM (legacy split)   <-- optional
+GET  /api/ai/ready      inference/inprocess.InProcessLLM  -> inference/manager.ModelManager
+GET  /api/ai/model/status     GET /health /ready /model/status          └─ supervised llama.cpp worker
+                          /system/resources /metrics            agent/local_llm.LocalModelManager
+                                                               (weights engine only)
 ```
 
 Lifecycle inside the inference service (once per process, never per request):

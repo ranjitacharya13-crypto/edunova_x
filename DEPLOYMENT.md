@@ -98,20 +98,34 @@ IPs are dynamic, so an IP allowlist will intermittently fail.
 
 ---
 
-## 2. AI layer — Render (two Python services) — SELF-HOSTED MODEL
+## 2. AI layer — Render (one Python service) — SELF-HOSTED MODEL
 
-The AI layer is split so that **the model never runs in a 512 MiB container**:
+The model is **owned in-process** by the single `edunova-ai` service. The
+135M-class GGUF fits the Render **Free (512 MB)** plan with headroom, so the
+earlier three-service split (`edunova-ai` orchestrator + separate
+`edunova-inference` service) is **no longer part of the deployment**:
 
 | Service | Role | Loads the model? | Typical RSS | Minimum Render plan |
 |---|---|---|---|---|
 | `edunova-api` (Node/Express) | REST API, auth, MongoDB, AI **gateway** (`/api/ai/*`) | **No** | ~150 MiB | Free/Starter 512 MB |
-| `edunova-ai` (FastAPI, `main:app`) | AI **orchestrator**: IntentRouter, authenticated ToolRegistry, RAG orchestration, web search, memory, SSE relay | **No** (never imports `llama_cpp`/`torch`) | ~150 MiB | Free/Starter 512 MB |
-| `edunova-inference` (FastAPI, `inference_server:app`) | **Persistent inference service**: llama.cpp GGUF LLM (RAG/PyTorch embeddings OFF on free) | **Yes — the only one** | ~300–450 MiB | **Free 512 MB / 0.1 CPU** |
+| `edunova-ai` (FastAPI, `main:app`) | AI **orchestrator + owned model**: IntentRouter, authenticated ToolRegistry, RAG orchestration, web search, memory, SSE relay — and the supervised llama.cpp worker that runs the GGUF | **Yes — the only one** | ~270–320 MiB | **Free 512 MB / 0.1 CPU** |
 
 Request path: browser → `edunova-api` `POST /api/ai/chat|stream` (JWT) →
-`edunova-ai` `POST /api/ai/chat` (`X-AI-Internal-Token`) → `edunova-inference`
-`POST /generate/stream` (`X-AI-Internal-Token`) → real tokens streamed back as
-SSE through every hop. No OpenAI/Groq/Gemini/Anthropic/OpenRouter anywhere.
+`edunova-ai` `POST /api/ai/chat` (`X-AI-Internal-Token`) → the in-process
+supervised llama.cpp worker → real tokens streamed back as SSE. No
+OpenAI/Groq/Gemini/Anthropic/OpenRouter anywhere.
+
+> **Legacy split mode is still supported but opt-out.** `ai_engine/` also
+> contains `inference_server.py` (a standalone inference service) and
+> `agent/remote_llm.py` (its client). Setting `AI_INFERENCE_URL` on
+> `edunova-ai` selects that split topology. Since the orchestrator owns the
+> model by default, a **stale** `AI_INFERENCE_URL` (left over from the retired
+> three-service deploy) pointing at a broken inference service is now healed
+> automatically at startup: the orchestrator probes the split once, and if it
+> fails with `AUTH_FAILED`/`CONFIG_FAILED`/persistent unreachability it logs a
+> loud `SPLIT_TOPOLOGY_*` event and loads the OWN model in-process instead of
+> serving a permanent `MODEL_NOT_READY`. `/health` reports
+> `splitTopologyHealed: true` when this happens.
 
 ### Root cause history — and how the FREE plan is served today
 
@@ -155,7 +169,11 @@ selection*, not by hiding the error).
 
 `GET /system/resources` on either Python service prints the live numbers.
 
-### `edunova-inference` (the model)
+### `edunova-ai` (orchestrator + owned model)
+
+This ONE service owns the complete AI stack: routing, tools, RAG orchestration,
+web search, memory, SSE relay — and the model itself, loaded in-process through
+a single supervised llama.cpp worker (`inference/inprocess.py`).
 
 | Setting | Value |
 |---|---|
@@ -163,7 +181,7 @@ selection*, not by hiding the error).
 | **Root Directory** | **`ai_engine`** |
 | Plan | **Free (512 MB)** — do not upgrade; the sizing above is the free profile |
 | Build Command | `pip install -r requirements-inference-free.txt && python verify_runtime.py` |
-| Start Command | `python verify_runtime.py && uvicorn inference_server:app --host 0.0.0.0 --port $PORT --workers 1` |
+| Start Command | `python verify_runtime.py && uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1` |
 | Health Check Path | `/health` |
 | Disk | none (Free has no persistent disks) — the ~100 MB weights download once per cold boot into `LOCAL_MODEL_DIR` |
 
@@ -177,52 +195,29 @@ Startup lifecycle (once per process, never per request):
 2 + 2?") → independent inference test → MODEL_READY`. Public states:
 `MODEL_NOT_READY`, `MODEL_LOADING`, `MODEL_READY`, `MODEL_FAILED`.
 
-Endpoints (all but `/health` and `/ready` require `X-AI-Internal-Token`):
-`GET /health`, `GET /ready` (200 only when READY), `GET /model/status`,
-`GET /system/resources`, `GET /metrics`, `POST /generate`,
-`POST /generate/stream` (SSE `token`/`done`/`error`), `POST /embeddings`.
-
 | Variable | Notes |
 |---|---|
 | `LLM_PROVIDER` | `local` |
 | `LOCAL_MODEL_RUNTIME` | `llama_cpp` (GGUF). PyTorch is used for embeddings only. |
-| `LOCAL_MODEL_REPO` / `LOCAL_MODEL_FILE` | Verified catalogue entry (`config.py -> KNOWN_MODELS`, size + sha256 pinned). Default: `bartowski/SmolLM2-135M-Instruct-GGUF` / `SmolLM2-135M-Instruct-Q4_K_M.gguf` — the model that fits Render Free |
+| `LOCAL_MODEL_REPO` / `LOCAL_MODEL_FILE` | Verified catalogue entry (`config.py -> KNOWN_MODELS`, size + sha256 pinned). Blueprint pin: `QuantFactory/SmolLM2-135M-Instruct-GGUF` / `SmolLM2-135M-Instruct.Q4_1.gguf` (98,362,432 B, sha256 `b179c952…`) — the model that fits Render Free. The catalogue default (`bartowski/…/Q4_K_M`) is equally valid. |
 | `LOCAL_MODEL_DIR` | Weight cache dir (`/var/data/models`; instance-local on Free, mount a disk on paid plans) |
 | `LOCAL_MODEL_CTX` | Context tokens (`2048` on the free plan). **No silent downgrade**: if it does not fit, startup fails with the numbers. |
 | `LOCAL_MODEL_THREADS` | `1` (free plan shares ~0.1 CPU; raise on bigger instances) |
 | `MODEL_STARTUP_TIMEOUT` | Hard startup deadline incl. cold-boot download (`900` on free) |
-| `RAG_ENABLED` / `RAG_EMBEDDING_MODEL` | `false` on the 512 MB free runtime — the PyTorch embedding model is NOT loaded (`/embeddings` answers `EMBEDDINGS_UNAVAILABLE`). Enable both on a >= 1 GB instance (architecture unchanged) |
-| `AI_INTERNAL_TOKEN` / `AI_REQUIRE_INTERNAL_TOKEN` | Same token on all three services / `true` |
-| `AI_MEMORY_LIMIT_MB` | Optional override of the detected container limit (testing only) |
-
-### `edunova-ai` (the orchestrator)
-
-| Setting | Value |
-|---|---|
-| Type / Runtime | Web Service / Python |
-| **Root Directory** | **`ai_engine`** |
-| Plan | Free/Starter (512 MB) is sufficient |
-| Build Command | `pip install -r requirements-orchestrator.txt && python verify_runtime.py --orchestrator` |
-| Start Command | `uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1` |
-| Health Check Path | `/health` |
-
-| Variable | Notes |
-|---|---|
-| `AI_INFERENCE_URL` | **Required — the service refuses to start without it.** Public HTTPS URL of `edunova-inference`, no trailing slash. Missing value aborts startup with `CONFIG_FAILED` / `AI_INFERENCE_URL_MISSING` (exit code 3, deploy goes red) instead of serving a 503 to the first chat |
-| `AI_INFERENCE_REQUEST_TIMEOUT` | Network safety net per inference call (`600` s); never shortens an answer |
+| `RAG_ENABLED` / `RAG_EMBEDDING_MODEL` | `false` on the 512 MB free runtime — the PyTorch embedding model is NOT loaded. Enable both on a >= 1 GB instance (architecture unchanged) |
+| `AI_INFERENCE_URL` | **Leave UNSET** for the owned in-process model. Setting it selects the legacy split topology (standalone `inference_server.py`); a stale value pointing at a broken service is healed automatically at startup (see above). |
 | `APP_BACKEND_URL` | Public HTTPS URL of `edunova-api` (authenticated tools) |
-| `AI_INTERNAL_TOKEN` / `AI_REQUIRE_INTERNAL_TOKEN` | Same token as the other services / `true` |
-| `RAG_ENABLED` / `RAG_EMBEDDING_MODEL` | `false` on the free architecture (the inference service does not expose vectors); set `true` on both services together for a >= 1 GB inference instance. `lexical` = offline dev only |
+| `AI_INTERNAL_TOKEN` / `AI_REQUIRE_INTERNAL_TOKEN` | Same token on `edunova-api` and `edunova-ai` / `true` |
 | `WEB_SEARCH_API_KEY` / `WEB_SEARCH_PROVIDER` | Brave/Tavily/Serper web data source |
 | `LLM_MAX_OUTPUT_TOKENS` / `LLM_TEMPERATURE` | `1024` / `0.2` — no elapsed-time output reduction; the budget is additionally capped to the model window |
-| `AGENT_MAX_CONTEXT_CHARS` / `LOCAL_MODEL_CTX` | Must fit the inference service's context (`6000` / `2048`) |
+| `AGENT_MAX_CONTEXT_CHARS` / `LOCAL_MODEL_CTX` | Must fit the model window (`6000` / `2048`) |
 | `MAX_AGENT_ITERATIONS` / `MAX_TOOL_CALLS` / `MAX_AGENT_RUNTIME_SECONDS` | `3` / `8` / `300` |
 
 Endpoints: `GET /health`, `GET /ready`, `GET /model/status`,
 `GET /system/resources`, `GET /metrics`, `GET /api/ai/health|ready|metrics|diagnose`,
 `POST /api/ai/chat` (JSON or SSE with `Accept: text/event-stream`). All of them
-**observe** the inference service; none of them start, reload or queue on the
-model.
+**observe** the owned model lifecycle; none of them start, reload or queue on
+the model.
 
 ### `edunova-api` AI gateway
 
@@ -245,7 +240,7 @@ hop is identifiable from logs alone (no tokens, no message text):
 | `ai.gateway.config_ok` / `ai.gateway.config_failed` | edunova-api | `AI_ENGINE_URL` / `AI_INTERNAL_TOKEN` state, logged once at boot |
 | `ai.hop.gateway_to_ai` | edunova-api | API → orchestrator readiness probe (`probeMs`, `modelReady`) |
 | `ai.hop.ai_response_headers` | edunova-api | Orchestrator answered the chat POST (`connectMs`) |
-| `HOP_AI_TO_INFERENCE_OK` / `HOP_AI_TO_INFERENCE_FAILED` | edunova-ai | Orchestrator → inference service (`probe_ms`, host) |
+| `HOP_AI_TO_INFERENCE_OK` / `HOP_AI_TO_INFERENCE_FAILED` | edunova-ai | Orchestrator → owned model lifecycle status (`probe_ms`, host `in-process` or split host) |
 | `RESPONSE_SENT` | edunova-ai | Full orchestrator turn (`total_ms`, `inference_connect_ms`) |
 | `ai.hop.browser_to_api_complete` | edunova-api | Non-stream response returned (`totalMs`) |
 | `ai.stream.end` | edunova-api | SSE stream closed (`totalMs`) |
@@ -253,25 +248,30 @@ hop is identifiable from logs alone (no tokens, no message text):
 `edunova-api` logs `ai.gateway.config_failed` at boot when `AI_ENGINE_URL` or
 `AI_INTERNAL_TOKEN` is missing, but keeps running: it also serves auth,
 timetables, courses, AR and Socket.IO, so only `/api/ai/*` degrades (503
-`CONFIG_FAILED`). `edunova-ai` is the service that fails fast, because without
-`AI_INFERENCE_URL` it has nothing to serve at all.
+`CONFIG_FAILED`). `edunova-ai` is the service that fails fast on an invalid
+**model** configuration (`MODEL_CONFIG_INVALID`); a stale split
+(`AI_INFERENCE_URL` pointing at a broken inference service) is healed to the
+owned in-process model at startup instead of failing.
 
-### Model weights cache (persistent disk)
+### Model weights cache
 
-`render.yaml` attaches a 4 GB disk to **edunova-inference** at
-`/var/data/models`. Weights are downloaded **once** (never during a request),
-re-validated on boot (size + sha256 + `GGUF` magic) and re-downloaded if
-corrupt. Disks require a paid instance type — which the inference service
-needs anyway.
+Weights are downloaded **once** (never during a request) into
+`LOCAL_MODEL_DIR` (`/var/data/models` by default), re-validated on boot
+(size + sha256 + `GGUF` magic) and re-downloaded if corrupt. Render Free has
+no persistent disk, so the download repeats on cold boot (~100 MB, one time);
+mount a persistent disk at `LOCAL_MODEL_DIR` on paid plans to make it
+once-per-deploy.
 
 ### Order of first deploy
 
-1. Deploy `edunova-inference`; wait for `GET /ready` → `{"ready": true}`.
-2. Set `AI_INFERENCE_URL` on `edunova-ai` to that URL; deploy; check `/ready`.
-3. Set `AI_ENGINE_URL` on `edunova-api` to the `edunova-ai` URL.
-4. Use the same `AI_INTERNAL_TOKEN` on all three.
+1. Deploy `edunova-ai` (the Blueprint also creates `edunova-api`); wait for
+   `GET /ready` → `{"ready": true}` (or `/health` → `modelReady: true`).
+2. Set `AI_ENGINE_URL` on `edunova-api` to the `edunova-ai` URL (the Blueprint
+   auto-wires this via `fromService`).
+3. Use the same `AI_INTERNAL_TOKEN` on both services.
 
 ## 3. Frontend — Cloudflare Workers
+
 
 **The production frontend already exists and must stay at**
 `https://edunova-x.ranjitacharya13.workers.dev`. Do not create a second
@@ -535,3 +535,60 @@ curl -s https://edunova-ai-o2vy.onrender.com/health | python3 -m json.tool | gre
 # expect: "state": "ready", "modelReady": true
 ```
 
+
+---
+
+## Incident runbook — "MODEL_NOT_READY, model never becomes READY" (14 Sept 2026)
+
+**Symptom.** `POST /api/ai/chat` → `503 MODEL_NOT_READY`; the AI panel stays on
+"EduNova AI is starting — the model is not ready yet", even after many minutes.
+
+**Root cause (verified live).** The deployed `edunova-ai` service was running in
+the retired **split topology**: a stale `AI_INFERENCE_URL` env var selected
+`RemoteInferenceLLM` (`modelMode: "remote-service"`), pointing at a separate
+inference service whose `AI_REQUIRE_INTERNAL_TOKEN=true` but whose
+`AI_INTERNAL_TOKEN` was empty. That service answered **every** call — including
+`GET /model/status` — with `503 {"code":"AUTH_FAILED","message":"AI internal
+authentication is required but not configured"}`. Two compounding defects turned
+that real failure into the generic `MODEL_NOT_READY` the UI showed:
+
+1. **Deployment drift** — `render.yaml` (the actual Blueprint) already migrated
+   to the owned in-process topology and sets no `AI_INFERENCE_URL`, but the live
+   services were still running the old three-service env.
+2. **Error collapse** — `agent/remote_llm.py::status()` only treated HTTP
+   401/403 as errors; a `503` with a coded `detail` was wrapped as a "reachable
+   but unknown" payload with no `state`, so the orchestrator reported
+   `MODEL_NOT_READY` instead of `AUTH_FAILED`.
+
+**Fix shipped in this repo.**
+
+1. `agent/remote_llm.py::status()` now raises a precise `LLMResponseError` for
+   **any** non-2xx status (including a 503 coded detail), so `/health`,
+   `/ready` and the gateway surface `AUTH_FAILED` (permanent failure) instead of
+   `MODEL_NOT_READY`.
+2. `main.py` lifespan now **self-heals a broken split**: before serving
+   traffic, it probes a configured `AI_INFERENCE_URL` once; on
+   `AUTH_FAILED`/`CONFIG_FAILED`/persistent unreachability it logs
+   `SPLIT_TOPOLOGY_BROKEN|UNREACHABLE` and loads the OWN model in-process
+   (single-flight). `/health` reports `splitTopologyHealed: true`.
+3. Deployment docs/env examples consolidated on the two-service in-process
+   topology (`render.yaml` is the source of truth).
+
+**Operator actions (recommended, one minute).** On `edunova-ai` → Environment:
+
+| Key | Action |
+|---|---|
+| `AI_INFERENCE_URL` | **delete** (or leave — the heal ignores a broken split) |
+| `AI_INTERNAL_TOKEN` | same value as on `edunova-api` |
+| `AI_REQUIRE_INTERNAL_TOKEN` | `true` |
+
+Then **Manual Deploy → Deploy latest commit**. Watch for
+`MODEL_LIFECYCLE_STARTED mode=in-process` then `MODEL_READY`.
+
+**Verify:**
+
+```bash
+curl -s https://<edunova-ai>.onrender.com/health | python3 -m json.tool \
+  | grep -E '"modelReady"|"modelMode"|"splitTopologyHealed"|"state"'
+# expect: "modelMode": "in-process", "modelReady": true
+```

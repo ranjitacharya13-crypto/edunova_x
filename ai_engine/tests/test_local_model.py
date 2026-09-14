@@ -650,6 +650,51 @@ class RemoteInferenceClientTests(unittest.IsolatedAsyncioTestCase):
             await llm.status()
         self.assertEqual(ctx.exception.error_type, "AI_SERVICE_UNREACHABLE")
 
+    async def test_status_surfaces_auth_failed_from_a_503_coded_detail(self):
+        """A 503 with a coded detail is an ERROR, never a "reachable but unknown"
+        state — this is the exact bug that hid AUTH_FAILED behind MODEL_NOT_READY."""
+        import httpx
+
+        def handler(request):
+            return httpx.Response(503, json={"detail": {
+                "code": "AUTH_FAILED",
+                "message": "AI internal authentication is required but not configured",
+            }})
+
+        llm = self._client(handler)
+        with self.assertRaises(LLMResponseError) as ctx:
+            await llm.status()
+        self.assertEqual(ctx.exception.error_type, "AUTH_FAILED")
+        self.assertEqual(ctx.exception.status_code, 503)
+        self.assertIn("internal authentication", str(ctx.exception))
+
+    async def test_status_surfaces_auth_failed_from_a_401(self):
+        import httpx
+
+        def handler(request):
+            return httpx.Response(401, json={"detail": {"code": "AUTH_FAILED", "message": "Inference service authorization failed"}})
+
+        llm = self._client(handler)
+        with self.assertRaises(LLMResponseError) as ctx:
+            await llm.status()
+        self.assertEqual(ctx.exception.error_type, "AUTH_FAILED")
+        self.assertEqual(ctx.exception.status_code, 401)
+
+    async def test_status_handles_non_json_error_body_without_crashing(self):
+        """A proxy/loading page (non-JSON) on a 503 is classified by status, not
+        by pretending the HTML body describes a model state."""
+        import httpx
+
+        def handler(request):
+            return httpx.Response(503, content=b"<html>Application loading</html>",
+                                  headers={"content-type": "text/html"})
+
+        llm = self._client(handler)
+        with self.assertRaises(LLMResponseError) as ctx:
+            await llm.status()
+        self.assertEqual(ctx.exception.error_type, "MODEL_NOT_READY")
+        self.assertEqual(ctx.exception.status_code, 503)
+
     async def test_missing_url_is_configuration_error(self):
         from agent.llm import LLMConfigurationError
         llm = RemoteInferenceLLM(local_settings(inference_url=""))
