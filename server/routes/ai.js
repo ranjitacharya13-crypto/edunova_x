@@ -203,7 +203,16 @@ function proxyStatus(path, timeout = 10000) {
     if (!base) return res.status(503).json({ success: false, modelReady: false, modelState: "CONFIG_FAILED", status: "error", error: { code: "CONFIG_FAILED", message: "AI service endpoint is not configured" } });
     try {
       const response = await axios.get(`${base}${path}`, { headers: internalHeaders(crypto.randomUUID()), timeout, validateStatus: () => true });
-      if (!response.data || typeof response.data !== "object") return fail(res, 502, "INVALID_UPSTREAM", "AI status response is invalid");
+      // A non-JSON body is a proxy/edge page (Render free-tier "loading",
+      // Cloudflare challenge, or a wrong AI_ENGINE_URL serving HTML). This is
+      // the classic "/api/ai/health -> 502" signature: classify it by the
+      // upstream status instead of collapsing every case into a generic 502.
+      if (!response.data || typeof response.data !== "object") {
+        if (response.status === 503) return res.status(503).json({ success: false, modelReady: false, modelState: "starting", status: "error", error: { code: "MODEL_NOT_READY", message: "The AI service is still starting (upstream returned a loading page). Try again in a moment." } });
+        if (response.status === 404) return res.status(503).json({ success: false, modelReady: false, modelState: "CONFIG_FAILED", status: "error", error: { code: "CONFIG_FAILED", message: "The AI service URL is wrong or the service is not deployed (upstream 404). Check AI_ENGINE_URL." } });
+        if (response.status === 504) return res.status(504).json({ success: false, modelReady: false, modelState: "UPSTREAM_TIMEOUT", status: "error", error: { code: "UPSTREAM_TIMEOUT", message: "The AI service did not respond in time." } });
+        return fail(res, 502, "INVALID_UPSTREAM", "AI status response is invalid");
+      }
       const data = response.data;
       const code = data.errorCode || data.errorStage || (response.status === 401 ? "AUTH_FAILED" : null);
       if (code && !data.error) data.error = { code, message: data.errorMessage || data.lastError || null };
