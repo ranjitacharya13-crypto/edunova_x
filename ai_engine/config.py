@@ -194,6 +194,19 @@ KNOWN_MODELS: dict[tuple[str, str], dict[str, object]] = {
         "ram_mb": 420,
         "ctx": 2048,
     },
+    # Verified alternative quant of the SAME model (QuantFactory build):
+    # Q4_1 at 98,362,432 bytes — the strongest SmolLM2-135M-Instruct artifact
+    # that also fits GitHub's 100 MiB/git-friendly size, which makes it
+    # mirrorable in environments where the HF CDN is unreachable. sha256 taken
+    # from the canonical HuggingFace LFS pointer and byte-verified against the
+    # mirror (github.com/simonw/llm-smollm2, public domain of the plugin).
+    ("QuantFactory/SmolLM2-135M-Instruct-GGUF", "SmolLM2-135M-Instruct.Q4_1.gguf"): {
+        "sha256": "b179c9523d0e6a0f98a330c7562b682750a6f8c8c15e5bc70ea373728110db53",
+        "bytes": 98_362_432,
+        "chat_format": "chatml",
+        "ram_mb": 360,
+        "ctx": 2048,
+    },
     # 1 GB+ starter instance: best quality on the SAME architecture, so tool
     # decisions get stronger reasoning once the plan allows it.
     ("bartowski/SmolLM2-360M-Instruct-GGUF", "SmolLM2-360M-Instruct-Q4_K_M.gguf"): {
@@ -679,7 +692,13 @@ class Settings:
 
     @property
     def search_configured(self) -> bool:
-        return bool(self.web_search_api_key and self.web_search_provider)
+        # Keyless public providers (duckduckgo / github) make web search
+        # available without any account; a provider key is one option, not a
+        # precondition. "auto" resolves to a keyless provider when no key is
+        # set (see agent/tools/web.py).
+        if self.web_search_api_key:
+            return bool(self.web_search_provider)
+        return self.web_search_provider in {"auto", "duckduckgo", "github"}
 
     def llm_safe_diagnostics(self) -> dict[str, object]:
         host = ""

@@ -34,8 +34,8 @@ function getAiBaseUrl() {
 // Deliberately NOT a hard exit: this process also serves auth, timetables,
 // courses, AR and Socket.IO. Taking the whole product down because the AI URL
 // is unset would be worse than degrading AI to an explicit CONFIG_FAILED 503.
-// edunova-ai is the service that fails fast, because without AI_INFERENCE_URL
-// it has literally nothing to do.
+// edunova-ai is the service that owns the model (loaded in-process through its
+// own supervised runtime), so it fail-fasts on a broken MODEL configuration.
 function logAiGatewayConfig() {
   const configured = Boolean(getAiBaseUrl());
   const token = Boolean(process.env.AI_INTERNAL_TOKEN);

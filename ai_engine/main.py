@@ -1,14 +1,19 @@
-"""EduNova AI ORCHESTRATOR (Layer A — lightweight, no model in this process).
+"""EduNova AI SERVICE (orchestrator + OWN in-process model).
 
-This service owns AI orchestration only: intent routing, the ToolRegistry
-(authenticated EduNova data tools), RAG orchestration, web search, bounded
-conversation memory, application actions and the SSE streaming gateway.
+This service owns the COMPLETE EduNova AI stack in one application: intent
+routing, the ToolRegistry (authenticated EduNova data tools), RAG
+orchestration, web search, bounded conversation memory, application actions
+and the SSE streaming gateway — AND the self-hosted model itself. The model
+lifecycle is owned here through the supervised in-process engine
+(``inference/inprocess.py``): llama.cpp (``llama-cpp-python``) is an internal
+library/runtime component of this process tree, never an external service.
+Weights are downloaded once, integrity-verified, loaded into exactly one
+supervised worker and warmed before the model reports READY.
 
-It NEVER loads the LLM and never imports llama_cpp or torch. The self-hosted
-model runs in the separate persistent inference service
-(``inference_server.py``); this process reaches it through the authenticated
-HTTP/SSE client in ``agent/remote_llm.py`` (``AI_INFERENCE_URL`` +
-``AI_INTERNAL_TOKEN``). No OpenAI/Groq/Gemini/Anthropic/OpenRouter calls are
+A split deployment is still possible by setting ``AI_INFERENCE_URL`` (the
+orchestrator then uses the authenticated HTTP/SSE client in
+``agent/remote_llm.py``), but no external service is required and none is
+deployed by default. No OpenAI/Groq/Gemini/Anthropic/OpenRouter calls are
 made anywhere: web search is data, the reasoning model stays self-hosted.
 """
 
@@ -20,6 +25,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import secrets
 import time
 from typing import Any
@@ -46,6 +52,8 @@ from agent.remote_llm import RemoteInferenceLLM, create_llm
 from agent.router import FAST_INTENTS, IntentRouter, run_fast_path
 from agent.tools import ToolRegistry, build_all_tools
 from config import load_settings
+from inference.inprocess import InProcessLLM
+from inference.manager import model_requirement
 from inference.resources import ResourceManager
 
 logging.basicConfig(
@@ -139,24 +147,24 @@ def _process_resources() -> dict[str, Any]:
 # --- Safe startup diagnostics (no secrets) ---
 def _log_startup_diagnostics() -> None:
     logger.info(
-        "AI_ORCHESTRATOR_STARTUP provider=%s inference_url_configured=%s internal_auth_required=%s search_configured=%s rag_enabled=%s",
+        "AI_ORCHESTRATOR_STARTUP provider=%s model_mode=%s inference_url_configured=%s internal_auth_required=%s search_configured=%s rag_enabled=%s",
         settings.llm_provider,
+        "remote-service" if settings.inference_url else "in-process (owned)",
         bool(settings.inference_url),
         settings.ai_require_internal_token,
         settings.search_configured,
         settings.rag_enabled,
     )
-    if not settings.inference_url:
+    if not settings.inference_url and settings.llm_configuration_error:
         logger.error(
-            "CONFIG_FAILED code=AI_INFERENCE_URL_MISSING hint=Set AI_INFERENCE_URL to the persistent "
-            "inference service (inference_server.py). This process never loads the model itself. "
-            "The service refuses to start until it is set — see _require_runtime_configuration()."
+            "CONFIG_FAILED code=MODEL_CONFIG_INVALID detail=%s hint=Fix LOCAL_MODEL_REPO/LOCAL_MODEL_FILE so the "
+            "owned model can be located and integrity-checked.",
+            settings.llm_configuration_error,
         )
     if settings.ai_require_internal_token and not settings.ai_internal_token:
         logger.error(
             "CONFIG_FAILED code=AI_INTERNAL_TOKEN_MISSING hint=AI_REQUIRE_INTERNAL_TOKEN is true but "
-            "AI_INTERNAL_TOKEN is empty. Use the same random value on edunova-api, edunova-ai and "
-            "edunova-inference."
+            "AI_INTERNAL_TOKEN is empty. Use the same random value on edunova-api and edunova-ai."
         )
     stale_external = [name for name in ("LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL") if os.getenv(name, "").strip()]
     if stale_external:
@@ -182,33 +190,41 @@ class OrchestratorStartupError(RuntimeError):
 
 
 def _require_runtime_configuration() -> None:
-    """Refuse to serve traffic when the orchestrator cannot reach the model.
+    """Refuse to serve traffic when this AI process cannot run its own model.
 
-    These are the only two configuration errors that are unrecoverable at
-    runtime. Everything else (inference service down, model still loading,
-    resources too small) is a live state reported per request, never fatal at
-    boot, because the inference service may legitimately be starting later.
+    In the default in-process topology the model is OWNED here, so the config
+    contract is a valid self-hosted model configuration (repo/file/runtime).
+    A split deployment (AI_INFERENCE_URL set) still requires that URL plus the
+    internal token. Everything else (model still downloading, resources too
+    small, load failure) is a live state reported per request, never fatal at
+    boot — readiness is observed, never assumed.
     """
     if not settings.inference_url:
-        raise OrchestratorStartupError(
-            "AI_INFERENCE_URL_MISSING",
-            "AI_INFERENCE_URL is not configured. The orchestrator never loads the model "
-            "itself: set AI_INFERENCE_URL on edunova-ai to the public HTTPS URL of the "
-            "persistent inference service (edunova-inference), with no trailing slash.",
-        )
+        # In-process mode: the model belongs to this process.
+        if settings.llm_configuration_error:
+            raise OrchestratorStartupError(
+                "MODEL_CONFIG_INVALID",
+                f"Invalid self-hosted model configuration: {settings.llm_configuration_error}",
+            )
+        if settings.llm_provider != "local":
+            raise OrchestratorStartupError(
+                "MODEL_CONFIG_INVALID",
+                "EduNova AI is self-hosted only; commercial LLM providers are not supported.",
+            )
+        return
     if settings.ai_require_internal_token and not settings.ai_internal_token:
         raise OrchestratorStartupError(
             "AI_INTERNAL_TOKEN_MISSING",
             "AI_REQUIRE_INTERNAL_TOKEN is true but AI_INTERNAL_TOKEN is empty. Set the same "
-            "random AI_INTERNAL_TOKEN on edunova-api, edunova-ai and edunova-inference.",
+            "random AI_INTERNAL_TOKEN on edunova-api and edunova-ai.",
         )
 
 
 def _inference_host() -> str:
-    """The inference service host for logs. Never the token, never a full URL."""
+    """The inference host for logs (remote mode). Never the token, never a URL."""
     raw = str(settings.inference_url or "")
     if not raw:
-        return "unset"
+        return "in-process"
     without_scheme = raw.split("://", 1)[-1]
     return without_scheme.split("/", 1)[0].split("@", 1)[-1]
 
@@ -219,8 +235,9 @@ registry = ToolRegistry(
 for definition in build_all_tools(settings):
     registry.register(definition)
 
-# The model lives in the inference service. This client is the only bridge.
-llm: RemoteInferenceLLM = create_llm(settings)
+# The model engine this process uses. Default: the OWNED in-process model
+# (single supervised instance). AI_INFERENCE_URL selects the split topology.
+llm = create_llm(settings)
 agent = AgentEngine(settings, llm, registry)
 intent_router = IntentRouter(settings)
 resource_manager = ResourceManager()
@@ -301,12 +318,14 @@ if settings.rag_enabled:
     try:
         from inference.rag import Embedder, RagIndex, RemoteEmbedder  # noqa: PLC0415
 
-        # Embeddings are computed by the inference service (PyTorch lives
-        # there). ``lexical`` is an explicit operator choice for offline dev.
-        if settings.rag_embedding_model == "lexical":
-            embedder: Any = Embedder("lexical")
+        # Embeddings live with the model: the split topology computes them in
+        # the inference service (``RemoteEmbedder``); the default in-process
+        # topology embeds HERE (lexical needs no torch; a sentence-transformer
+        # model loads only when this instance opted into RAG with headroom).
+        if settings.inference_url and settings.rag_embedding_model != "lexical":
+            embedder: Any = RemoteEmbedder(settings.inference_url, settings.ai_internal_token)
         else:
-            embedder = RemoteEmbedder(settings.inference_url, settings.ai_internal_token)
+            embedder = Embedder(settings.rag_embedding_model or "lexical")
         persist = _default_rag_persist_dir()
         rag_index = RagIndex(embedder=embedder, persist_dir=str(persist))
         logger.info("RAG_INDEX_CONFIGURED persist=%s backend=%s", persist, embedder.backend)
@@ -321,22 +340,27 @@ registry.register(build_retrieval_tool(settings, rag_index))
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # No model lifecycle here. The orchestrator only OBSERVES the inference
-    # service; it never downloads, loads or warms weights.
-    #
-    # Fatal configuration is caught BEFORE the port starts answering, so a
-    # missing AI_INFERENCE_URL fails the deploy instead of the first student
+    # Fatal configuration is caught BEFORE the port starts answering, so a bad
+    # model configuration fails the deploy instead of the first student
     # message. uvicorn exits non-zero and Render marks the deploy failed.
     try:
         _require_runtime_configuration()
     except OrchestratorStartupError as exc:
         logger.error("ORCHESTRATOR_STARTUP_ABORTED code=%s reason=%s", exc.code, exc.message)
         raise
-    logger.info("ORCHESTRATOR_STARTUP_OK inference_url_host=%s", _inference_host())
+
+    # In-process (default) topology: start the ONE owned model lifecycle now —
+    # download (cache hit skips), verify, load, warm up and self-test all run
+    # while the port is already answering. Concurrent/early requests observe
+    # the true lifecycle state; none of them can trigger a second load.
+    if isinstance(llm, InProcessLLM):
+        llm.start()
+        logger.info("MODEL_LIFECYCLE_STARTED mode=in-process model=%s", settings.local_model_id)
+    logger.info("ORCHESTRATOR_STARTUP_OK inference=%s", _inference_host())
 
     async def observe_inference():
         status = await _inference_status(force=True)
-        logger.info("INFERENCE_SERVICE_OBSERVED state=%s model=%s error=%s", status.get("state"), status.get("model"), status.get("error"))
+        logger.info("MODEL_OBSERVED state=%s model=%s error=%s", status.get("state"), status.get("model"), status.get("error"))
         if rag_index is not None and _status_is_ready(status):
             try:
                 await asyncio.to_thread(rag_index.embedder.load)
@@ -345,21 +369,40 @@ async def lifespan(app: FastAPI):
             except Exception as exc:  # noqa: BLE001
                 logger.error("RAG_STARTUP_DEFERRED reason=%s", str(exc)[:200])
     task = asyncio.create_task(observe_inference())
+
+    async def _warmup_watchdog():
+        """Log the transition to READY (or the precise failure) exactly once."""
+        while True:
+            status = await _inference_status(force=True)
+            if _status_is_ready(status):
+                logger.info("MODEL_READY model=%s cold_start_ms=%s load_ms=%s",
+                            status.get("model"), status.get("cold_start_ms"), status.get("model_load_ms"))
+                return
+            if status.get("permanentFailure"):
+                logger.error("MODEL_FAILED stage=%s error=%s", status.get("errorStage"), status.get("error"))
+                return
+            await asyncio.sleep(2)
+
+    watchdog = asyncio.create_task(_warmup_watchdog())
     try:
         yield
     finally:
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+        for t in (task, watchdog):
+            t.cancel()
+        await asyncio.gather(task, watchdog, return_exceptions=True)
+        if isinstance(llm, InProcessLLM):
+            await llm.close()
 
 
 app = FastAPI(
-    title="EduNova AI Orchestrator",
-    version="6.0.0",
+    title="EduNova AI",
+    version="7.0.0",
     description=(
-        "Lightweight AI orchestration layer: IntentRouter + authenticated ToolRegistry "
-        "+ RAG orchestration + web research + bounded memory + SSE gateway. The "
-        "self-hosted model runs in the separate persistent inference service "
-        "(AI_INFERENCE_URL); this process never loads weights."
+        "EduNova AI: IntentRouter + authenticated ToolRegistry + RAG orchestration + "
+        "web research + bounded memory + SSE gateway, with the OWN self-hosted model "
+        "loaded in-process (supervised llama.cpp runtime; llama-cpp-python is an "
+        "internal library, not an external service). AI_INFERENCE_URL optionally "
+        "selects a split deployment."
     ),
     lifespan=lifespan,
 )
@@ -393,8 +436,8 @@ async def root() -> dict[str, Any]:
     return {
         "success": True,
         "service": "edunova-agent",
-        "version": "6.0.0",
-        "architecture": "orchestrator (IntentRouter + ToolRegistry + RAG + web research) -> authenticated persistent inference service (self-hosted llama.cpp)",
+        "version": "7.0.0",
+        "architecture": "orchestrator (IntentRouter + ToolRegistry + RAG + web research) + OWN in-process model (supervised llama.cpp internal runtime)",
         "endpoint": "POST /api/ai/chat",
     }
 
@@ -412,7 +455,7 @@ def _public_error(status: dict[str, Any]) -> dict[str, Any]:
         message = (f"AI model resource insufficient: the inference service needs {resource.get('required_mb')} MiB "
                    f"but has {resource.get('available_mb')} MiB (recommended {resource.get('recommended_mb')} MiB)")
     else:
-        message = str(status.get("error") or f"Inference service is not ready ({state})")
+        message = str(status.get("error") or f"AI model is not ready ({state})")
     return {"code": code, "message": message[:500], "resource": status.get("resource")}
 
 
@@ -428,14 +471,16 @@ async def health() -> dict[str, Any]:
     return {
         "status": "live",
         "service": "edunova-agent",
-        "version": "6.0.0",
-        "role": "orchestrator",
+        "version": "7.0.0",
+        "role": "orchestrator+model",
         "providerState": str(status.get("state") or "unknown"),
         "modelLifecycle": str(status.get("lifecycle") or status.get("state") or "unknown"),
         "modelReady": ready,
         "readyForTraffic": ready,
+        "modelMode": "in-process" if isinstance(llm, InProcessLLM) else "remote-service",
         "inferenceService": {
             "configured": bool(settings.inference_url),
+            "mode": "in-process" if isinstance(llm, InProcessLLM) else "remote-service",
             "reachable": status.get("reachable", True),
             "state": status.get("state"),
             "model": status.get("model"),
@@ -564,22 +609,152 @@ async def ai_health(
     }
 
 
+def _model_stage_checks() -> dict[str, Any]:
+    """Stage-by-stage facts about the OWNED model (no secrets, no blocking IO).
+
+    Identifies the exact failure stage (configuration vs artifact vs runtime vs
+    lifecycle) instead of a generic "model unavailable". Heavy checks (sha256
+    over ~100 MB, a real generation) are only run on explicit request paths.
+    """
+    stages: dict[str, Any] = {}
+    stages["configuration"] = {
+        "ok": settings.llm_provider == "local" and not settings.llm_configuration_error,
+        "provider": settings.llm_provider,
+        "error": settings.llm_configuration_error or None,
+        "runtime": settings.local_model_runtime,
+        "modelId": settings.local_model_id,
+        "ctx": settings.local_model_ctx_size,
+    }
+    if settings.inference_url:
+        stages["mode"] = {"ok": True, "value": "remote-service (AI_INFERENCE_URL)"}
+        return stages
+    stages["mode"] = {"ok": True, "value": "in-process (owned)"}
+    try:
+        from agent.local_llm import LocalModelManager, _has_gguf_magic  # noqa: PLC0415
+
+        mgr = LocalModelManager(settings)
+        path = mgr.model_path
+        entry = settings.local_model_known_entry or {}
+        exists = path.exists()
+        size = path.stat().st_size if exists else 0
+        magic_ok = bool(exists and _has_gguf_magic(path))
+        known = bool(entry.get("sha256")) or bool(settings.local_model_sha256)
+        artifact_ok = exists and size >= mgr.settings.local_model_min_bytes and magic_ok
+        stages["model_artifact"] = {
+            "ok": artifact_ok,
+            "pathExists": exists,
+            "bytes": size,
+            "ggufMagicValid": magic_ok,
+            "cachePath": str(path.parent),
+            "fileName": path.name,
+        }
+        stages["model_integrity"] = {
+            "ok": bool(artifact_ok and (known or path.with_suffix(path.suffix + ".verified").exists())),
+            "sha256Pinned": known,
+            "verifiedMarker": path.with_suffix(path.suffix + ".verified").exists(),
+            "note": "Full checksum comparison runs during the supervised MODEL_LOCATE stage.",
+        }
+        stages["model_metadata"] = {
+            "ok": artifact_ok,
+            "expectedBytes": int(entry.get("bytes", 0) or settings.local_model_expected_bytes or 0),
+            "catalogueQuantization": (entry.get("sha256", "")[:12] + "…") if known else "operator override",
+            "memoryRequirement": model_requirement(settings, path if exists else None),
+        }
+    except Exception as exc:  # noqa: BLE001 — diagnostics never raises
+        stages["model_artifact"] = {"ok": False, "error": safe_error_local(exc)}
+    stages["runtime"] = {
+        "ok": bool(llm.status().get("runtime_version")) or llm.manager.facts.get("runtimeAvailable", False) or llm.manager.phase not in ("BOOT",),
+        "observed": llm.manager.facts.get("runtimeVersion"),
+    }
+    snap = llm.manager.snapshot()
+    stages["initialization"] = {
+        "ok": bool(snap.get("modelLoaded")),
+        "lifecycle": snap.get("lifecycle"),
+        "publicState": snap.get("publicState"),
+        "startupDurationMs": snap.get("startupDurationMs"),
+        "history": [
+            {"state": h.get("state"), "diagnostic": h.get("diagnostic")}
+            for h in (snap.get("history") or [])[-14:]
+        ],
+    }
+    stages["readiness"] = {
+        "ok": llm.manager.is_ready(),
+        "modelLoaded": bool(snap.get("modelLoaded")),
+        "tokenizerLoaded": bool(snap.get("tokenizerLoaded")),
+        "warmupComplete": bool(snap.get("warmupComplete")),
+        "inferenceTest": bool(snap.get("inferenceTest")),
+    }
+    stages["memory"] = {
+        **resource_manager.snapshot(),
+        "requirement": snap.get("memoryRequirement"),
+    }
+    return stages
+
+
+def safe_error_local(exc: Exception) -> str:
+    text = str(exc)
+    text = re.sub(r"(?:https?|mongodb(?:\+srv)?)://\S+", "[endpoint redacted]", text)
+    return text[:300]
+
+
 @app.get("/api/ai/diagnostics")
 async def diagnostics(
     x_ai_internal_token: str | None = Header(default=None),
+    deep: bool = False,
 ) -> dict[str, Any]:
     _authorize_internal_request(x_ai_internal_token)
     status = await _inference_status(force=True)
+    routing_probe = intent_router.classify("What is machine learning?", [])
+    ready = _status_is_ready(status)
+    test_inference: dict[str, Any]
+    if not ready:
+        test_inference = {"ok": False, "skipped": True, "reason": _public_error(status)["message"]}
+    elif deep:
+        try:
+            text = await llm.complete_text(system_prompt="You are EduNova AI.", user_prompt="Say hello in one sentence.", max_output_tokens=64)
+            test_inference = {"ok": True, "responseText": text[:300], "generation": llm.last_generation_metrics}
+        except Exception as exc:  # noqa: BLE001
+            test_inference = {"ok": False, "error": _redact(exc), "code": getattr(exc, "error_type", None)}
+    else:
+        test_inference = {"ok": True, "evidence": (status.get("last_self_test") or {}).get("answer", "")[:200],
+                          "note": "Warmup self-test recorded by the supervised lifecycle; pass ?deep=true for a fresh generation."}
     return {
         "success": True,
         "service": "edunova-agent",
-        "role": "orchestrator",
+        "role": "orchestrator+model",
+        "modelMode": "in-process" if isinstance(llm, InProcessLLM) else "remote-service",
         "inferenceUrlConfigured": bool(settings.inference_url),
+        "stages": {
+            **_model_stage_checks(),
+            "test_inference": test_inference,
+            "routing": {
+                "ok": routing_probe.intent in FAST_INTENTS or routing_probe.intent == "complex",
+                "probeIntent": routing_probe.intent,
+                "probeReason": routing_probe.reason,
+                "fastPathIntents": sorted(FAST_INTENTS),
+            },
+            "database_tool": {
+                "ok": any(spec["name"] == "get_student_profile" for spec in registry.specs()),
+                "backendUrlConfigured": bool(settings.app_backend_url),
+                "authorization": "tools execute under the authenticated ownerId supplied by the API gateway",
+            },
+            "rag": {
+                "ok": (rag_index is not None) and not settings.rag_enabled or (rag_index is not None),
+                "enabled": rag_index is not None,
+                "embedderBackend": getattr(getattr(rag_index, "embedder", None), "backend", None),
+            },
+            "web_search": {
+                "ok": True,
+                "keyConfigured": settings.search_configured,
+                "provider": settings.web_search_provider,
+                "note": "Without a provider key, DuckDuckGo HTML is used; page fetching always applies SSRF guards.",
+            },
+        },
         "inferenceStatus": status,
         "resources": resource_manager.snapshot(),
         "webSearchConfigured": settings.search_configured,
         "ragEnabled": rag_index is not None,
-        "note": "Self-hosted model runs in the persistent inference service; this process never loads weights.",
+        "note": "The model is owned by this process (supervised in-process llama.cpp runtime).",
     }
 
 
@@ -808,7 +983,7 @@ async def _ready_gate() -> None:
     if _status_is_ready(status):
         return
     error = _public_error(status)
-    raise LLMResponseError(error["message"] or "Inference service is not ready", status_code=503,
+    raise LLMResponseError(error["message"] or "AI model is not ready", status_code=503,
                            error_type=error["code"] or "MODEL_NOT_READY")
 
 

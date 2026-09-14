@@ -346,6 +346,7 @@ class FastPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("[S9]", payload["message"], "invalid citations must be stripped")
 
     async def test_web_unavailable_says_so_instead_of_faking(self):
+        """Web down -> a clearly-qualified answer, never fabricated web data."""
         registry = ToolRegistry(allowed_permissions={"READ_EXTERNAL"})
         async def failing(args):
             raise RuntimeError("Web search is not configured")
@@ -353,20 +354,25 @@ class FastPathTests(unittest.IsolatedAsyncioTestCase):
             name="web_search", description="search", input_schema={"type": "object"},
             executor=failing, permission="READ_EXTERNAL", category="EXTERNAL",
         ))
-        llm = _ScriptedLLM(text="should-not-be-called")
-        with self.assertRaises(LLMResponseError):
-            payload = await run_fast_path(
-                settings=self.settings,
-                llm=llm,
-                registry=registry,
-                decision=RouteDecision(intent="web_research", tools=("web_search",)),
-                goal="latest space news",
-                conversation=[],
-                conversation_id="conv-local-0002",
-                user_id="student-42",
-                user_name="Test Student",
-            )
-        self.assertEqual(llm.calls, [], "LLM must not fabricate a web answer without search data")
+        llm = _ScriptedLLM(text="I couldn't retrieve current web information just now. From my own knowledge (possibly outdated): space news changes often, so verify separately.")
+        payload = await run_fast_path(
+            settings=self.settings,
+            llm=llm,
+            registry=registry,
+            decision=RouteDecision(intent="web_research", tools=("web_search",)),
+            goal="latest space news",
+            conversation=[],
+            conversation_id="conv-local-0002",
+            user_id="student-42",
+            user_name="Test Student",
+        )
+        self.assertEqual(len(llm.calls), 1, "exactly one degradation turn runs")
+        # The degradation prompt must tell the model the web hop failed...
+        self.assertIn("could NOT be completed", llm.calls[0]["system_prompt"])
+        # ...and the delivered answer must be the honest qualified one with NO sources.
+        self.assertIn("couldn't retrieve", payload.get("message", ""))
+        self.assertEqual(payload.get("sources") or [], [], "no sources may be attached when the web hop failed")
+        self.assertFalse(payload.get("usedWeb"))
 
     async def test_quiz_creation_validates_and_returns_pending_action(self):
         quiz_payload = {
