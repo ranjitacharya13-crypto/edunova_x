@@ -314,7 +314,12 @@ _PLAN_SCHEMA: dict[str, Any] = {
                     "topic": {"type": "string"},
                     "task": {"type": "string"},
                 },
-                "required": ["day", "topic"],
+                # All five keys are REQUIRED at the grammar level: a 135M model
+                # will legally omit optional keys, and validate_plan_payload
+                # rejects sessions missing time/subject/task. Requiring them
+                # here makes the constrained generation emit complete sessions
+                # instead of failing validation after the fact.
+                "required": ["day", "time", "subject", "topic", "task"],
                 "additionalProperties": False,
             },
         },
@@ -347,17 +352,49 @@ def validate_quiz_payload(payload: dict[str, Any], *, fallback_subject: str = "G
     return payload
 
 
+def _clamp_text(value: str, limit: int) -> str:
+    """Word-boundary clamp for model-generated plan fields.
+
+    The llama.cpp grammar guarantees JSON STRUCTURE but cannot enforce
+    maxLength or minLength (GBNF cannot count characters), so overlong model
+    output is clamped rather than discarded — the content stays exactly what
+    the model generated, only bounded in length.
+    """
+    value = value.strip()
+    if len(value) <= limit:
+        return value
+    return (value[:limit].rsplit(" ", 1)[0] or value[:limit]).rstrip() + "…"
+
+
 def validate_plan_payload(payload: dict[str, Any], *, fallback_subject: str = "General") -> dict[str, Any]:
+    """Validate LLM-generated study-plan JSON before it reaches application services.
+
+    Bounded-output policy for the small local model: overlong fields are
+    clamped (never silently regenerated), and sessions missing their essential
+    day/topic identity are dropped — never invented. If no complete session
+    remains, the plan fails honestly with INVALID_PLAN_OUTPUT.
+    """
     from jsonschema import validate, ValidationError
+    if isinstance(payload, dict) and isinstance(payload.get("schedule"), list):
+        schedule: list[dict[str, str]] = []
+        for item in payload["schedule"]:
+            if not isinstance(item, dict):
+                continue
+            cleaned = {k: _clamp_text(str(item.get(k, "")), 500) for k in ("day", "time", "subject", "topic", "task")}
+            if cleaned["day"] and cleaned["topic"]:
+                schedule.append(cleaned)
+        payload = {
+            **payload,
+            "title": _clamp_text(str(payload.get("title", "")), 200),
+            "subject": _clamp_text(str(payload.get("subject") or ""), 100),
+            "schedule": schedule,
+        }
     try:
         validate(payload, _PLAN_SCHEMA)
     except ValidationError as exc:
         raise ValueError("Study plan schema is invalid") from exc
     if not payload["title"].strip() or not 1 <= len(payload["schedule"]) <= 30:
         raise ValueError("Study plan requires a title and 1–30 complete sessions")
-    for item in payload["schedule"]:
-        if any(not isinstance(item.get(k), str) or not item[k].strip() or len(item[k]) > 500 for k in ("day", "time", "subject", "topic", "task")):
-            raise ValueError("Every study session needs day, time, subject, topic and task")
     return payload
 
 
@@ -473,7 +510,20 @@ async def _run_tools(
     failed = next((o for o in observations if not o.success), None)
     if failed:
         code = failed.error_code or ("WEB_SEARCH_FAILED" if failed.tool == "web_search" else "DATABASE_FAILED")
-        raise LLMResponseError(f"{failed.tool}: {failed.observation.get('error', 'tool failed')}", status_code=503, error_type=code)
+        if failed.tool == "retrieve_learning_materials" and code == "RAG_DISABLED":
+            # Semantic retrieval is a capacity-gated ENRICHMENT source, not an
+            # authority: RAG_ENABLED defaults to false on the 512 MiB free
+            # runtime by design (embeddings need a larger instance). With the
+            # index off, the answer must still be produced from the database
+            # facts — the database stays authoritative — while the failed
+            # observation remains in context so the model can honestly say
+            # syllabus passages were not semantically searched. A real index
+            # FAILURE (RAG_FAILED) or any database failure stays fatal.
+            logger.warning(
+                "RAG_DISABLED tool=retrieve_learning_materials -> degrading to database facts only"
+            )
+        else:
+            raise LLMResponseError(f"{failed.tool}: {failed.observation.get('error', 'tool failed')}", status_code=503, error_type=code)
     return observations
 
 
@@ -821,23 +871,68 @@ async def run_fast_path(
             events=events,
             tool_context=tool_context,
         )
-        db_facts = _format_db_facts(state)
+        # Context-window-aware facts budget. The plan prompt and the generated
+        # JSON share one model window (ctx 2048 on the free-tier instance): a
+        # fixed 8500-char facts block alone exceeds it and the generation dies
+        # with OUTPUT_LIMIT_REACHED before emitting a complete plan. Budget
+        # roughly half the window (≈3 chars/token) for database facts and
+        # retry once at half budget if the model still runs out of room —
+        # same owned model, same real database facts, only trimmed.
+        ctx_tokens = int(getattr(settings, "local_model_ctx_size", 2048) or 2048)
+        facts_budget = max(1200, (ctx_tokens // 2) * 3)
+        db_facts = _format_db_facts(state, budget=facts_budget)
         plan_system = (
             "You design a realistic study plan as strict JSON, using the student's exams/progress/syllabus context. "
             "Return exactly: {\"title\": string, \"subject\": string, \"schedule\": [{\"day\": string, \"time\": string, "
             "\"subject\": string, \"topic\": string, \"task\": string}]}. 4-7 day-by-day items. No text outside JSON."
         )
-        plan_user = f"Request: {goal}\n\nStudent context from EduNova:\n{db_facts or '(no exam/progress context found)'}"
-        try:
-            raw_plan = await llm.complete_json(
-                system_prompt=plan_system,
-                user_prompt=plan_user,
-                json_schema=_PLAN_SCHEMA,
-                max_output_tokens=settings.llm_max_output_tokens,
+        plan = None
+        last_plan_error: Exception | None = None
+        plan_system_terse = (
+            "You design a study plan as strict JSON. Return EXACTLY 4 schedule items. "
+            "Every field value must be under 12 words. Schema: "
+            "{\"title\": string, \"subject\": string, \"schedule\": [{\"day\": string, \"time\": string, "
+            "\"subject\": string, \"topic\": string, \"task\": string}]}. No text outside JSON."
+        )
+        for attempt in range(3):
+            plan_user = f"Request: {goal}\n\nStudent context from EduNova:\n{db_facts or '(no exam/progress context found)'}"
+            # Attempts after the first use the terse instruction: a 135M model
+            # under grammar constraint can loop emitting schedule items until
+            # the window is exhausted; an exact item count and short-field
+            # constraint break the repetition loop.
+            system = plan_system if attempt == 0 else plan_system_terse
+            try:
+                raw_plan = await llm.complete_json(
+                    system_prompt=system,
+                    user_prompt=plan_user,
+                    json_schema=_PLAN_SCHEMA,
+                    max_output_tokens=settings.llm_max_output_tokens,
+                )
+                plan = validate_plan_payload(raw_plan, fallback_subject=decision.subject or "General")
+                break
+            except LLMResponseError as exc:
+                last_plan_error = exc
+                if exc.error_type == "OUTPUT_LIMIT_REACHED" and attempt < 2:
+                    logger.warning(
+                        "STUDY_PLAN_CONTEXT_REBUDGET attempt=%s old_budget=%s -> %s (model window %s tokens)",
+                        attempt + 1, facts_budget, max(800, facts_budget // 2), ctx_tokens,
+                    )
+                    facts_budget = max(800, facts_budget // 2)
+                    db_facts = _format_db_facts(state, budget=facts_budget)
+                    continue
+                break
+            except Exception as exc:
+                last_plan_error = exc
+                break
+        if plan is None:
+            # Surface the underlying cause in the service log: the client gets
+            # the stable INVALID_PLAN_OUTPUT code, operators get the reason
+            # (schema violation, unfinishable JSON, empty plan, ...).
+            logger.warning(
+                "STUDY_PLAN_GENERATION_FAILED reason=%s",
+                str(last_plan_error)[:300],
             )
-            plan = validate_plan_payload(raw_plan, fallback_subject=decision.subject or "General")
-        except Exception as exc:
-            raise LLMResponseError("Study-plan generation or validation failed", status_code=502, error_type="INVALID_PLAN_OUTPUT") from exc
+            raise LLMResponseError("Study-plan generation or validation failed", status_code=502, error_type="INVALID_PLAN_OUTPUT") from last_plan_error
         else:
             await events.emit("agent.tool_started", iteration=2, tool="create_study_plan")
             observation, record = await registry.execute(

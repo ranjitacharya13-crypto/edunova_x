@@ -173,10 +173,42 @@ services:
         value: QuantFactory/SmolLM2-135M-Instruct-GGUF
       - key: LOCAL_MODEL_FILE
         value: SmolLM2-135M-Instruct.Q4_1.gguf
-      # Render Free has no persistent disk; this is the instance-local cache
-      # dir (writable, downloaded once per cold boot).
+      # ---------------------------------------------------------------------------
+      # MODEL STORAGE — the 2026-09 MODEL_DOWNLOAD_FAILED root cause.
+      #
+      # The OLD value `/var/data/models` is NOT writable on Render's native
+      # Python runtime: native services check out at /opt/render/project/src
+      # and run without permission to create directories under /var, and a
+      # persistent disk mounted at /var/data (the only thing that makes that
+      # path writable) REQUIRES A PAID PLAN — the free plan in this Blueprint
+      # cannot attach one. The runtime therefore failed `mkdir /var/data/models`
+      # and (before the storage-validation stage existed) mis-reported it as a
+      # generic MODEL_DOWNLOAD_FAILED.
+      #
+      # The FIX: a module-relative cache directory. `./models_cache` resolves
+      # against the ai_engine package directory — on Render that is
+      # /opt/render/project/src/ai_engine/models_cache, which IS writable at
+      # runtime (it is the documented source-tree location for service files).
+      # The supervisor now PROVES writability at startup (mkdir + write +
+      # read + rename + delete probes + free-space check) before any download,
+      # and fails fast with MODEL_STORAGE_NOT_WRITABLE (naming the exact path)
+      # if LOCAL_MODEL_DIR is ever pointed somewhere unusable.
+      #
+      # FREE PLAN: the cache is instance-local and lives for the lifetime of
+      # the running instance — the model is downloaded once per cold boot and
+      # then cached (size + sha256 verified, never re-downloaded while the
+      # instance lives).
+      #
+      # PAID-PLAN UPGRADE (persistent disk, survives deploys/restarts):
+      #   1. Attach a disk, e.g.:
+      #        disk:
+      #          name: edunova-models
+      #          mountPath: /var/data/models
+      #          sizeGB: 1
+      #   2. Set LOCAL_MODEL_DIR: /var/data/models (the disk mount path).
+      # Disks require a paid plan and pin the service to a single instance.
       - key: LOCAL_MODEL_DIR
-        value: /var/data/models
+        value: ./models_cache
       - key: LOCAL_MODEL_THREADS
         value: "1"
       # 0.1 shared vCPU + a ~100 MB cold-boot download: give startup room.

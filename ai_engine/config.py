@@ -415,6 +415,14 @@ class Settings:
     local_model_repo: str = DEFAULT_LOCAL_MODEL_REPO
     local_model_file: str = DEFAULT_LOCAL_MODEL_FILE
     local_model_url: str = ""  # optional direct download URL override
+    # Model cache directory hierarchy: explicit LOCAL_MODEL_DIR (validated with
+    # real write/rename/delete probes at startup — an unusable path fails fast
+    # as MODEL_STORAGE_NOT_WRITABLE and is NEVER silently re-pointed) →
+    # module-relative default ./models_cache (on Render native runtimes this
+    # resolves to /opt/render/project/src/ai_engine/models_cache, the documented
+    # writable source-tree location; /var/data/* is writable ONLY when a paid
+    # persistent disk is mounted there). Relative values resolve against the
+    # ai_engine package directory, not the process CWD.
     local_model_dir: str = "./models_cache"
     local_model_sha256: str = ""  # optional checksum verification
     local_model_expected_bytes: int = 0  # optional exact-size verification
@@ -885,7 +893,7 @@ def load_settings() -> Settings:
         local_model_repo=_clean_env_value(os.getenv("LOCAL_MODEL_REPO", default_repo)) or default_repo,
         local_model_file=_clean_env_value(os.getenv("LOCAL_MODEL_FILE", default_file)) or default_file,
         local_model_url=_clean_env_value(os.getenv("LOCAL_MODEL_URL", "")),
-        local_model_dir=_clean_env_value(os.getenv("LOCAL_MODEL_DIR", "./models_cache")) or "./models_cache",
+        local_model_dir=(_clean_env_value(os.getenv("LOCAL_MODEL_DIR", "./models_cache")) or "./models_cache").rstrip("/\\") or "./models_cache",
         local_model_sha256=_clean_env_value(os.getenv("LOCAL_MODEL_SHA256", "")).lower(),
         local_model_expected_bytes=_integer("LOCAL_MODEL_BYTES", 0, 0, 200_000_000_000),
         local_model_min_bytes=_integer("LOCAL_MODEL_MIN_BYTES", 10 * 1024 * 1024, 4096, 20_000_000_000),
