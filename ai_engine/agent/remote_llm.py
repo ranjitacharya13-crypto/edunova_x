@@ -92,15 +92,30 @@ class RemoteInferenceLLM:
 
     # -------------------------------------------------------------- probes --
     async def status(self, timeout: float = 8.0) -> dict[str, Any]:
-        """GET /model/status (authenticated). Never raises for a non-ready model."""
+        """GET /model/status (authenticated). Never raises for a LIVE, non-ready model.
+
+        A 4xx/5xx from this endpoint is an *error*, never a "reachable but
+        unknown" state: the inference service's status route only fails with a
+        coded detail when authentication is broken or FastAPI rejects the call.
+        Surfacing that exact code (``AUTH_FAILED``, ``MODEL_RESOURCE_INSUFFICIENT``,
+        …) instead of collapsing every failure into a generic ``MODEL_NOT_READY``
+        is what lets the gateway and frontend tell an operator precisely why the
+        model never reached READY.
+        """
         self._require_config()
         client, own = self._client_or_new(timeout)
         started = time.monotonic()
         try:
             response = await client.get(f"{self.base_url}/model/status", headers=self._headers())
             self.last_connect_ms = int((time.monotonic() - started) * 1000)
-            payload = response.json() if response.content else {}
-            if response.status_code in {401, 403}:
+            try:
+                payload = response.json() if response.content else {}
+            except ValueError:
+                # A proxy/loading page (Render free-tier wake-up, a wrong URL, an
+                # edge challenge) is not JSON. Classify it by status, never by
+                # pretending the body describes a model state.
+                payload = {}
+            if response.status_code >= 400:
                 raise self._error_from_payload(response.status_code, payload)
             payload = dict(payload) if isinstance(payload, dict) else {}
             payload.setdefault("httpStatus", response.status_code)

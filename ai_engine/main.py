@@ -229,6 +229,66 @@ def _inference_host() -> str:
     return without_scheme.split("/", 1)[0].split("@", 1)[-1]
 
 
+_SPLIT_PERMANENT_CODES = {"AUTH_FAILED", "CONFIG_FAILED"}
+_SPLIT_NETWORK_CODES = {"AI_SERVICE_UNREACHABLE", "UPSTREAM_TIMEOUT"}
+
+
+async def _heal_broken_split_topology(remote: RemoteInferenceLLM) -> InProcessLLM | None:
+    """Return an owned in-process engine when the configured split is broken.
+
+    A stale ``AI_INFERENCE_URL`` (for example one left over from the retired
+    three-service topology) that points at an inference service whose internal
+    token is missing/mismatched, or that no longer exists, must NOT strand the
+    orchestrator in a permanent ``MODEL_NOT_READY``/``AUTH_FAILED`` loop. The
+    OWN EduNova model is the AI brain either way, and this process's image
+    ships llama.cpp, so the smallest honest recovery is: observe the split once
+    at startup, and if it is *definitively* broken, load the model in-process.
+
+    A healthy split — including one whose model is still warming — is never
+    touched. Authentication/config failures are terminal for the split and heal
+    immediately; network failures retry briefly (bounded) before healing so a
+    cold-starting inference service is not pre-empted.
+    """
+    for attempt in range(3):
+        try:
+            await remote.status(timeout=6.0)
+            # Reachable and answering. Whether the model is warming, failed, or
+            # ready, the split service is the authority — do not fall back.
+            return None
+        except LLMResponseError as exc:
+            code = str(getattr(exc, "error_type", "") or "")
+            if code in _SPLIT_PERMANENT_CODES:
+                logger.error(
+                    "SPLIT_TOPOLOGY_BROKEN code=%s reason=%s -> loading the OWNED in-process model instead",
+                    code, str(exc)[:300],
+                )
+                return InProcessLLM(settings)
+            if code in _SPLIT_NETWORK_CODES and attempt < 2:
+                logger.warning(
+                    "SPLIT_TOPOLOGY_UNREACHABLE attempt=%s code=%s reason=%s -> retrying",
+                    attempt + 1, code, str(exc)[:200],
+                )
+                await asyncio.sleep(float(2 * (attempt + 1)))
+                continue
+            if code in _SPLIT_NETWORK_CODES:
+                logger.error(
+                    "SPLIT_TOPOLOGY_UNREACHABLE code=%s reason=%s -> loading the OWNED in-process model instead",
+                    code, str(exc)[:300],
+                )
+                return InProcessLLM(settings)
+            # A real, typed model failure (resource/load/validation/…) is
+            # reported precisely by the split service; healing it away would
+            # hide the actual failure, so keep the split and surface the code.
+            return None
+        except LLMConfigurationError as exc:
+            logger.error(
+                "SPLIT_TOPOLOGY_BROKEN code=CONFIG_FAILED reason=%s -> loading the OWNED in-process model instead",
+                str(exc)[:300],
+            )
+            return InProcessLLM(settings)
+    return None
+
+
 registry = ToolRegistry(
     allowed_permissions={"READ_INTERNAL", "WRITE_INTERNAL", "READ_EXTERNAL", "UTILITY"}
 )
@@ -247,6 +307,11 @@ provider_runtime = {
     "lastHttpStatus": None,
     "lastErrorType": None,
 }
+# Set once at startup when a broken split topology (AI_INFERENCE_URL pointing at
+# an unauthenticated/unreachable inference service) is healed by falling back to
+# the OWNED in-process model. Surfaced on /health so an operator can see that the
+# configured split was ignored — loudly, never silently.
+split_topology_healed = False
 
 
 def _set_provider_state(state: str, status: int | None = None, error_type: str | None = None) -> None:
@@ -349,10 +414,25 @@ async def lifespan(app: FastAPI):
         logger.error("ORCHESTRATOR_STARTUP_ABORTED code=%s reason=%s", exc.code, exc.message)
         raise
 
-    # In-process (default) topology: start the ONE owned model lifecycle now —
-    # download (cache hit skips), verify, load, warm up and self-test all run
-    # while the port is already answering. Concurrent/early requests observe
-    # the true lifecycle state; none of them can trigger a second load.
+    # A configured-but-broken split topology (stale AI_INFERENCE_URL) is healed
+    # here, before any request is accepted: if the inference service cannot be
+    # authenticated or reached, the orchestrator loads the OWNED model
+    # in-process instead of serving a permanent MODEL_NOT_READY. Single-flight:
+    # this runs exactly once, before the port serves traffic.
+    global llm
+    global split_topology_healed
+    if isinstance(llm, RemoteInferenceLLM):
+        healed = await _heal_broken_split_topology(llm)
+        if healed is not None:
+            llm = healed
+            agent.llm = healed
+            split_topology_healed = True
+
+    # In-process (default or healed) topology: start the ONE owned model
+    # lifecycle now — download (cache hit skips), verify, load, warm up and
+    # self-test all run while the port is already answering. Concurrent/early
+    # requests observe the true lifecycle state; none of them can trigger a
+    # second load.
     if isinstance(llm, InProcessLLM):
         llm.start()
         logger.info("MODEL_LIFECYCLE_STARTED mode=in-process model=%s", settings.local_model_id)
@@ -478,6 +558,7 @@ async def health() -> dict[str, Any]:
         "modelReady": ready,
         "readyForTraffic": ready,
         "modelMode": "in-process" if isinstance(llm, InProcessLLM) else "remote-service",
+        "splitTopologyHealed": split_topology_healed,
         "inferenceService": {
             "configured": bool(settings.inference_url),
             "mode": "in-process" if isinstance(llm, InProcessLLM) else "remote-service",
@@ -587,6 +668,7 @@ async def ai_health(
         "serviceAvailable": True,
         "inferenceReachable": status.get("reachable", True),
         "configured": bool(settings.inference_url),
+        "splitTopologyHealed": split_topology_healed,
         "provider": settings.llm_provider,
         "selfHosted": True,
         "model": status.get("model"),
@@ -625,10 +707,13 @@ def _model_stage_checks() -> dict[str, Any]:
         "modelId": settings.local_model_id,
         "ctx": settings.local_model_ctx_size,
     }
-    if settings.inference_url:
+    if isinstance(llm, RemoteInferenceLLM):
         stages["mode"] = {"ok": True, "value": "remote-service (AI_INFERENCE_URL)"}
         return stages
-    stages["mode"] = {"ok": True, "value": "in-process (owned)"}
+    stages["mode"] = {
+        "ok": True,
+        "value": "in-process (owned)" + (" [healed from broken split]" if split_topology_healed else ""),
+    }
     try:
         from agent.local_llm import LocalModelManager, _has_gguf_magic  # noqa: PLC0415
 
@@ -663,7 +748,9 @@ def _model_stage_checks() -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001 — diagnostics never raises
         stages["model_artifact"] = {"ok": False, "error": safe_error_local(exc)}
     stages["runtime"] = {
-        "ok": bool(llm.status().get("runtime_version")) or llm.manager.facts.get("runtimeAvailable", False) or llm.manager.phase not in ("BOOT",),
+        # llm.status() is async, so read the supervisor's synchronous facts
+        # instead of awaiting a coroutine (which would crash the diagnostic).
+        "ok": bool(llm.manager.facts.get("runtimeAvailable", False) or llm.manager.facts.get("runtimeVersion") or llm.manager.phase not in ("BOOT",)),
         "observed": llm.manager.facts.get("runtimeVersion"),
     }
     snap = llm.manager.snapshot()

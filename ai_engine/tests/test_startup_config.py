@@ -101,3 +101,81 @@ def test_inference_host_never_leaks_the_token(monkeypatch):
     host = main._inference_host()
     assert "secret-token" not in host
     assert host.endswith("10.0.0.5:8002")
+
+
+# ---------------------------------------------------------------------------
+# Broken-split healing: a stale AI_INFERENCE_URL must not strand the
+# orchestrator in a permanent MODEL_NOT_READY — the OWNED model is loaded
+# in-process instead, while a healthy or genuinely-model-failed split is
+# never touched.
+# ---------------------------------------------------------------------------
+def _async_run(coro):
+    import asyncio
+    return asyncio.run(coro)
+
+
+class _FakeInProcessLLM:
+    instances = 0
+
+    def __init__(self, settings):
+        type(self).instances += 1
+        self.settings = settings
+
+
+class _RaisingRemote:
+    def __init__(self, error_type, status_code=503, message="boom"):
+        from agent.llm import LLMResponseError
+        self._exc = LLMResponseError(message, status_code=status_code, error_type=error_type)
+
+    async def status(self, timeout=8.0):
+        raise self._exc
+
+
+class _OkRemote:
+    def __init__(self, payload):
+        self._payload = payload
+
+    async def status(self, timeout=8.0):
+        return self._payload
+
+
+def test_broken_split_auth_failure_heals_to_in_process(monkeypatch):
+    monkeypatch.setattr(main, "InProcessLLM", _FakeInProcessLLM)
+    monkeypatch.setattr(main, "settings", _settings(inference_url="https://stale-inference.example"))
+    result = _async_run(main._heal_broken_split_topology(_RaisingRemote("AUTH_FAILED")))
+    assert isinstance(result, _FakeInProcessLLM)
+
+
+def test_broken_split_config_failure_heals_to_in_process(monkeypatch):
+    monkeypatch.setattr(main, "InProcessLLM", _FakeInProcessLLM)
+    monkeypatch.setattr(main, "settings", _settings(inference_url="https://stale-inference.example"))
+    result = _async_run(main._heal_broken_split_topology(_RaisingRemote("CONFIG_FAILED")))
+    assert isinstance(result, _FakeInProcessLLM)
+
+
+def test_persistently_unreachable_split_heals_to_in_process(monkeypatch):
+    async def _noop(_delay):
+        return None
+    monkeypatch.setattr(main.asyncio, "sleep", _noop)  # keep the retry path fast in tests
+    monkeypatch.setattr(main, "InProcessLLM", _FakeInProcessLLM)
+    monkeypatch.setattr(main, "settings", _settings(inference_url="https://stale-inference.example"))
+    result = _async_run(main._heal_broken_split_topology(_RaisingRemote("AI_SERVICE_UNREACHABLE")))
+    assert isinstance(result, _FakeInProcessLLM)
+
+
+def test_healthy_split_is_left_untouched(monkeypatch):
+    monkeypatch.setattr(main, "InProcessLLM", _FakeInProcessLLM)
+    monkeypatch.setattr(main, "settings", _settings(inference_url="https://good-inference.example"))
+    # A reachable split whose model is merely warming is NOT broken.
+    result = _async_run(main._heal_broken_split_topology(
+        _OkRemote({"state": "MODEL_LOADING", "model_loaded": False})))
+    assert result is None
+
+
+def test_split_with_real_model_failure_is_left_untouched(monkeypatch):
+    monkeypatch.setattr(main, "InProcessLLM", _FakeInProcessLLM)
+    monkeypatch.setattr(main, "settings", _settings(inference_url="https://good-inference.example"))
+    # A typed model failure must be reported, not healed away.
+    result = _async_run(main._heal_broken_split_topology(
+        _RaisingRemote("MODEL_RESOURCE_INSUFFICIENT", message="needs 1100 MiB")))
+    assert result is None
