@@ -78,7 +78,7 @@ Set these in **Render → your API service → Environment**:
 | `MONGO_URI` | ✅ | MongoDB Atlas connection string |
 | `JWT_SECRET` | ✅ | Long random string (`openssl rand -hex 32`) |
 | `CORS_ORIGIN` | ✅ | `https://edunova-x.ranjitacharya13.workers.dev` |
-| `AI_ENGINE_URL` | for AI chat | Public HTTPS URL of the AI service, no trailing slash (`https://edunova-ai-o2vy.onrender.com`) |
+| `AI_ENGINE_URL` | for AI chat | Public HTTPS URL of the **`edunova-ai` orchestrator** (no model), no trailing slash. Auto-wired by `render.yaml` via `fromService`; a stale value pointing at a retired single-service host returns a proxy/loading page and breaks `/api/ai/health` (502/503) |
 | `AI_INTERNAL_TOKEN` | recommended | Random shared secret; use the exact same value on the AI service |
 | `AGENT_REQUEST_TIMEOUT` | optional | Network backstop in ms (default `600000`; never controls answer length) |
 | `AGENT_STREAM_IDLE_TIMEOUT_MS` | optional | Stream-stall watchdog reset by every token/keep-alive (default `90000`; not an overall timer) |

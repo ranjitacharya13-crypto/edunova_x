@@ -427,6 +427,48 @@ describe("Express AI route -> FastAPI integration", () => {
     }
   });
 
+  test("non-JSON 503 upstream on /ai/health maps to starting (not a generic 502)", async () => {
+    const upstream = await startUpstreamAt((req, res, state) => {
+      res.writeHead(503, { "Content-Type": "text/html" });
+      res.end("<!DOCTYPE html><html><body>Render - Application loading</body></html>");
+    });
+    const app = await listen(makeApp());
+    const token = signToken("health-cold-user-0000001");
+    try {
+      const health = await fetch(`http://127.0.0.1:${app.address().port}/api/ai/health`, { headers: { Authorization: `Bearer ${token}` } });
+      const body = await health.json();
+      assert.strictEqual(health.status, 503);
+      assert.strictEqual(body.error.code, "MODEL_NOT_READY");
+      assert.strictEqual(body.modelState, "starting");
+      assert.strictEqual(body.modelReady, false);
+    } finally {
+      upstream.restoreEnv();
+      upstream.server.close();
+      app.close();
+    }
+  });
+
+  test("non-JSON 404 upstream on /ai/health maps to CONFIG_FAILED (wrong AI_ENGINE_URL)", async () => {
+    const upstream = await startUpstreamAt((req, res, state) => {
+      res.writeHead(404, { "Content-Type": "text/html" });
+      res.end("<!DOCTYPE html><html><body>Not Found</body></html>");
+    });
+    const app = await listen(makeApp());
+    const token = signToken("health-404-user-00000001");
+    try {
+      const health = await fetch(`http://127.0.0.1:${app.address().port}/api/ai/health`, { headers: { Authorization: `Bearer ${token}` } });
+      const body = await health.json();
+      assert.strictEqual(health.status, 503);
+      assert.strictEqual(body.error.code, "CONFIG_FAILED");
+      assert.strictEqual(body.modelState, "CONFIG_FAILED");
+      assert.strictEqual(body.modelReady, false);
+    } finally {
+      upstream.restoreEnv();
+      upstream.server.close();
+      app.close();
+    }
+  });
+
   test("invalid requests are rejected locally (400/413) without an upstream call", async () => {
     const upstream = await startUpstreamAt((req, res) => res.end());
     const app = await listen(makeApp());
