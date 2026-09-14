@@ -12,7 +12,8 @@ export default function LoginCard({ onLogin }) {
     return <RegisterWizard onBack={() => setShowRegister(false)} />;
   }
 
-  const handleLogin = async () => {
+  const handleLogin = async (event) => {
+    if (event) event.preventDefault();
     setError("");
     setLoading(true);
 
@@ -40,35 +41,40 @@ export default function LoginCard({ onLogin }) {
         </div>
       )}
 
-      <input
-        id="email"
-        name="email"
-        type="email"
-        autoComplete="email"
-        placeholder="Email"
-        value={email}
-        onChange={(e) => setEmail(e.target.value)}
-        className="w-full mb-3 px-4 py-3 rounded-xl border border-white/40 bg-white/60 backdrop-blur-md focus:outline-none focus:ring-2 focus:ring-primary/30"
-      />
+      {/* A real form (submit handler preserved): fixes the browser
+          "[DOM] Password field is not contained in a form" warning and lets
+          Enter submit, with identical styling, autocomplete and auth flow. */}
+      <form onSubmit={handleLogin} noValidate>
+        <input
+          id="email"
+          name="email"
+          type="email"
+          autoComplete="email"
+          placeholder="Email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          className="w-full mb-3 px-4 py-3 rounded-xl border border-white/40 bg-white/60 backdrop-blur-md focus:outline-none focus:ring-2 focus:ring-primary/30"
+        />
 
-      <input
-        id="password"
-        name="password"
-        type="password"
-        autoComplete="current-password"
-        placeholder="Password"
-        value={password}
-        onChange={(e) => setPassword(e.target.value)}
-        className="w-full mb-4 px-4 py-3 rounded-xl border border-white/40 bg-white/60 backdrop-blur-md focus:outline-none focus:ring-2 focus:ring-primary/30"
-      />
+        <input
+          id="password"
+          name="password"
+          type="password"
+          autoComplete="current-password"
+          placeholder="Password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          className="w-full mb-4 px-4 py-3 rounded-xl border border-white/40 bg-white/60 backdrop-blur-md focus:outline-none focus:ring-2 focus:ring-primary/30"
+        />
 
-      <button
-        disabled={loading}
-        onClick={handleLogin}
-        className="w-full bg-primary text-white py-3 rounded-xl font-medium"
-      >
-        {loading ? "Signing in..." : "Sign In"}
-      </button>
+        <button
+          type="submit"
+          disabled={loading}
+          className="w-full bg-primary text-white py-3 rounded-xl font-medium"
+        >
+          {loading ? "Signing in..." : "Sign In"}
+        </button>
+      </form>
 
       <button
         onClick={() => setShowRegister(true)}

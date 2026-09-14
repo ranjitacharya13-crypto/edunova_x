@@ -94,9 +94,11 @@ _RE_PLAN_ACTION = re.compile(
     re.IGNORECASE,
 )
 _RE_WEB = re.compile(
-    r"\b(latest|recent|current|today'?s news|breaking)\b[\s\S]{0,60}?\b(news|development|developments|update|updates|release|releases|announcement|research|breakthrough|trend|trends|advancements?)\b"
+    r"\b(latest|recent|current|today'?s|tonight|this week|breaking)\b[\s\S]{0,60}?\b(news|development|developments|update|updates|release|releases|announcement|research|breakthrough|trend|trends|advancements?|versions?|prices?|weather|stocks?|standings?|score|scores|edition|resources?|headlines?)\b"
+    r"|\bnews\b|\bheadlines\b"
     r"|\bnews\b[\s\S]{0,30}?\b(about|on|in)\b"
-    r"|\bwho won\b|\bcurrent affairs\b|\bwhat'?s new in\b|\brecent advances in\b|\bupcoming (release|version)\b",
+    r"|\bwho won\b|\bcurrent affairs\b|\bwhat'?s new in\b|\brecent advances in\b|\bupcoming (release|version)\b"
+    r"|\b(latest|current|new(est)?)\b[\s\S]{0,20}?\bversion\b|\bwhat version\b|\bhow much (does|is)\b[\s\S]{0,40}?\b(cost|price)\b",
     re.IGNORECASE,
 )
 _RE_SCHEDULE_TODAY = re.compile(
@@ -138,7 +140,7 @@ _RE_PROFILE = re.compile(r"\bmy profile\b|\bwho am i\b|\bmy (name|grade|class|ac
 _RE_GOALS = re.compile(r"\bmy goals?\b|\bmy targets?\b|\bmy notes\b", re.IGNORECASE)
 _RE_EVENTS = re.compile(r"\bupcoming events?\b|\bnotifications?\b|\bannouncements?\b", re.IGNORECASE)
 _RE_STUDENT_CONTEXT = re.compile(
-    r"\b(my|me|i)\b[\s\S]{0,30}?\b(class|classes|timetable|schedule|subjects?|quiz|score|grade|attendance|assignment|exam|progress|study|notes|goals|syllabus)\b"
+    r"\b(my|me|i)\b[\s\S]{0,30}?\b(class|classes|timetable|schedule|subjects?|quiz|score|grade|attendance|assignment|exam|progress|study|notes|goals|syllabus|learned|learning|completed|covered|performance)\b"
     r"|\b(classes|timetable|assignments?|exams?|attendance)\b[\s\S]{0,25}?\b(today|tomorrow|this week)\b",
     re.IGNORECASE,
 )
@@ -416,13 +418,13 @@ Rules:
 - Phrase naturally: "According to your timetable…", "Based on your quiz history…".
 - Be concise and useful: short paragraphs or compact bullet points."""
 
-_WEB_SYSTEM = """You are EduNova AI, a research assistant for a student.
-You are given CURRENT WEB RESULTS retrieved just now. The local model (you) reasons over them and writes the final answer.
-Rules:
-- Summarize what the sources actually say; cite each fact with its source id like [S1], [S2].
-- Only cite source ids that exist in the list. Never invent sources.
-- If results look thin or conflicting, say so honestly.
-- End with one line: "Sources:" followed by the cited ids and titles."""
+_WEB_SYSTEM_HEADER = "You are EduNova AI, a research assistant for a student.\n\nCURRENT WEB RESULTS (retrieved just now):\n"
+_WEB_SYSTEM_TRAILER = "\n\nAnswer the student's question using ONLY these results. Write 2-5 short sentences. After each fact from a result put its id like [S1]. Never invent sources, versions or dates. Then write one final line: Sources: <the ids you used>."
+
+_WEB_UNAVAILABLE_SYSTEM = """You are EduNova AI. The live web search this question needed could NOT be completed right now.
+Begin your answer with exactly: "I couldn't retrieve current web information just now".
+Then answer from your own training knowledge, clearly qualified as possibly outdated (say what may have changed since your knowledge was collected).
+Never invent sources, URLs, dates or version numbers. Keep it short and useful."""
 
 
 async def _run_tools(
@@ -473,6 +475,17 @@ async def _run_tools(
         code = failed.error_code or ("WEB_SEARCH_FAILED" if failed.tool == "web_search" else "DATABASE_FAILED")
         raise LLMResponseError(f"{failed.tool}: {failed.observation.get('error', 'tool failed')}", status_code=503, error_type=code)
     return observations
+
+
+def _is_web_failure(exc: LLMResponseError) -> bool:
+    """True when a raised tool failure is specifically the web hop.
+
+    Database/authorization failures must never be masked by the web fallback:
+    personal data is never faked, so those keep their precise error codes.
+    """
+    if exc.error_type in {"WEB_SEARCH_FAILED", "URL_BLOCKED"}:
+        return True
+    return exc.error_type == "TOOL_ERROR" and str(exc).lower().startswith("web_search:")
 
 
 def _answer_token_budget(settings: Settings, goal: str, *, base: int) -> int:
@@ -662,6 +675,7 @@ async def run_fast_path(
             max_output_tokens=settings.llm_max_output_tokens)
 
     elif decision.intent in {"web_research", "personalized_research"}:
+        web_failure: LLMResponseError | None = None
         if decision.intent == "personalized_research":
             await _run_tools(registry=registry, tools=("get_progress", "get_quiz_history"), subject=decision.subject,
                 goal=goal, state=state, sources=sources, events=events, tool_context=tool_context)
@@ -672,28 +686,62 @@ async def run_fast_path(
             weakest = min(performance, key=lambda row: float(row["averageScore"]))
             research_subject = str(weakest["_id"])[:100]
             research_goal = f"Latest developments in {research_subject}. Student research question: {goal[:350]}"
-            await _run_tools(registry=registry, tools=("get_syllabus", "retrieve_learning_materials", "web_search"),
-                subject=research_subject, goal=research_goal, state=state, sources=sources, events=events, tool_context=tool_context)
+            try:
+                await _run_tools(registry=registry, tools=("get_syllabus", "retrieve_learning_materials", "web_search"),
+                    subject=research_subject, goal=research_goal, state=state, sources=sources, events=events, tool_context=tool_context)
+            except LLMResponseError as exc:
+                # Only a WEB failure degrades to a qualified answer; a database
+                # failure stays an honest error (personal data is never faked).
+                if _is_web_failure(exc):
+                    web_failure = exc
+                else:
+                    raise
         else:
-            await _run_tools(registry=registry, tools=decision.tools, subject=decision.subject, goal=goal,
-                state=state, sources=sources, events=events, tool_context=tool_context)
+            try:
+                await _run_tools(registry=registry, tools=decision.tools, subject=decision.subject, goal=goal,
+                    state=state, sources=sources, events=events, tool_context=tool_context)
+            except LLMResponseError as exc:
+                if _is_web_failure(exc):
+                    web_failure = exc
+                else:
+                    raise
         search_observation = next((o for o in state.observations if o.tool == "web_search"), None)
+        _ = web_failure  # consumed below via web_ok
         web_ok = bool(search_observation and search_observation.success and state.sources)
         if not web_ok:
-            raise LLMResponseError("No verifiable current web results were returned", status_code=503, error_type="WEB_SEARCH_FAILED")
-        else:
-            user_prompt = (
-                f"Question: {goal}\nEDUNOVA FACTS AND MATERIAL PASSAGES:\n{_format_db_facts(state)}\n\nCURRENT WEB RESULTS (cite as [S#]):\n{_format_web_sources(state)}\n\n"
-                "Write a clear, student-friendly answer about the latest developments, citing sources."
-            )
+            # Graceful degradation (never a fake citation, never silence): say
+            # plainly that current web information could not be retrieved, then
+            # give a clearly-qualified answer from the model's own knowledge.
+            reason = ""
+            if web_failure is not None:
+                reason = str(web_failure)
+            elif search_observation and isinstance(search_observation.observation, dict):
+                reason = str(search_observation.observation.get("error") or "")
             await events.emit("agent.generating", iteration=1)
             answer = await _generate_streaming(
                 llm=llm,
                 events=events,
-                system_prompt=_WEB_SYSTEM,
-                user_prompt=user_prompt,
+                system_prompt=_WEB_UNAVAILABLE_SYSTEM,
+                user_prompt=f"Question: {goal}\nWeb search status: {reason or 'unavailable'}",
                 max_output_tokens=_answer_token_budget(settings, goal, base=560),
             )
+            state.used_web = False
+        else:
+            user_prompt = goal
+            await events.emit("agent.generating", iteration=1)
+            answer = await _generate_streaming(
+                llm=llm,
+                events=events,
+                system_prompt=_WEB_SYSTEM_HEADER + _format_web_sources(state) + _WEB_SYSTEM_TRAILER,
+                user_prompt=user_prompt,
+                max_output_tokens=min(_answer_token_budget(settings, goal, base=560), 384),
+            )
+            # Citations are mandatory on the web path. The small local model
+            # sometimes drops the "Sources:" line, so append the ids of the
+            # sources actually retrieved above — deterministically, never invented.
+            if not re.search(r"\[S\d+\]|Sources?:", answer) and state.sources:
+                ids = " ".join(source.id for source in state.sources.values())
+                answer = f"{answer.rstrip()}\n\nSources: {ids}"
 
     elif decision.intent == "action_create_quiz":
         tools = () if educational else decision.tools
@@ -825,19 +873,15 @@ async def run_fast_path(
             tool_context=tool_context,
         )
         convo = _format_recent_conversation(conversation, max_turns=3)
-        user_prompt = (
-            f"Question: {goal}\n\n"
-            f"EDUNOVA DATABASE FACTS (authoritative; never invent beyond these):\n{_format_db_facts(state) or '(no facts returned)'}\nAR educational context: {educational_text}\n\n"
-            + (f"Recent conversation:\n{convo}\n\n" if convo else "")
-            + "Now answer the question using only these facts."
-        )
+        db_system = _DB_SYSTEM + "\nEDUNOVA DATABASE FACTS (authoritative; never invent beyond these):\n" + (_format_db_facts(state) or "(no facts returned)") + (f"\nAR educational context: {educational_text}" if educational_text else "")
+        user_prompt = goal + (f"\n\n(Conversation so far:\n{convo})" if convo else "")
         await events.emit("agent.generating", iteration=1)
         answer = await _generate_streaming(
             llm=llm,
             events=events,
-            system_prompt=_DB_SYSTEM,
+            system_prompt=db_system,
             user_prompt=user_prompt,
-            max_output_tokens=_answer_token_budget(settings, goal, base=600),
+            max_output_tokens=min(_answer_token_budget(settings, goal, base=600), 512),
         )
 
     state.final_answer = answer.strip()

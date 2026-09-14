@@ -224,8 +224,18 @@ class RemoteInferenceLLM:
                                     temperature=temperature, json_schema=None, on_token=on_token)
 
 
-def create_llm(settings: Settings) -> RemoteInferenceLLM:
-    """The orchestrator only ever talks to the inference service."""
+def create_llm(settings: Settings):
+    """Create the ONE model engine this AI process uses.
+
+    Default (``AI_INFERENCE_URL`` unset — the required topology): the
+    orchestrator OWNS the model in-process through the supervised
+    ``InProcessLLM`` engine. A URL may still be provided explicitly for a
+    split deployment, in which case the self-hosted inference service client
+    is used; commercial LLM providers are never supported.
+    """
     if settings.llm_provider != "local":
         raise LLMConfigurationError("EduNova AI is self-hosted only; commercial LLM providers are not supported")
-    return RemoteInferenceLLM(settings)
+    if settings.inference_url:
+        return RemoteInferenceLLM(settings)
+    from inference.inprocess import InProcessLLM  # noqa: PLC0415 — lazy: only the owning process imports it
+    return InProcessLLM(settings)

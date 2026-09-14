@@ -206,8 +206,30 @@ class WebTools:
         self.settings = settings
         self.pages = SafeWebClient(settings)
 
+    @staticmethod
+    def _search_query(raw: str) -> str:
+        """Normalize a conversational goal into a search-engine query.
+
+        Keeps the informative core ("latest version of python") and strips
+        conversational filler ("Can you tell me ..."). Deterministic and
+        bounded; never alters the meaning of the remaining keywords.
+        """
+        import re as _re
+
+        value = _clean_text(raw, 500)
+        value = _re.sub(
+            r"^(?:please\s+|hey\s+|hi\s+)?"
+            r"(?:can you\s+|could you\s+|would you\s+)?"
+            r"(?:tell me(?: about)?|show me|find me|look up|search(?: for| the web for)?|give me|list)\s+",
+            "",
+            value,
+            flags=_re.IGNORECASE,
+        )
+        value = value.strip().rstrip("?").strip()
+        return _re.sub(r"\s+", " ", value)[:480]
+
     async def web_search(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        query = _clean_text(arguments.get("query"), 500)
+        query = self._search_query(_clean_text(arguments.get("query"), 500))
         if not query:
             raise ToolInputError("query is required")
         try:
@@ -221,15 +243,98 @@ class WebTools:
             )
 
         provider = self.settings.web_search_provider
+        if provider == "auto":
+            # Keyless-first: a configured provider key always wins; otherwise a
+            # keyless public index is used so current-information questions keep
+            # working without any account. Both providers below normalize into
+            # the same record shape and are treated as untrusted data.
+            provider = "brave" if self.settings.web_search_api_key else "duckduckgo"
         if provider == "brave":
             results = await self._search_brave(query, max_results)
         elif provider == "tavily":
             results = await self._search_tavily(query, max_results)
         elif provider == "serper":
             results = await self._search_serper(query, max_results)
+        elif provider == "duckduckgo":
+            results = await self._search_duckduckgo(query, max_results)
+        elif provider == "github":
+            results = await self._search_github(query, max_results)
         else:
-            raise ToolInputError("Unsupported search provider; use brave, tavily, or serper")
+            raise ToolInputError("Unsupported search provider; use brave, tavily, serper, duckduckgo, github, or auto")
         return {"query": query, "provider": provider, "results": results}
+
+    async def _search_duckduckgo(self, query: str, max_results: int) -> list[dict[str, Any]]:
+        """Keyless general web search via the DuckDuckGo lite HTML endpoint.
+
+        The HTML response is UNTRUSTED input: it is parsed for result links and
+        snippets only, length-capped, and every result URL is re-validated with
+        the same safety rules as page fetching (no javascript:/file:/intranet).
+        """
+        headers = {"Accept": "text/html", "User-Agent": "Mozilla/5.0 (compatible; EduNovaAI/1.0)"}
+        async with httpx.AsyncClient(timeout=self.settings.web_request_timeout_seconds,
+                                     follow_redirects=True, headers=headers) as client:
+            response = await client.post(
+                "https://lite.duckduckgo.com/lite/", data={"q": query},
+            )
+            response.raise_for_status()
+            html = response.text[: self.settings.web_max_content_length]
+        rows = self._parse_duckduckgo_lite(html, max_results)
+        return self._normalize_results(
+            [{"url": url, "title": title, "snippet": snippet} for url, title, snippet in rows], max_results
+        )
+
+    @staticmethod
+    def _parse_duckduckgo_lite(html: str, max_results: int) -> list[tuple[str, str, str]]:
+        import re as _re
+
+        rows: list[tuple[str, str, str]] = []
+        # lite.duckduckgo.com result links: <a rel="nofollow" href="URL" class='result-link'>TITLE</a>
+        for match in _re.finditer(r"<a[^>]+href=\"([^\"]+)\"[^>]*class=\"result-link\"[^>]*>(.*?)</a>", html):
+            url, title = match.group(1), _re.sub(r"<[^>]+>", "", match.group(2)).strip()
+            if url.startswith("//"):
+                url = "https:" + url
+            rows.append((url, title, ""))
+            if len(rows) >= max_results:
+                break
+        # Fallback (markup drift): any http(s) anchor with text.
+        if not rows:
+            for match in _re.finditer(r"<a[^>]+href=\"(https?://[^\"]+)\"[^>]*>(.*?)</a>", html):
+                url, title = match.group(1), _re.sub(r"<[^>]+>", "", match.group(2)).strip()
+                if "duckduckgo.com" in url:
+                    continue
+                rows.append((url, title, ""))
+                if len(rows) >= max_results:
+                    break
+        return rows
+
+    async def _search_github(self, query: str, max_results: int) -> list[dict[str, Any]]:
+        """Keyless search over GitHub's public repository index (api.github.com).
+
+        Useful in restricted networks where commercial search APIs are
+        unreachable, and genuinely current for software/learning-resource
+        questions (repositories, docs and releases). Results are normalized to
+        the same untrusted record shape as every other provider.
+        """
+        headers = {"Accept": "application/vnd.github+json", "User-Agent": "EduNovaAI/1.0"}
+        async with httpx.AsyncClient(timeout=self.settings.web_request_timeout_seconds, headers=headers) as client:
+            response = await client.get(
+                "https://api.github.com/search/repositories",
+                params={"q": query[:250], "per_page": max_results, "sort": "best-match"},
+            )
+            response.raise_for_status()
+            items = response.json().get("items", [])
+        return self._normalize_results(
+            [
+                {
+                    "url": item.get("html_url"),
+                    "title": item.get("full_name"),
+                    "description": item.get("description"),
+                    "updated_at": item.get("updated_at") or item.get("pushed_at"),
+                }
+                for item in items
+            ],
+            max_results,
+        )
 
     async def _search_brave(self, query: str, max_results: int) -> list[dict[str, Any]]:
         headers = {

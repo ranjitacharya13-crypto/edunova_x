@@ -16,19 +16,18 @@
 #              +----------+-----------+
 #              |                      |
 #              v                      v
-#        MongoDB Atlas      Python FastAPI AI orchestrator  [Render: edunova-ai]
-#                             (via AI_ENGINE_URL; NO model, ~150 MiB)
-#                                        |
-#                                        |  HTTPS + X-AI-Internal-Token
-#                                        v  (AI_INFERENCE_URL)
-#                           Persistent AI inference service [Render: edunova-inference]
-#                             llama.cpp GGUF LLM (SmolLM2-135M Q4_K_M), 512 MB RAM
+#        MongoDB Atlas      EduNova AI service  [Render: edunova-ai]
+#          (via AI_ENGINE_URL)   IntentRouter + ToolRegistry + RAG + web
+#                             research + memory + THE OWN MODEL loaded
+#                             IN-PROCESS: one supervised llama.cpp worker
+#                             (llama-cpp-python is an internal library —
+#                             there is NO separate inference service to
+#                             deploy, and no external LLM API anywhere).
 #
 # RAM BUDGET — RENDER FREE (512 MiB) ONLY; see each service block for derivation
-#   edunova-api        Node/Express, no LLM            ~150 MiB  -> 512 MiB plan OK
-#   edunova-ai         FastAPI orchestrator, no LLM    ~150 MiB  -> 512 MiB plan OK
-#   edunova-inference  model 101 MiB + KV 46 + llama +
-#                      FastAPI parents + margin        ~460 MiB  -> 512 MiB plan OK
+#   edunova-api   Node/Express, no LLM                        ~150 MiB -> 512 MiB plan OK
+#   edunova-ai    model 101 MiB + KV cache + llama.cpp runtime
+#                 + FastAPI parent + supervised worker         ~460 MiB -> 512 MiB plan OK
 #
 # DO NOT "upgrade" anything here: the whole stack is sized for the FREE plan.
 # No external LLM APIs (no OpenAI/Groq/Gemini/Anthropic/OpenRouter) anywhere —
@@ -123,16 +122,18 @@ services:
         value: "false"
 
   # ---------------------------------------------------------------------------
-  # 2) edunova-ai — FastAPI AI ORCHESTRATOR (Layer A). LIGHTWEIGHT: NO MODEL.
+  # 2) edunova-ai — EduNova AI: orchestrator + OWN IN-PROCESS MODEL.
   #    rootDir: ai_engine  ->  `main:app` resolves to ai_engine/main.py
   #
-  #    ROOT-CAUSE FIX (memory): the model used to be loaded INSIDE this
-  #    process, and the deployed container had 512 MiB while model + server
-  #    needed ~1100 MiB ("Model + server ML need at least 1100 MiB; container
-  #    has 512 MiB"). The model now lives ONLY in edunova-inference (below).
-  #    This service does intent routing, the authenticated ToolRegistry, RAG
-  #    orchestration, web search, conversation memory and SSE relay. It never
-  #    imports llama_cpp or torch (requirements-orchestrator.txt).
+  #    This ONE service owns the complete AI stack: intent routing, the
+  #    authenticated ToolRegistry, RAG orchestration, web search, conversation
+  #    memory, SSE relay — and the self-hosted GGUF model itself, loaded into
+  #    exactly one supervised worker spawned by this process
+  #    (llama-cpp-python is an internal library, NOT an external service).
+  #    History: the 0.5B-class model (Qwen2.5-0.5B, ~1100 MiB with runtime)
+  #    forced a 3-service split; the 135M-class model fits the full stack in
+  #    one 512 MiB container, so the split (and its AI_INFERENCE_URL wiring)
+  #    is no longer part of the deployment.
   #
   #    SIZING: ~120–180 MiB RSS  =>  fits a 512 MiB plan with headroom.
   # ---------------------------------------------------------------------------
@@ -142,8 +143,12 @@ services:
     plan: free
     branch: main
     rootDir: ai_engine
-    buildCommand: pip install -r requirements-orchestrator.txt && python verify_runtime.py --orchestrator
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
+    # The AI service OWNS its model: llama-cpp-python (internal library) +
+    # the FastAPI orchestrator stack in one image. No separate inference
+    # service exists in this topology. verify_runtime.py fails the BUILD if
+    # `import llama_cpp` is broken, and re-verifies before the port binds.
+    buildCommand: pip install -r requirements-inference-free.txt && python verify_runtime.py
+    startCommand: python verify_runtime.py && uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
     healthCheckPath: /health
     autoDeploy: true
     envVars:
@@ -153,32 +158,41 @@ services:
         value: https://edunova-x.ranjitacharya13.workers.dev
       - key: LLM_PROVIDER
         value: local
-      # REQUIRED. Public HTTPS URL of edunova-inference, no trailing slash.
-      # Auto-wired in the Blueprint via fromService + RENDER_EXTERNAL_URL so
-      # Render resolves the real public https://<service>.onrender.com URL at
-      # deploy time — no manual copy/paste and no guessed hostname. Because
-      # edunova-inference is defined in this same Blueprint, Render creates it
-      # first and populates this value on sync, which eliminates the
-      # AI_INFERENCE_URL_MISSING failure.
-      #
-      # edunova-ai still FAILS FAST if the value is ever unset: the process
-      # refuses to start and exits non-zero (CONFIG_FAILED / AI_INFERENCE_URL_MISSING)
-      # instead of reporting a green /health and answering the first chat with a
-      # 503. So a broken link still surfaces as a red deploy.
-      - key: AI_INFERENCE_URL
-        fromService:
-          name: edunova-inference
-          type: web
-          envVarKey: RENDER_EXTERNAL_URL
-      # Per-request ceiling for one inference call (network safety net only;
-      # generation is never cut by this — see inference service).
-      - key: AI_INFERENCE_REQUEST_TIMEOUT
-        value: "600"
-      # RAG is DISABLED on the Free architecture: the inference service does
-      # not load a PyTorch embedding model, so there are no /embeddings
-      # vectors to orchestrate. The RAG architecture is intact — on a >= 1 GB
-      # inference instance set RAG_ENABLED=true here AND on edunova-inference
-      # (with RAG_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2).
+      # THE MODEL IS OWNED BY THIS SERVICE (in-process supervised runtime).
+      # AI_INFERENCE_URL is deliberately NOT set: the orchestrator loads the
+      # GGUF itself through inference/inprocess.py (single supervised worker).
+      # Setting AI_INFERENCE_URL explicitly would switch to a split topology —
+      # not used by this Blueprint.
+      - key: LOCAL_MODEL_RUNTIME
+        value: llama_cpp
+      # VERIFIED catalogue entry (ai_engine/config.py -> KNOWN_MODELS): size +
+      # sha256 integrity-pinned, ChatML. Downloaded once to the cache dir.
+      # QuantFactory Q4_1 is the verified pin (sha256 b179c952…): it is also
+      # reachable as a single LFS blob, which matters for cold-boot downloads.
+      - key: LOCAL_MODEL_REPO
+        value: QuantFactory/SmolLM2-135M-Instruct-GGUF
+      - key: LOCAL_MODEL_FILE
+        value: SmolLM2-135M-Instruct.Q4_1.gguf
+      # Render Free has no persistent disk; this is the instance-local cache
+      # dir (writable, downloaded once per cold boot).
+      - key: LOCAL_MODEL_DIR
+        value: /var/data/models
+      - key: LOCAL_MODEL_THREADS
+        value: "1"
+      # 0.1 shared vCPU + a ~100 MB cold-boot download: give startup room.
+      - key: MODEL_STARTUP_TIMEOUT
+        value: "900"
+      - key: MODEL_INFERENCE_IDLE_TIMEOUT
+        value: "120"
+      - key: LOCAL_MODEL_DOWNLOAD_TIMEOUT
+        value: "1800"
+      # (AI_INFERENCE_REQUEST_TIMEOUT is intentionally not set: it only applies
+      # to the split topology's network hop, which this Blueprint never uses —
+      # the model is owned in-process.)
+      # RAG is DISABLED on the Free architecture: no PyTorch embedding model
+      # is loaded (lexical embeddings stay available). The RAG architecture is
+      # intact — on a >= 1 GB instance set RAG_ENABLED=true here (with
+      # RAG_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2).
       - key: RAG_ENABLED
         value: "false"
       - key: LLM_MAX_OUTPUT_TOKENS
@@ -188,7 +202,7 @@ services:
       - key: WEB_SEARCH_API_KEY
         sync: false
       - key: WEB_SEARCH_PROVIDER
-        value: brave
+        value: auto
       # Public HTTPS URL of edunova-api, required for real authenticated tools.
       # Auto-wired via fromService + RENDER_EXTERNAL_URL so the orchestrator can
       # reach edunova-api's public URL for authenticated ToolRegistry calls —
@@ -198,7 +212,7 @@ services:
           name: edunova-api
           type: web
           envVarKey: RENDER_EXTERNAL_URL
-      # Required: same random value on edunova-api, edunova-ai, edunova-inference.
+      # Required: same random value on edunova-api and edunova-ai.
       - key: AI_INTERNAL_TOKEN
         sync: false
       - key: AI_REQUIRE_INTERNAL_TOKEN
@@ -218,7 +232,7 @@ services:
       - key: WEB_MAX_EXTRACTED_CHARS
         value: "45000"
       # Must fit inside LOCAL_MODEL_CTX (~3 chars/token) with system prompt +
-      # LLM_MAX_OUTPUT_TOKENS (mirror the value on edunova-inference).
+      # LLM_MAX_OUTPUT_TOKENS (the owned model uses this same process).
       # At ctx 2048: ~1024 tokens of prompt (~6000 chars) + 1024 answer tokens
       # + guard reserve = the full window. Bigger values are only for a larger
       # inference instance with a larger LOCAL_MODEL_CTX.
@@ -228,106 +242,14 @@ services:
         value: "2048"
 
   # ---------------------------------------------------------------------------
-  # 3) edunova-inference — PERSISTENT SELF-HOSTED AI INFERENCE SERVICE (Layer B)
-  #    rootDir: ai_engine  ->  `inference_server:app`
+  # 3) (removed) edunova-inference — the model is no longer a separate service.
+  #    EduNova owns the complete AI stack: edunova-ai loads and serves the GGUF
+  #    through its own supervised in-process runtime (inference/inprocess.py,
+  #    llama-cpp-python as an internal library). A standalone debug server still
+  #    exists at ai_engine/inference_server.py for local experimentation, but it
+  #    is NOT part of the deployment topology and nothing communicates with it.
   #
-  #    THE ONLY PROCESS THAT LOADS THE MODEL. Lifecycle (once, at startup):
-  #      resource check -> runtime check -> GGUF validation -> load -> warmup
-  #      ("What is 2 + 2?") -> independent inference test -> MODEL_READY
-  #    If the container cannot hold the model the service fails fast with
-  #    MODEL_RESOURCE_INSUFFICIENT {required_mb, available_mb, recommended_mb}
-  #    and stays MODEL_FAILED (never an infinite "preparing").
-  #
-  #    ---- SIZING: RENDER FREE (512 MiB) — the target this block is built for ----
-  #    Model file:      SmolLM2-135M-Instruct GGUF Q4_K_M ≈ 105.5 MB file
-  #                     (Apache-2.0, ChatML, 135M params; verified against the
-  #                     HuggingFace LFS metadata in ai_engine/config.py)
-  #    Runtime:         llama.cpp CPU (mmap) via llama-cpp-python 0.3.35
-  #    Requirement at LOCAL_MODEL_CTX=2048, LOCAL_MODEL_THREADS=1,
-  #    RAG_ENABLED=false (inference/resources.py, verified at boot):
-  #        weights 101 MiB + KV cache 53 MiB + llama.cpp runtime 140 MiB
-  #        + FastAPI parent + supervised worker 110 MiB + safety margin 64 MiB
-  #        + PyTorch embeddings 0 MiB (NOT loaded)     = ~468 MiB REQUIRED
-  #    -> FITS the 512 MiB FREE plan with honest headroom. No paid plan,
-  #       no external LLM API, no template/mock fallbacks.
-  #    Why so small: Qwen2.5-0.5B Q4_K_M (397 MB weights, ~740-1148 MiB with
-  #    runtime) does NOT fit 512 MiB — that was the MODEL_RESOURCE_INSUFFICIENT
-  #    incident. The 135M-class model is the strongest that fits. The verified
-  #    0.5B/360M catalogue entries stay in config.py for a future >= 1-2 GB
-  #    instance (flip LOCAL_MODEL_REPO/FILE + plan only).
-  #
-  #    FREE PLAN NOTES:
-  #      * No persistent disk (disks are a paid feature): weights (~100 MB)
-  #        are downloaded once into the instance cache dir on cold boot.
-  #      * Render free spins the instance down after inactivity; the first
-  #        request after spin-up pays model load + warmup (~20-90 s on
-  #        0.1 CPU). The generous MODEL_STARTUP_TIMEOUT below keeps that
-  #        honest cold start from being killed mid-load.
   # ---------------------------------------------------------------------------
-  - type: web
-    name: edunova-inference
-    runtime: python
-    plan: free
-    branch: main
-    rootDir: ai_engine
-    # FREE profile: requirements-inference-free.txt installs llama-cpp-python
-    # (CPU wheel) + the FastAPI stack and NOTHING ELSE — no torch, no
-    # transformers, no sentence-transformers. The inference process therefore
-    # cannot import PyTorch even by accident; RAG_ENABLED=false keeps the
-    # embedding path switched off at the application layer too.
-    # verify_runtime.py fails the BUILD if `import llama_cpp` is broken (it
-    # checks torch only when RAG_ENABLED is true).
-    buildCommand: pip install -r requirements-inference-free.txt && python verify_runtime.py
-    # Exactly ONE uvicorn worker: the model lives in this process (supervised
-    # native worker) and generation is single-flight. The runtime is
-    # re-verified before the port binds (torch import NOT performed: RAG is off).
-    startCommand: python verify_runtime.py && uvicorn inference_server:app --host 0.0.0.0 --port $PORT --workers 1
-    healthCheckPath: /health
-    autoDeploy: true
-    envVars:
-      - key: PYTHON_VERSION
-        value: "3.11.9"
-      - key: LLM_PROVIDER
-        value: local
-      - key: LOCAL_MODEL_RUNTIME
-        value: llama_cpp
-      # VERIFIED catalogue entry (ai_engine/config.py -> KNOWN_MODELS): size +
-      # sha256 integrity-pinned, ChatML. Downloaded to the cache dir below.
-      - key: LOCAL_MODEL_REPO
-        value: bartowski/SmolLM2-135M-Instruct-GGUF
-      - key: LOCAL_MODEL_FILE
-        value: SmolLM2-135M-Instruct-Q4_K_M.gguf
-      # Render Free has no persistent disk; this is the instance-local cache
-      # dir (writable, downloaded once per cold boot). On a paid instance with
-      # a disk, mount the disk here to make the download truly once-per-image.
-      - key: LOCAL_MODEL_DIR
-        value: /var/data/models
-      - key: LOCAL_MODEL_CTX
-        value: "2048"
-      - key: LOCAL_MODEL_THREADS
-        value: "1"
-      # 0.1 shared vCPU + a ~100 MB cold-boot download: give startup room.
-      - key: MODEL_STARTUP_TIMEOUT
-        value: "900"
-      - key: MODEL_INFERENCE_IDLE_TIMEOUT
-        value: "120"
-      - key: LOCAL_MODEL_DOWNLOAD_TIMEOUT
-        value: "1800"
-      # RAG embeddings are OFF for the 512 MiB free runtime: no PyTorch
-      # embedding model is loaded (the architecture stays in the repo for a
-      # future >= 1 GB instance — flip this AND the edunova-ai value together).
-      - key: RAG_ENABLED
-        value: "false"
-      - key: LLM_MAX_OUTPUT_TOKENS
-        value: "1024"
-      - key: LLM_TEMPERATURE
-        value: "0.2"
-      # Required: same random value as on edunova-api and edunova-ai.
-      - key: AI_INTERNAL_TOKEN
-        sync: false
-      - key: AI_REQUIRE_INTERNAL_TOKEN
-        value: "true"
-
   # ---------------------------------------------------------------------------
   # 4) edunova-signal — OPTIONAL standalone WebRTC signaling service.
   #    Disabled by default: server/server.js already provides Socket.IO
