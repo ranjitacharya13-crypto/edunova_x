@@ -4,6 +4,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
+    "seed:demo-student": "node seed/createDemoStudent.js",
     "test": "node --test"
   },
   "dependencies": {

@@ -12,12 +12,32 @@ export default function LoginCard({ onLogin }) {
     return <RegisterWizard onBack={() => setShowRegister(false)} />;
   }
 
+  const DEMO_STUDENT_EMAIL = "student@edunova.demo";
+  const DEMO_STUDENT_PASSWORD = "Student@12345";
+
   const handleLogin = async (event) => {
     if (event) event.preventDefault();
     setError("");
     setLoading(true);
 
     const res = await onLogin(email, password);
+
+    if (res?.error) {
+      setError(res.error);
+      setLoading(false);
+      return;
+    }
+
+    setLoading(false);
+  };
+
+  // Demo login goes through the exact same real authentication API as a
+  // manual login — no bypass, no direct navigation to the dashboard.
+  const handleDemoStudentLogin = async () => {
+    setError("");
+    setLoading(true);
+
+    const res = await onLogin(DEMO_STUDENT_EMAIL, DEMO_STUDENT_PASSWORD);
 
     if (res?.error) {
       setError(res.error);
@@ -82,6 +102,34 @@ export default function LoginCard({ onLogin }) {
       >
         Create Account
       </button>
+
+      {/* ─────────── Demo Account ─────────── */}
+      <div className="mt-5">
+        <div className="flex items-center gap-3 text-slate-400">
+          <span className="flex-1 h-px bg-slate-300/60" />
+          <span className="text-xs font-medium uppercase tracking-wide">
+            Demo Account
+          </span>
+          <span className="flex-1 h-px bg-slate-300/60" />
+        </div>
+
+        <div className="mt-3 rounded-xl border border-white/40 bg-white/50 backdrop-blur-md px-4 py-3 text-sm">
+          <p className="font-medium text-slate-700">Student Demo</p>
+          <p className="mt-1 text-slate-500 break-all">
+            {DEMO_STUDENT_EMAIL}
+            <span className="mx-2 text-slate-300">•</span>
+            {DEMO_STUDENT_PASSWORD}
+          </p>
+          <button
+            type="button"
+            onClick={handleDemoStudentLogin}
+            disabled={loading}
+            className="w-full mt-3 bg-slate-800 text-white py-2.5 rounded-xl font-medium hover:bg-slate-700 transition disabled:opacity-60"
+          >
+            {loading ? "Signing in..." : "Login as Demo Student"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

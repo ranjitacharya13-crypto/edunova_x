@@ -266,6 +266,15 @@ mongoConnection
           password: "123456",
           role: "student",
         },
+        // Sample student account for project demonstrations (same identity
+        // created by `npm run seed:demo-student`; skipped if it exists).
+        {
+          name: "Demo Student",
+          username: "student_demo_account",
+          email: "student@edunova.demo",
+          password: "Student@12345",
+          role: "student",
+        },
       ];
 
       for (const demo of demoUsers) {
