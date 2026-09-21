@@ -1,5 +1,13 @@
 import React, { useState } from "react";
 import RegisterWizard from "./RegisterWizard";
+import { AUTH_MESSAGES } from "../api/authErrors";
+
+// The demo account printed on this card. It is a REAL account: the button below
+// authenticates through the same production login call as a manual sign-in, so
+// it only works while the seeded record exists in the deployed database (see
+// server/services/demoAccount.js).
+const DEMO_STUDENT_EMAIL = "student@edunova.demo";
+const DEMO_STUDENT_PASSWORD = "Student@12345";
 
 export default function LoginCard({ onLogin }) {
   const [email, setEmail] = useState("");
@@ -12,40 +20,48 @@ export default function LoginCard({ onLogin }) {
     return <RegisterWizard onBack={() => setShowRegister(false)} />;
   }
 
-  const DEMO_STUDENT_EMAIL = "student@edunova.demo";
-  const DEMO_STUDENT_PASSWORD = "Student@12345";
-
-  const handleLogin = async (event) => {
-    if (event) event.preventDefault();
+  // THE single authentication path. The form and the demo button both call it,
+  // so neither can be a fake/short-circuited login: the credentials always go to
+  // the real backend and the dashboard only opens on a verified response.
+  const authenticate = async (emailValue, passwordValue) => {
     setError("");
-    setLoading(true);
 
-    const res = await onLogin(email, password);
-
-    if (res?.error) {
-      setError(res.error);
-      setLoading(false);
+    const cleanEmail = String(emailValue || "").trim();
+    if (!cleanEmail || !passwordValue) {
+      // Same condition the API answers with 400 — caught here so the user gets
+      // an immediate, accurate message without a pointless round trip.
+      setError(AUTH_MESSAGES.REQUEST);
       return;
     }
 
-    setLoading(false);
+    setLoading(true);
+    try {
+      const res = await onLogin?.(cleanEmail, passwordValue);
+      if (res?.error) {
+        setError(res.error);
+        return;
+      }
+      setLoading(false);
+    } catch (err) {
+      // A rejected promise from the auth layer is a transport/config problem, not
+      // a wrong password.
+      console.error("[EduNova auth] login did not complete:", err?.message || err);
+      setError(AUTH_MESSAGES.NETWORK);
+      setLoading(false);
+    }
   };
 
-  // Demo login goes through the exact same real authentication API as a
-  // manual login — no bypass, no direct navigation to the dashboard.
+  const handleLogin = async (event) => {
+    event?.preventDefault();
+    await authenticate(email, password);
+  };
+
+  // Fills the form with the published demo credentials and submits them through
+  // the exact same authenticate() → onLogin() → loginUser() call as above.
   const handleDemoStudentLogin = async () => {
-    setError("");
-    setLoading(true);
-
-    const res = await onLogin(DEMO_STUDENT_EMAIL, DEMO_STUDENT_PASSWORD);
-
-    if (res?.error) {
-      setError(res.error);
-      setLoading(false);
-      return;
-    }
-
-    setLoading(false);
+    setEmail(DEMO_STUDENT_EMAIL);
+    setPassword(DEMO_STUDENT_PASSWORD);
+    await authenticate(DEMO_STUDENT_EMAIL, DEMO_STUDENT_PASSWORD);
   };
 
   return (
@@ -56,7 +72,12 @@ export default function LoginCard({ onLogin }) {
       </p>
 
       {error && (
-        <div className="mb-3 text-sm text-red-600 bg-red-50 px-3 py-2 rounded-lg">
+        <div
+          role="alert"
+          aria-live="polite"
+          data-testid="login-error"
+          className="mb-3 text-sm text-red-600 bg-red-50 px-3 py-2 rounded-lg"
+        >
           {error}
         </div>
       )}
