@@ -114,12 +114,28 @@ services:
         value: "20"
       # No warm queues and no replay of tool-bearing chat POSTs. Readiness is
       # observed once; the persistent AI service owns startup and hard deadlines.
-      # Seeding demo accounts (teacher@edunova.com / student@edunova.com, password
-      # "123456") is a security risk in production — anyone could log in as a
-      # demo teacher. Keep this "false" for a live deployment; set "true" only
-      # for throwaway test environments.
+      # Legacy throwaway accounts (teacher@edunova.com / student@edunova.com,
+      # password "123456") are a security risk in production — anyone could log
+      # in as a demo teacher. Keep this "false" for a live deployment; set
+      # "true" only for throwaway test environments.
       - key: SEED_DEMO_USERS
         value: "false"
+      # The demo STUDENT printed on the login card
+      # (student@edunova.demo / Student@12345) is provisioned IDEMPOTENTLY on
+      # every start by server/services/demoAccount.js — it is a REAL account, and
+      # the "Login as Demo Student" button authenticates against it through
+      # POST /api/auth/login. Keep this "true": without the record the demo
+      # button can only ever answer 401, which is exactly the failure mode
+      # ("Invalid credentials" + HTTP 400) this service was showing. The seeder
+      # never duplicates the account, never creates admins/teachers, and never
+      # overwrites an account that belongs to a real user.
+      - key: SEED_DEMO_STUDENT
+        value: "true"
+      # OPTIONAL override of the demo password. It MUST match the password
+      # shown on the login page (Student@12345), otherwise the demo login stops
+      # working. Leave it unset unless you also change the UI.
+      # - key: DEMO_STUDENT_PASSWORD
+      #   sync: false
 
   # ---------------------------------------------------------------------------
   # 2) edunova-ai — EduNova AI: orchestrator + OWN IN-PROCESS MODEL.

@@ -7,6 +7,7 @@ import MobileBottomNav from "./Components/MobileBottomNav";
 import FloatingAIChat from "./Components/FloatingAIChat";
 
 import { validDestination } from "./features/navigation";
+import { fetchCurrentUser } from "./api/api";
 
 const THEME_STORAGE_KEY = "theme";
 
@@ -34,8 +35,36 @@ export default function App() {
     window.addEventListener("edunova:navigate", onNavigate);
     return () => window.removeEventListener("edunova:navigate", onNavigate);
   }, [user]);
-  const [token, setToken] = useState(localStorage.getItem("token"));
+  const [token, setToken] = useState(() => localStorage.getItem("token"));
   const [theme, setTheme] = useState(getInitialTheme);
+
+  // Restore a signed-in session after a reload — but only when the BACKEND
+  // confirms the stored JWT (GET /api/auth/me). The frontend never claims a user
+  // is signed in on the strength of localStorage alone: an expired, forged or
+  // revoked token is dropped and the login card is shown again.
+  useEffect(() => {
+    if (!token) return undefined;
+    let cancelled = false;
+
+    (async () => {
+      const res = await fetchCurrentUser();
+      if (cancelled) return;
+      if (res?.user) {
+        setUser(res.user);
+        updateView(res.user.role === "admin" ? "admin-overview" : "home");
+      } else {
+        console.warn(`[EduNova auth] stored session rejected (${res?.code || "UNKNOWN"}): ${res?.error || ""}`);
+        localStorage.removeItem("token");
+        setToken(null);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+    // Runs once on mount: the token at load time is the only one worth restoring.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") return;

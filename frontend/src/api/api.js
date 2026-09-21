@@ -1,4 +1,5 @@
 import axios from "axios";
+import { describeAuthFailure } from "./authErrors";
 
 // ==========================
 // API CLIENT (dev proxy + prod)
@@ -76,22 +77,67 @@ export const API_ORIGIN =
 // ==========================
 // AUTH APIs
 // ==========================
+//
+// Every authentication failure is reported with the reason the backend actually
+// returned: a 400 (malformed request), a 401 (wrong credentials), a 5xx (server
+// problem) or no response at all (network) must never collapse into the same
+// "Invalid credentials" text — that hides the root cause from both the user and
+// the operator. See api/authErrors.js (describeAuthFailure).
+
+const trimmedCredentials = (formData = {}) => ({
+  ...formData,
+  email: typeof formData.email === "string" ? formData.email.trim() : formData.email,
+  // Passwords are never trimmed: leading/trailing spaces are legitimate characters.
+  password: typeof formData.password === "string" ? formData.password : formData.password,
+});
 
 export const registerUser = async (formData) => {
   try {
-    const res = await API.post("/auth/register", formData);
+    const res = await API.post("/auth/register", trimmedCredentials(formData));
     return res.data;
   } catch (err) {
-    return { error: err.response?.data?.error || "Registration failed" };
+    const failure = describeAuthFailure(err);
+    if (failure.serverDetail) {
+      console.error(`[EduNova auth] register failed (${failure.code}${failure.status ? ` ${failure.status}` : ""}):`, failure.serverDetail);
+    }
+    return { error: failure.message, status: failure.status, code: failure.code };
   }
 };
 
 export const loginUser = async (formData) => {
   try {
-    const res = await API.post("/auth/login", formData);
+    const res = await API.post("/auth/login", trimmedCredentials(formData), {
+      headers: { "Content-Type": "application/json" },
+    });
+    // The token is only ever returned by the backend AFTER the bcrypt password
+    // comparison succeeded; the frontend stores nothing on its own.
     return res.data;
   } catch (err) {
-    return { error: err.response?.data?.error || "Invalid credentials" };
+    const failure = describeAuthFailure(err);
+    if (failure.serverDetail) {
+      console.error(
+        `[EduNova auth] login failed (${failure.code}${failure.status ? ` ${failure.status}` : ""}):`,
+        failure.serverDetail
+      );
+    }
+    return { error: failure.message, status: failure.status, code: failure.code };
+  }
+};
+
+// Re-validates the stored session against the backend (GET /api/auth/me).
+// The SPA calls this on load so it never claims to be signed in on the strength
+// of a token in localStorage alone.
+export const fetchCurrentUser = async () => {
+  const token = typeof localStorage !== "undefined" ? localStorage.getItem("token") : null;
+  if (!token) return { error: "No stored session", code: "NO_TOKEN" };
+  try {
+    const res = await API.get("/auth/me", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    return res.data;
+  } catch (err) {
+    const failure = describeAuthFailure(err);
+    return { error: failure.message, status: failure.status, code: failure.code };
   }
 };
 

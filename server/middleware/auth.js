@@ -13,7 +13,9 @@ module.exports = async function (req, res, next) {
     // attach minimal user info
     const user = await User.findById(decoded.id).select('-password');
     if (!user || user.isBlocked) return res.status(401).json({ error: 'Invalid or blocked user' });
-    req.user = { id: user._id, email: user.email, role: user.role, name: user.name, enrolledClasses: user.enrolledClasses || [], subjects: user.subjects || [], timezone: user.timezone || "UTC" };
+    // `username` is included so GET /api/auth/me can return the same shape the
+    // login response uses (the SPA restores its session from that endpoint).
+    req.user = { id: user._id, email: user.email, role: user.role, name: user.name, username: user.username, enrolledClasses: user.enrolledClasses || [], subjects: user.subjects || [], timezone: user.timezone || "UTC" };
     next();
   } catch (e) {
     console.warn('AUTH_FAILED', e.name);

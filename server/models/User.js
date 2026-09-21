@@ -25,8 +25,13 @@ const userSchema = new mongoose.Schema(
     name: String,
     dob: String,
     gender: String,
-    username: { type: String, unique: true },
-    email: { type: String, unique: true, required: true },
+    username: { type: String, unique: true, trim: true },
+    // `trim` + `lowercase` keep new accounts storable/lookup-compatible with the
+    // email that arrives from the login form (an address pasted with a trailing
+    // space or different casing can no longer cause a false "Invalid credentials").
+    // Logins additionally fall back to a case-insensitive lookup for records
+    // created before this normalization existed.
+    email: { type: String, unique: true, required: true, trim: true, lowercase: true },
     password: { type: String, required: true },
     role: { type: String, enum: ["admin", "teacher", "student"], default: "student" },
     isBlocked: { type: Boolean, default: false },

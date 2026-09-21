@@ -156,7 +156,23 @@ io.on("connection", (socket) => {
 // ==========================
 // MIDDLEWARE
 // ==========================
+// Body parsing MUST be registered before the routes below, or req.body is
+// undefined for POST /api/auth/login (which then answers 400 "Missing email or
+// password").
 app.use(express.json());
+
+// A malformed/unreadable JSON body is answered with a JSON 400. Express's
+// default handler returns an HTML stack page, which the SPA can only render as
+// an opaque failure ("Invalid credentials" in older builds).
+app.use((err, req, res, next) => {
+  if (err && err.type === "entity.parse.failed") {
+    return res.status(400).json({ error: "Malformed JSON body" });
+  }
+  if (err && err.type === "entity.too.large") {
+    return res.status(413).json({ error: "Request body too large" });
+  }
+  return next(err);
+});
 
 // ==========================
 // HEALTH CHECK (Render LB)
@@ -218,73 +234,110 @@ const mongoConnection = MONGO_URI
 mongoConnection
   .then(async () => {
     console.log("✅ MongoDB connected");
-    // Add educational content idempotently; never seed or overwrite student records.
-    await require("./services/arLessons").seedCurriculum();
 
-    const adminEmail = "ranjitacharya13@gmail.com";
-    const adminName = "Super Admin";
-    const adminUsername = "super_admin";
-    const existingAdmin = await User.findOne({ email: adminEmail });
-
-    if (!existingAdmin && process.env.ADMIN_TEMP_PASSWORD) {
-      const tempAdminPassword =
-        process.env.ADMIN_TEMP_PASSWORD || crypto.randomBytes(24).toString("base64url");
-      const adminPasswordHash = await bcrypt.hash(tempAdminPassword, 10);
-
-      await new User({
-        name: adminName,
-        username: adminUsername,
-        email: adminEmail,
-        password: adminPasswordHash,
-        role: "admin",
-      }).save();
-
-      console.log(`Seeded admin user: ${adminEmail}`);
-      if (!process.env.ADMIN_TEMP_PASSWORD) {
-        console.warn("Admin bootstrap requires a configured password; credentials are never logged.");
-      }
-    } else if (existingAdmin && existingAdmin.role !== "admin" && process.env.ADMIN_TEMP_PASSWORD) {
-      existingAdmin.role = "admin";
-      await existingAdmin.save();
-      console.log(`Updated existing user role to admin: ${adminEmail}`);
+    // ---------------------------------------------------------------------
+    // 1) Demo STUDENT (the account the login page advertises) — FIRST
+    // ---------------------------------------------------------------------
+    // Provisioned on EVERY start — including production — because the login
+    // card's "Login as Demo Student" button authenticates against this exact
+    // record through the real /api/auth/login endpoint. Idempotent: it creates
+    // the account only when it is missing, never duplicates it, never touches
+    // any other user and never creates an admin. Opt out with
+    // SEED_DEMO_STUDENT=false (the demo login then legitimately fails with 401).
+    //
+    // This runs BEFORE (and independently of) the content/admin bootstrap below:
+    // a failure in an unrelated seeding step must never leave the published
+    // demo credentials without an account.
+    try {
+      await require("./services/demoAccount").ensureDemoStudent();
+    } catch (err) {
+      console.error("❌ Demo student seeding failed:", err.message);
     }
 
-    // Create demo accounts if they don't exist (disable with `SEED_DEMO_USERS=false`).
-    if (process.env.NODE_ENV !== "production" && String(process.env.SEED_DEMO_USERS || "").toLowerCase() === "true") {
-      const demoUsers = [
-        {
-          name: "Demo Teacher",
-          username: "teacher_demo",
-          email: "teacher@edunova.com",
-          password: "123456",
-          role: "teacher",
-        },
-        {
-          name: "Demo Student",
-          username: "student_demo",
-          email: "student@edunova.com",
-          password: "123456",
-          role: "student",
-        },
-        // Sample student account for project demonstrations (same identity
-        // created by `npm run seed:demo-student`; skipped if it exists).
-        {
-          name: "Demo Student",
-          username: "student_demo_account",
-          email: "student@edunova.demo",
-          password: "Student@12345",
-          role: "student",
-        },
-      ];
+    // ---------------------------------------------------------------------
+    // 2) Educational content (idempotent; never seeds/overwrites users)
+    // ---------------------------------------------------------------------
+    try {
+      await require("./services/arLessons").seedCurriculum();
+    } catch (err) {
+      console.error("❌ AR curriculum seeding failed:", err.message);
+    }
 
-      for (const demo of demoUsers) {
-        const existing = await User.findOne({ email: demo.email });
-        if (existing) continue;
+    // ---------------------------------------------------------------------
+    // 3) Admin bootstrap (only with an explicit ADMIN_TEMP_PASSWORD)
+    // ---------------------------------------------------------------------
+    try {
+      const adminEmail = "ranjitacharya13@gmail.com";
+      const adminName = "Super Admin";
+      const adminUsername = "super_admin";
+      const existingAdmin = await User.findOne({ email: adminEmail });
 
-        const hashedPassword = await bcrypt.hash(demo.password, 10);
-        await new User({ ...demo, password: hashedPassword }).save();
-        console.log(`✅ Seeded demo user: ${demo.email}`);
+      if (!existingAdmin && process.env.ADMIN_TEMP_PASSWORD) {
+        const tempAdminPassword =
+          process.env.ADMIN_TEMP_PASSWORD || crypto.randomBytes(24).toString("base64url");
+        const adminPasswordHash = await bcrypt.hash(tempAdminPassword, 10);
+
+        await new User({
+          name: adminName,
+          username: adminUsername,
+          email: adminEmail,
+          password: adminPasswordHash,
+          role: "admin",
+        }).save();
+
+        console.log(`Seeded admin user: ${adminEmail}`);
+        if (!process.env.ADMIN_TEMP_PASSWORD) {
+          console.warn("Admin bootstrap requires a configured password; credentials are never logged.");
+        }
+      } else if (existingAdmin && existingAdmin.role !== "admin" && process.env.ADMIN_TEMP_PASSWORD) {
+        existingAdmin.role = "admin";
+        await existingAdmin.save();
+        console.log(`Updated existing user role to admin: ${adminEmail}`);
       }
+    } catch (err) {
+      console.error("❌ Admin bootstrap failed:", err.message);
+    }
+
+    // ---------------------------------------------------------------------
+    // 4) Legacy throwaway demo accounts (WEAK passwords — NOT in production)
+    // ---------------------------------------------------------------------
+    // teacher@edunova.com / student@edunova.com with password "123456" stay
+    // behind `SEED_DEMO_USERS=true` AND a non-production environment: anyone
+    // could otherwise sign in as a demo teacher.
+    try {
+      const seedLegacyDemoUsers =
+        process.env.NODE_ENV !== "production" &&
+        String(process.env.SEED_DEMO_USERS || "").toLowerCase() === "true";
+
+      if (seedLegacyDemoUsers) {
+        const demoUsers = [
+          {
+            name: "Demo Teacher",
+            username: "teacher_demo",
+            email: "teacher@edunova.com",
+            password: "123456",
+            role: "teacher",
+          },
+          {
+            name: "Demo Student",
+            username: "student_demo",
+            email: "student@edunova.com",
+            password: "123456",
+            role: "student",
+          },
+        ];
+
+        for (const demo of demoUsers) {
+          const existing = await User.findOne({ email: demo.email });
+          if (existing) continue;
+
+          const hashedPassword = await bcrypt.hash(demo.password, 10);
+          await new User({ ...demo, password: hashedPassword }).save();
+          console.log(`✅ Seeded demo user: ${demo.email}`);
+        }
+      }
+    } catch (err) {
+      console.error("❌ Legacy demo user seeding failed:", err.message);
     }
   })
   .catch((err) => {
@@ -421,6 +474,22 @@ app.get("/", (req, res) => {
 // request to frontend/dist/index.html.
 app.use((req, res) => {
   res.status(404).json({ error: "Route not found" });
+});
+
+// ==========================
+// ERROR HANDLER (JSON, NEVER HTML)
+// ==========================
+// Any error that reaches this point (including a rejected CORS origin) is
+// answered with JSON so the SPA can show the real reason instead of parsing an
+// HTML stack page and falling back to a generic message.
+app.use((err, req, res, next) => {
+  if (err && /CORS origin not allowed/i.test(String(err.message || ""))) {
+    console.warn(`⚠️  Blocked CORS origin: ${req.headers.origin}`);
+    return res.status(403).json({ error: "Origin not allowed by CORS" });
+  }
+  console.error("❌ Unhandled request error:", err && err.message);
+  if (res.headersSent) return next(err);
+  return res.status(500).json({ error: "Server error" });
 });
 
 // Render (and every other PaaS) injects the port to listen on via PORT.

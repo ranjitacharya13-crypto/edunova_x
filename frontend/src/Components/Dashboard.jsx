@@ -78,12 +78,22 @@ export default function Dashboard({ user, view, setUser, setView, resourceId }) 
             <div className="w-full flex justify-center mt-8 lg:mt-0">
               <LoginCard
                 onLogin={async (email, password) => {
+                  // Real backend call: POST /api/auth/login with { email, password }.
                   const res = await loginUser({ email, password });
-                  if (!res?.error && res?.user) {
-                    localStorage.setItem("token", res.token);
-                    setUser(res.user);
-                    setView("home");
+
+                  // Authentication state is only updated for a verified response
+                  // (a token and the safe user object, both produced by the
+                  // backend AFTER bcrypt verified the password). A failed,
+                  // unreachable or misconfigured backend never opens a dashboard.
+                  if (res?.error || !res?.token || !res?.user) {
+                    return res?.error ? res : { error: "Sign-in failed. Please try again." };
                   }
+
+                  localStorage.setItem("token", res.token);
+                  setUser(res.user);
+                  // admin → admin dashboard (Dashboard routes admins to
+                  // "admin-overview"); students/teachers → their home dashboard.
+                  setView(res.user.role === "admin" ? "admin-overview" : "home");
                   return res;
                 }}
                 onGuest={() => {
