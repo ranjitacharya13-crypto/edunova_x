@@ -87,8 +87,10 @@ Set these in **Render → your API service → Environment**:
 | `AI_UPSTREAM_RETRY_WINDOW_MS` | optional | Total retry budget for waking the AI service in ms (default `90000`) |
 | `EMAIL_USER` / `EMAIL_PASS` | for contact form | Gmail address + 16-char App Password |
 | `CONTACT_RECEIVER_EMAIL` | optional | Where contact messages are sent |
-| `ADMIN_TEMP_PASSWORD` | optional | Otherwise a random one is printed to logs once |
-| `SEED_DEMO_USERS` | optional | `false` disables demo teacher/student seeding |
+| `ADMIN_TEMP_PASSWORD` | optional | Without it no admin account is bootstrapped (nothing is hardcoded) |
+| `SEED_DEMO_STUDENT` | recommended `true` | Provisions the demo student shown on the login card (`student@edunova.demo` / `Student@12345`) idempotently on every start. Set `false` to opt out — the demo button then legitimately answers 401 |
+| `DEMO_STUDENT_PASSWORD` | optional | Overrides the seeded demo password. It MUST match the password printed on the login page, so leave it unset unless the UI is changed too |
+| `SEED_DEMO_USERS` | optional | Legacy throwaway accounts (`teacher@edunova.com` / `student@edunova.com`, password `123456`). Ignored when `NODE_ENV=production` |
 
 `PORT` is injected by Render — **never set it manually** and never hardcode it.
 The server binds `0.0.0.0:$PORT`.
@@ -420,7 +422,47 @@ curl -i -X OPTIONS https://edunova-api-y3rx.onrender.com/api/auth/login \
   -H "Origin: https://edunova-x.ranjitacharya13.workers.dev" \
   -H "Access-Control-Request-Method: POST"
 # -> 204 with access-control-allow-origin matching the Cloudflare URL
+
+# 4. The demo student really can authenticate against the deployed database
+curl -s -X POST https://edunova-api-y3rx.onrender.com/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"student@edunova.demo","password":"Student@12345"}'
+# -> 200 {"token":"...","user":{...,"role":"student"}}
+#    401 = the record/hash is wrong    400 = malformed request
+#    500 = server misconfigured        503 = MongoDB not connected
+
+# 5. Same thing through the Cloudflare Worker proxy (the bundled "/api" path)
+curl -s -X POST https://edunova-x.ranjitacharya13.workers.dev/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"student@edunova.demo","password":"Student@12345"}'
 ```
+
+All of the authentication checks above (plus the wrong-password / unknown-email /
+missing-field / CORS / network cases) are automated:
+
+```bash
+# Local backend
+node server/scripts/auth-smoke.js http://127.0.0.1:4000
+# Deployed Render API
+node server/scripts/auth-smoke.js https://edunova-api-y3rx.onrender.com
+# Through Cloudflare (verifies the Worker proxy end to end)
+node server/scripts/auth-smoke.js https://edunova-x.ranjitacharya13.workers.dev
+```
+
+The demo student does not need to be created by hand: `server/server.js` runs
+`ensureDemoStudent()` on every start once MongoDB is connected (log line
+`✅ Demo student ready: student@edunova.demo`). To do it manually against a
+specific database — for example while Atlas credentials are being rotated —
+run it as a one-off:
+
+```bash
+MONGO_URI="<atlas-uri>" npm run seed:demo-student --prefix server
+```
+
+It is idempotent (`findOne` → create only if missing), stores `Student@12345`
+**only** as a bcrypt hash, never creates duplicates, never creates admins or
+teachers, and refuses to touch an account with that email if it belongs to a
+real user (different role/username).
 
 `/health` returns `{"status":"ok"}` and is deliberately decoupled from MongoDB,
 the AI provider, authentication, and frontend build artifacts — so Render's
@@ -433,6 +475,25 @@ Access rule).
 ---
 
 ## Troubleshooting
+
+**Login says "Invalid credentials" / the console shows a 400 on `/api/auth/login`**
+The request reached the API and the credential check failed. Read the status
+code first — it identifies the cause:
+
+| Response | Meaning | Fix |
+|---|---|---|
+| `400` `{"error":"Email and password are required"}` | the request body was empty/malformed (or `express.json()` was skipped) | check the SPA sends `{"email","password"}`; the JSON body-parser must stay registered before the routes |
+| `401` `{"error":"Invalid credentials"}` | the account does not exist, the password is wrong, or the account is blocked | if it is the demo account: confirm the record exists (`✅ Demo student ready` in the logs) and run `node server/scripts/auth-smoke.js <api-url>` |
+| `500` | `JWT_SECRET` missing, or an unexpected server error | set `JWT_SECRET` on the Render service (Render generates one for the Blueprint) |
+| `503` | MongoDB is not connected | check `MONGO_URI` and the Atlas Network Access rule (`0.0.0.0/0`) |
+| request never completes / "Unable to connect to the EduNova server" | the SPA is calling the wrong API URL | `VITE_API_URL` must be the Render URL (`.../api`) at **build** time, or the Cloudflare Worker's `BACKEND_URL` must point at it |
+
+**The demo button works locally but not in production**
+`SEED_DEMO_STUDENT` is `false`, or the deployed backend predates
+`server/services/demoAccount.js`. Confirm with the smoke test above; a healthy
+API + connected MongoDB + `401` on the demo login means the record is missing
+from that database, and the next server start recreates it (or run
+`npm run seed:demo-student --prefix server` with the production `MONGO_URI`).
 
 **`Error: Cannot find module 'nodemailer'` (or `express`, `mongoose`, …)**
 Render installed dependencies somewhere other than `server/`. Set the service's
