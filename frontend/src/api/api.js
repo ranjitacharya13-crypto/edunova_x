@@ -1,4 +1,5 @@
 import axios from "axios";
+import { mapLoginError } from "./authErrors.mjs";
 
 // ==========================
 // API CLIENT (dev proxy + prod)
@@ -45,9 +46,14 @@ if (import.meta.env.PROD) {
   }
 }
 
+// Timeout is REQUIRED: without it a hung request (Render free-tier cold
+// start, stalled proxy) leaves the login button on "Signing in..." forever.
+// 60s comfortably covers a cold start; on expiry the user gets an accurate,
+// retryable timeout message instead of a stuck button.
 const API = axios.create({
   baseURL,
   withCredentials: false,
+  timeout: 60_000,
 });
 
 // Resolve a relative API path ("/study", "/assignments/x/preview") against the
@@ -86,12 +92,17 @@ export const registerUser = async (formData) => {
   }
 };
 
+// Returns the backend payload on success ({ token, user }) or
+// { error, status, retryAfterSeconds } on failure. Never throws, so callers
+// can always reset their loading state. Every failure class (invalid
+// credentials, 429 rate limit, 503 unavailable, timeout, offline) gets its
+// own accurate message — see authErrors.mjs.
 export const loginUser = async (formData) => {
   try {
-    const res = await API.post("/auth/login", formData);
+    const res = await API.post("/auth/login", formData, { timeout: 60_000 });
     return res.data;
   } catch (err) {
-    return { error: err.response?.data?.error || "Invalid credentials" };
+    return mapLoginError(err);
   }
 };
 

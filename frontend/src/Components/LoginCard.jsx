@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import RegisterWizard from "./RegisterWizard";
 
 export default function LoginCard({ onLogin }) {
@@ -6,7 +6,16 @@ export default function LoginCard({ onLogin }) {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [retryAfter, setRetryAfter] = useState(0);
   const [showRegister, setShowRegister] = useState(false);
+
+  // Countdown for rate-limit (429) lockouts: the button stays disabled with
+  // a visible "try again in Xs" label until the backend allows a retry.
+  useEffect(() => {
+    if (retryAfter <= 0) return;
+    const timer = setTimeout(() => setRetryAfter((s) => Math.max(0, s - 1)), 1000);
+    return () => clearTimeout(timer);
+  }, [retryAfter]);
 
   if (showRegister) {
     return <RegisterWizard onBack={() => setShowRegister(false)} />;
@@ -15,38 +24,52 @@ export default function LoginCard({ onLogin }) {
   const DEMO_STUDENT_EMAIL = "student@edunova.demo";
   const DEMO_STUDENT_PASSWORD = "Student@12345";
 
-  const handleLogin = async (event) => {
-    if (event) event.preventDefault();
+  // Single login path for manual + demo sign-in.
+  //
+  // Guarantees:
+  // - `finally` ALWAYS resets `loading`, so the button can never get stuck
+  //   on "Signing in..." — even if onLogin throws (e.g. localStorage
+  //   unavailable in private browsing) or the request times out.
+  // - Duplicate submissions are ignored while a request is in flight.
+  // - Rate-limit responses surface a countdown instead of a dead button.
+  const runLogin = async (emailValue, passwordValue) => {
+    if (loading || retryAfter > 0) return;
     setError("");
     setLoading(true);
-
-    const res = await onLogin(email, password);
-
-    if (res?.error) {
-      setError(res.error);
+    try {
+      const res = await onLogin(emailValue, passwordValue);
+      if (res?.error) {
+        setError(res.error);
+        if (Number(res.retryAfterSeconds) > 0) {
+          setRetryAfter(Number(res.retryAfterSeconds));
+        }
+        return;
+      }
+      // Success: Dashboard navigates to the home view; nothing to reset.
+    } catch {
+      setError("Something went wrong. Please try again.");
+    } finally {
       setLoading(false);
-      return;
     }
+  };
 
-    setLoading(false);
+  const handleLogin = (event) => {
+    if (event) event.preventDefault();
+    runLogin(email, password);
   };
 
   // Demo login goes through the exact same real authentication API as a
   // manual login — no bypass, no direct navigation to the dashboard.
-  const handleDemoStudentLogin = async () => {
-    setError("");
-    setLoading(true);
-
-    const res = await onLogin(DEMO_STUDENT_EMAIL, DEMO_STUDENT_PASSWORD);
-
-    if (res?.error) {
-      setError(res.error);
-      setLoading(false);
-      return;
-    }
-
-    setLoading(false);
+  const handleDemoStudentLogin = () => {
+    runLogin(DEMO_STUDENT_EMAIL, DEMO_STUDENT_PASSWORD);
   };
+
+  const locked = loading || retryAfter > 0;
+  const submitLabel = retryAfter > 0
+    ? `Try again in ${retryAfter}s`
+    : loading
+      ? "Signing in..."
+      : "Sign In";
 
   return (
     <div className="w-full max-w-md mx-auto glass-card p-6">
@@ -73,7 +96,8 @@ export default function LoginCard({ onLogin }) {
           placeholder="Email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
-          className="w-full mb-3 px-4 py-3 rounded-xl border border-white/40 bg-white/60 backdrop-blur-md focus:outline-none focus:ring-2 focus:ring-primary/30"
+          disabled={loading}
+          className="w-full mb-3 px-4 py-3 rounded-xl border border-white/40 bg-white/60 backdrop-blur-md focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:opacity-60"
         />
 
         <input
@@ -84,15 +108,16 @@ export default function LoginCard({ onLogin }) {
           placeholder="Password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-          className="w-full mb-4 px-4 py-3 rounded-xl border border-white/40 bg-white/60 backdrop-blur-md focus:outline-none focus:ring-2 focus:ring-primary/30"
+          disabled={loading}
+          className="w-full mb-4 px-4 py-3 rounded-xl border border-white/40 bg-white/60 backdrop-blur-md focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:opacity-60"
         />
 
         <button
           type="submit"
-          disabled={loading}
-          className="w-full bg-primary text-white py-3 rounded-xl font-medium"
+          disabled={locked}
+          className="w-full bg-primary text-white py-3 rounded-xl font-medium disabled:opacity-60"
         >
-          {loading ? "Signing in..." : "Sign In"}
+          {submitLabel}
         </button>
       </form>
 
@@ -123,10 +148,14 @@ export default function LoginCard({ onLogin }) {
           <button
             type="button"
             onClick={handleDemoStudentLogin}
-            disabled={loading}
+            disabled={locked}
             className="w-full mt-3 bg-slate-800 text-white py-2.5 rounded-xl font-medium hover:bg-slate-700 transition disabled:opacity-60"
           >
-            {loading ? "Signing in..." : "Login as Demo Student"}
+            {retryAfter > 0
+              ? `Try again in ${retryAfter}s`
+              : loading
+                ? "Signing in..."
+                : "Login as Demo Student"}
           </button>
         </div>
       </div>
