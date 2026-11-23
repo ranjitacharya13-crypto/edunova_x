@@ -660,14 +660,28 @@ async def ai_health(
             probe_error = getattr(exc, "error_type", None) or exc.__class__.__name__
     ready = _status_is_ready(status) and probe_state != "error"
     error = _public_error(status)
+    is_configured = (
+        bool(settings.inference_url)
+        if isinstance(llm, RemoteInferenceLLM)
+        else not bool(settings.llm_configuration_error)
+    )
     return {
         "success": ready,
-        "status": str(status.get("state") or "unknown"),
+        "status": "healthy" if ready else str(status.get("state") or "unknown"),
         "modelState": str(status.get("state") or "unknown"),
         "modelReady": ready,
         "serviceAvailable": True,
         "inferenceReachable": status.get("reachable", True),
-        "configured": bool(settings.inference_url),
+        "configured": is_configured,
+        "searchConfigured": settings.search_configured,
+        "capabilities": {
+            "chat": ready,
+            "timetable": ready,
+            "subjects": ready,
+            "quizAnalysis": ready,
+            "studyPlanning": ready,
+            "research": bool(ready and settings.search_configured),
+        },
         "splitTopologyHealed": split_topology_healed,
         "provider": settings.llm_provider,
         "selfHosted": True,

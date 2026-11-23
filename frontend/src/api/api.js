@@ -411,7 +411,13 @@ const AI_ERROR_MESSAGES = {
   DEPENDENCY_FAILED: "EduNova AI is unavailable: the AI server is missing its inference runtime. An administrator needs to check the deployment build.",
   CONFIG_FAILED: "EduNova AI is not configured correctly on the server (AI service endpoint or model settings). An administrator needs to fix the configuration.",
   AUTH_FAILED: "EduNova AI authentication failed. Please sign in again; if it continues, the AI service's internal authentication needs attention.",
-  AI_SERVICE_UNREACHABLE: "EduNova AI service is unavailable: the API could not reach the AI server. If this persists, the AI service may be down or still deploying.",
+  AI_SERVICE_UNREACHABLE: "AI service is temporarily unavailable: the server could not reach the AI engine.",
+  AI_SERVICE_UNAVAILABLE: "AI service is temporarily unavailable. Please wait a moment and try again.",
+  INVALID_STATUS_RESPONSE: "Unable to verify AI service status.",
+  INVALID_UPSTREAM: "Unable to verify AI service status.",
+  PROVIDER_AUTH_FAILED: "AI provider authentication failed on the server. An administrator needs to verify the configured API key.",
+  PROVIDER_UNAVAILABLE: "AI service is temporarily unavailable. Please try again shortly.",
+  NOT_CONFIGURED: "AI service is not configured on the server.",
   UPSTREAM_TIMEOUT: "The AI server did not respond in time. It may be overloaded — wait a moment before asking again.",
   MODEL_BUSY: "EduNova AI is answering another request right now. Wait a few seconds and send your message again — it was not lost.",
   RATE_LIMITED: "You are sending AI requests too quickly. Wait a few seconds and send your message again.",
@@ -474,56 +480,195 @@ export const AI_STATUS = {
   STARTING: "starting",
   LOADING: "loading",
   READY: "ready",
+  DEGRADED: "degraded",
   BUSY: "busy",
+  NOT_CONFIGURED: "not_configured",
   RESOURCE_INSUFFICIENT: "resource_insufficient",
   UNAVAILABLE: "unavailable",
+  INVALID_RESPONSE: "invalid_response",
+  NETWORK_FAILURE: "network_failure",
 };
 
-// "Ready to help" is shown ONLY when the model can genuinely answer. Every
-// other state says what is actually happening — never an optimistic label over
-// a model that is still loading or has failed.
+const EMPTY_AI_CAPABILITIES = Object.freeze({
+  chat: false,
+  timetable: false,
+  subjects: false,
+  quizAnalysis: false,
+  studyPlanning: false,
+  research: false,
+});
+
+// "AI assistant is ready" is shown ONLY when the model can genuinely answer
+// and student capabilities are verified. Every other state reflects actual
+// backend health honestly.
 const AI_STATUS_LABELS = {
-  [AI_STATUS.UNKNOWN]: "Checking AI model...",
-  [AI_STATUS.STARTING]: "EduNova AI is starting...",
-  [AI_STATUS.LOADING]: "EduNova AI is loading its model...",
-  [AI_STATUS.READY]: "Ready to help",
-  [AI_STATUS.BUSY]: "EduNova AI is answering...",
-  [AI_STATUS.RESOURCE_INSUFFICIENT]: "EduNova AI cannot run: the AI server has too little memory for the model.",
-  [AI_STATUS.UNAVAILABLE]: "EduNova AI service is unavailable.",
+  [AI_STATUS.UNKNOWN]: "Checking AI service status...",
+  [AI_STATUS.STARTING]: "AI assistant is starting up...",
+  [AI_STATUS.LOADING]: "AI assistant is loading its model...",
+  [AI_STATUS.READY]: "AI assistant is ready",
+  [AI_STATUS.DEGRADED]: "AI assistant is running with limited capabilities",
+  [AI_STATUS.BUSY]: "AI assistant is answering...",
+  [AI_STATUS.NOT_CONFIGURED]: "AI service is not configured",
+  [AI_STATUS.RESOURCE_INSUFFICIENT]: "AI server has insufficient memory for the configured model",
+  [AI_STATUS.UNAVAILABLE]: "AI service is temporarily unavailable",
+  [AI_STATUS.INVALID_RESPONSE]: "Unable to verify AI service status",
+  [AI_STATUS.NETWORK_FAILURE]: "Unable to reach AI service",
 };
 
 export const aiStatusLabel = (status) =>
   AI_STATUS_LABELS[status] || AI_STATUS_LABELS[AI_STATUS.UNKNOWN];
 
-export function classifyAIHealth(body, httpStatus) {
-  if (!body || typeof body !== "object") {
-    return AI_STATUS.UNAVAILABLE;
+export function normalizeAICapabilities(body, status) {
+  if (![AI_STATUS.READY, AI_STATUS.DEGRADED, AI_STATUS.BUSY].includes(status)) {
+    return { ...EMPTY_AI_CAPABILITIES };
   }
-  // modelReady is the authoritative signal (model + tokenizer + warm-up all OK).
-  // `success` alone is NOT sufficient: the health endpoint answers success for a
-  // live *process* whose model may still be loading or may have failed.
-  if (body.modelReady === true && httpStatus < 400) return AI_STATUS.READY;
-  if (body.permanentFailure || body.model?.permanentFailure) return AI_STATUS.UNAVAILABLE;
-
-  const code = String(body.errorCode || body.errorStage || body.error?.code || "").toUpperCase();
-  if (code === "MODEL_RESOURCE_INSUFFICIENT" || code === "OUT_OF_MEMORY") return AI_STATUS.RESOURCE_INSUFFICIENT;
-  if (code === "AI_SERVICE_UNREACHABLE" || code === "UPSTREAM_TIMEOUT" || code === "CONFIG_FAILED") return AI_STATUS.UNAVAILABLE;
-  const state = String(body.modelState || body.lifecycle || body.status || "").toLowerCase();
-  if (["error", "failed", "model_failed", "model_unavailable", "missing_config", "unreachable"].includes(state)) {
-    return AI_STATUS.UNAVAILABLE;
+  const raw = body?.capabilities;
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    return {
+      chat: Boolean(raw.chat),
+      timetable: Boolean(raw.timetable),
+      subjects: Boolean(raw.subjects),
+      quizAnalysis: Boolean(raw.quizAnalysis),
+      studyPlanning: Boolean(raw.studyPlanning ?? raw.timetable),
+      research: Boolean(raw.research),
+    };
   }
-  if (["not_started", "starting", "cold", "model_not_ready", "boot"].includes(state)) return AI_STATUS.STARTING;
-  if (["downloading", "loading", "warming", "model_loading"].includes(state)) {
-    return AI_STATUS.LOADING;
+  // Legacy ready payloads without explicit `capabilities` object.
+  if (status === AI_STATUS.READY) {
+    return {
+      chat: true,
+      timetable: true,
+      subjects: true,
+      quizAnalysis: true,
+      studyPlanning: true,
+      research: body?.searchConfigured !== false,
+    };
   }
-  if (["busy"].includes(state)) return AI_STATUS.BUSY;
-  if (["ready", "model_ready", "degraded"].includes(state)) return AI_STATUS.UNAVAILABLE;
-  if (state) return AI_STATUS.UNAVAILABLE;
-  return AI_STATUS.UNKNOWN;
+  return { ...EMPTY_AI_CAPABILITIES, chat: status === AI_STATUS.DEGRADED };
 }
 
-// Returns { status, label, detail } — never throws, so a health blip cannot
-// break the chat UI.
+export function describeAICapabilities(modelStatus) {
+  const status = modelStatus?.status || AI_STATUS.UNKNOWN;
+  const caps = modelStatus?.capabilities || EMPTY_AI_CAPABILITIES;
+
+  if (status === AI_STATUS.READY || status === AI_STATUS.DEGRADED || status === AI_STATUS.BUSY) {
+    if (caps.timetable && caps.subjects && caps.quizAnalysis && caps.research) {
+      return "Connected to your timetable, subjects, quiz scores, and verified research.";
+    }
+    const active = [];
+    if (caps.timetable) active.push("timetable");
+    if (caps.subjects) active.push("subjects");
+    if (caps.quizAnalysis) active.push("quiz scores");
+    if (caps.research) active.push("verified research");
+    if (active.length > 0) {
+      const joined =
+        active.length === 1
+          ? active[0]
+          : `${active.slice(0, -1).join(", ")}, and ${active[active.length - 1]}`;
+      return `Connected to your ${joined}.`;
+    }
+    if (caps.chat) {
+      return "AI chat is active with limited student record integrations.";
+    }
+  }
+  if (status === AI_STATUS.STARTING || status === AI_STATUS.LOADING) {
+    return "AI assistant is warming up — student tools will connect once ready.";
+  }
+  if (status === AI_STATUS.NOT_CONFIGURED) {
+    return "AI service is not configured on this server yet.";
+  }
+  if (status === AI_STATUS.INVALID_RESPONSE) {
+    return "Unable to verify AI service status right now.";
+  }
+  if (status === AI_STATUS.NETWORK_FAILURE) {
+    return "Network error while checking EduNova AI status. Check your connection.";
+  }
+  if (status === AI_STATUS.UNAVAILABLE || status === AI_STATUS.RESOURCE_INSUFFICIENT) {
+    return "AI service is temporarily unavailable. Student integrations will resume when online.";
+  }
+  return "Verifying AI service and student data connections...";
+}
+
+export function classifyAIHealth(body, httpStatus) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return httpStatus >= 500 && httpStatus !== 502
+      ? AI_STATUS.UNAVAILABLE
+      : AI_STATUS.INVALID_RESPONSE;
+  }
+
+  // Permanent/resource failures always take precedence over optimistic fields.
+  if (body.permanentFailure || body.model?.permanentFailure) {
+    const permCode = String(body.errorCode || body.errorStage || body.error?.code || "").toUpperCase();
+    if (permCode === "MODEL_RESOURCE_INSUFFICIENT" || permCode === "OUT_OF_MEMORY") {
+      return AI_STATUS.RESOURCE_INSUFFICIENT;
+    }
+    if (["CONFIG_FAILED", "NOT_CONFIGURED", "AUTH_NOT_CONFIGURED"].includes(permCode) || body.configured === false) {
+      return AI_STATUS.NOT_CONFIGURED;
+    }
+    return AI_STATUS.UNAVAILABLE;
+  }
+
+  const normalizedStatus = String(body.status || "").toLowerCase();
+  const code = String(body.errorCode || body.errorStage || body.error?.code || "").toUpperCase();
+  const state = String(body.modelState || body.lifecycle || body.status || "").toLowerCase();
+
+  if (code === "INVALID_STATUS_RESPONSE" || code === "INVALID_UPSTREAM" || normalizedStatus === "invalid_response") {
+    return AI_STATUS.INVALID_RESPONSE;
+  }
+
+  if (body.modelReady === true && httpStatus < 400) {
+    if (normalizedStatus === "degraded") return AI_STATUS.DEGRADED;
+    return AI_STATUS.READY;
+  }
+
+  if (
+    body.configured === false ||
+    normalizedStatus === "not_configured" ||
+    ["CONFIG_FAILED", "NOT_CONFIGURED", "AUTH_NOT_CONFIGURED"].includes(code) ||
+    ["config_failed", "missing_config", "not_configured"].includes(state)
+  ) {
+    return AI_STATUS.NOT_CONFIGURED;
+  }
+
+  if (code === "MODEL_RESOURCE_INSUFFICIENT" || code === "OUT_OF_MEMORY") {
+    return AI_STATUS.RESOURCE_INSUFFICIENT;
+  }
+
+  if (["not_started", "starting", "cold", "model_not_ready", "boot"].includes(state) || code === "MODEL_NOT_READY") {
+    return AI_STATUS.STARTING;
+  }
+  if (["downloading", "loading", "warming", "model_loading"].includes(state) || code === "MODEL_LOADING") {
+    return AI_STATUS.LOADING;
+  }
+  if (["busy"].includes(state) || code === "MODEL_BUSY") {
+    return AI_STATUS.BUSY;
+  }
+  if (normalizedStatus === "degraded" && httpStatus < 400) {
+    return AI_STATUS.DEGRADED;
+  }
+  if (
+    ["AI_SERVICE_UNREACHABLE", "AI_SERVICE_UNAVAILABLE", "UPSTREAM_TIMEOUT", "AUTH_FAILED", "PROVIDER_UNAVAILABLE", "PROVIDER_AUTH_FAILED"].includes(code) ||
+    ["error", "failed", "model_failed", "model_unavailable", "unreachable", "unavailable"].includes(state)
+  ) {
+    return AI_STATUS.UNAVAILABLE;
+  }
+
+  // Reject unverified 2xx payloads missing all recognized status indicators.
+  const hasKnownIndicator =
+    typeof body.modelReady === "boolean" ||
+    Boolean(body.modelState) ||
+    Boolean(body.status) ||
+    Boolean(body.error);
+  if (!hasKnownIndicator) {
+    return AI_STATUS.INVALID_RESPONSE;
+  }
+
+  if (httpStatus === 401 || httpStatus === 403) return AI_STATUS.UNAVAILABLE;
+  if (state) return AI_STATUS.UNAVAILABLE;
+  return AI_STATUS.INVALID_RESPONSE;
+}
+
+// Returns { status, label, detail, capabilities, provider, configured } — never throws.
 export const getAIStatus = async () => {
   try {
     const res = await API.get("/ai/health", {
@@ -531,17 +676,38 @@ export const getAIStatus = async () => {
       timeout: 12_000,
       validateStatus: () => true,
     });
-    const status = classifyAIHealth(res.data, res.status);
+    const data = res.data && typeof res.data === "object" && !Array.isArray(res.data) ? res.data : null;
+    const status = classifyAIHealth(data, res.status);
+    const code = data?.errorCode || data?.errorStage || data?.error?.code || (data ? null : "INVALID_STATUS_RESPONSE");
+    const capabilities = normalizeAICapabilities(data, status);
+    const rawDetail =
+      describeModelProgress(data?.model) ||
+      safeAIErrorDetail(data?.degradedReason) ||
+      (status === AI_STATUS.INVALID_RESPONSE
+        ? ""
+        : aiErrorCodeMessage(code, data?.errorMessage || data?.error?.message));
+
     return {
       status,
       label: aiStatusLabel(status),
-      terminal: Boolean(res.data?.permanentFailure || res.data?.model?.permanentFailure),
-      // Progress detail (e.g. "downloading 42%") for the starting state only.
-      code: res.data?.errorCode || res.data?.errorStage || res.data?.error?.code || null,
-      detail: describeModelProgress(res.data?.model) || safeAIErrorDetail(res.data?.errorMessage || res.data?.error?.message),
+      configured: data?.configured ?? status !== AI_STATUS.NOT_CONFIGURED,
+      provider: typeof data?.provider === "string" ? data.provider : null,
+      capabilities,
+      terminal: Boolean(data?.permanentFailure || data?.model?.permanentFailure),
+      code,
+      detail: rawDetail && rawDetail !== aiStatusLabel(status) ? rawDetail : "",
     };
   } catch {
-    return { status: AI_STATUS.UNAVAILABLE, label: AI_ERROR_MESSAGES.NETWORK_ERROR, code: "NETWORK_ERROR", detail: "" };
+    return {
+      status: AI_STATUS.NETWORK_FAILURE,
+      label: aiStatusLabel(AI_STATUS.NETWORK_FAILURE),
+      configured: null,
+      provider: null,
+      capabilities: { ...EMPTY_AI_CAPABILITIES },
+      terminal: false,
+      code: "NETWORK_ERROR",
+      detail: AI_ERROR_MESSAGES.NETWORK_ERROR,
+    };
   }
 };
 
@@ -642,6 +808,27 @@ export const streamAIEngine = async ({
     }
     throw Object.assign(new Error(aiRequestErrorMessage(response.status, detail, code)), { code: code || null, status: response.status });
   }
+  const contentType = String(response.headers.get("content-type") || "").toLowerCase();
+  if (contentType.includes("application/json")) {
+    cleanup();
+    let data = null;
+    try {
+      data = await response.json();
+    } catch {
+      throw Object.assign(new Error(AI_ERROR_MESSAGES.INVALID_MODEL_OUTPUT), { code: "INVALID_MODEL_OUTPUT" });
+    }
+    const text = String(data?.message || data?.reply || data?.response || "").trim();
+    if (!data || data.success === false || !text) {
+      const { code, message: detail } = extractAIError(data);
+      throw Object.assign(new Error(aiRequestErrorMessage(502, detail, code || "INVALID_MODEL_OUTPUT")), {
+        code: code || "INVALID_MODEL_OUTPUT",
+      });
+    }
+    const normalized = { ...data, type: "answer", message: text, reply: text };
+    onEvent?.(normalized);
+    return normalized;
+  }
+
   if (!response.body) {
     cleanup();
     throw new Error("This browser cannot receive the AI response stream");

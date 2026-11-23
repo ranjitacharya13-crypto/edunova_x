@@ -706,7 +706,7 @@ class Settings:
         # set (see agent/tools/web.py).
         if self.web_search_api_key:
             return bool(self.web_search_provider)
-        return self.web_search_provider in {"auto", "duckduckgo", "github"}
+        return self.web_search_provider in {"auto", "duckduckgo", "crossref", "wikipedia", "github"}
 
     def llm_safe_diagnostics(self) -> dict[str, object]:
         host = ""

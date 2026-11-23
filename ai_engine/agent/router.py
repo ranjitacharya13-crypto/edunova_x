@@ -90,7 +90,8 @@ _RE_QUIZ_ACTION = re.compile(
     re.IGNORECASE,
 )
 _RE_PLAN_ACTION = re.compile(
-    r"\b(create|make|generate|prepare|plan|build|draft)\b[\s\S]{0,50}?\b(study plan|revision plan|study schedule|timetable for studying|exam plan)\b",
+    r"\b(create|make|generate|prepare|plan|build|draft)\b[\s\S]{0,60}?\b(study plan|revision plan|study schedule|timetable for studying|exam study plan|exam plan|preparation plan|revision schedule)\b"
+    r"|\bexam study plan\b",
     re.IGNORECASE,
 )
 _RE_WEB = re.compile(
@@ -98,7 +99,8 @@ _RE_WEB = re.compile(
     r"|\bnews\b|\bheadlines\b"
     r"|\bnews\b[\s\S]{0,30}?\b(about|on|in)\b"
     r"|\bwho won\b|\bcurrent affairs\b|\bwhat'?s new in\b|\brecent advances in\b|\bupcoming (release|version)\b"
-    r"|\b(latest|current|new(est)?)\b[\s\S]{0,20}?\bversion\b|\bwhat version\b|\bhow much (does|is)\b[\s\S]{0,40}?\b(cost|price)\b",
+    r"|\b(latest|current|new(est)?)\b[\s\S]{0,20}?\bversion\b|\bwhat version\b|\bhow much (does|is)\b[\s\S]{0,40}?\b(cost|price)\b"
+    r"|\b(verified research|research papers?|scientific stud(y|ies)|peer[- ]reviewed|cite sources?|find sources?)\b",
     re.IGNORECASE,
 )
 _RE_SCHEDULE_TODAY = re.compile(
@@ -108,13 +110,18 @@ _RE_SCHEDULE_TODAY = re.compile(
     re.IGNORECASE,
 )
 _RE_SCHEDULE_GENERAL = re.compile(
-    r"\b(timetable|schedule|weekly classes|class schedule|periods?)\b"
+    r"\b(timetable|schedule|weekly classes|class schedule|periods?|upcoming classes)\b"
     r"|\bclasses\b[\s\S]{0,25}?\b(tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
     re.IGNORECASE,
 )
 _RE_ASSIGNMENTS = re.compile(r"\bassignments?\b|\bhomework\b|\bdeadlines?\b|\bsubmissions?\b", re.IGNORECASE)
 _RE_EXAMS = re.compile(r"\bexams?\b|\bupcoming tests?\b|\bexam (dates?|schedule)\b", re.IGNORECASE)
 _RE_ATTENDANCE = re.compile(r"\battendance\b|\bpresent\b[\s\S]{0,10}?\brate\b|\babsent\b", re.IGNORECASE)
+_RE_QUIZ_DETAIL = re.compile(
+    r"\b(analy[sz]e|review|explain|check|inspect|break down|how did i do)\b[\s\S]{0,35}?\b(last|latest|recent|previous|my)?\s*(quiz|quizzes|attempt|attempts|test|scores?|results?)\b"
+    r"|\b(last|latest|recent|previous)\s+quiz\b",
+    re.IGNORECASE,
+)
 _RE_WEAK_STRONG = re.compile(
     r"\b(weak|weakest|strong|strongest|worst|best)\b[\s\S]{0,25}?\b(subjects?|topics?|areas?)\b"
     r"|\b(subjects?|topics?)\b[\s\S]{0,30}?\b(weak|struggling|poor|bad|fail(ed|ing)?|improve)\b"
@@ -135,7 +142,10 @@ _RE_MATERIALS = re.compile(
     r"\b(study materials?|learning materials?|notes|recordings?|files?|resources?)\b", re.IGNORECASE
 )
 _RE_SYLLABUS = re.compile(r"\bsyllabus\b|\bcurriculum\b|\btopics? to cover\b", re.IGNORECASE)
-_RE_SUBJECTS = re.compile(r"\bmy subjects?\b|\benrolled\b|\bcourses?\b", re.IGNORECASE)
+_RE_SUBJECTS = re.compile(
+    r"\b(my|available|what) subjects?\b|\benrolled\b|\bmy courses?\b",
+    re.IGNORECASE,
+)
 _RE_PROFILE = re.compile(r"\bmy profile\b|\bwho am i\b|\bmy (name|grade|class|account)\b", re.IGNORECASE)
 _RE_GOALS = re.compile(r"\bmy goals?\b|\bmy targets?\b|\bmy notes\b", re.IGNORECASE)
 _RE_EVENTS = re.compile(r"\bupcoming events?\b|\bnotifications?\b|\bannouncements?\b", re.IGNORECASE)
@@ -215,6 +225,13 @@ class IntentRouter:
         # 2) Explicitly student-specific data questions (never web/model guess).
         if _RE_SCHEDULE_TODAY.search(lowered):
             return RouteDecision(intent="schedule_today", tools=("get_today_schedule",), reason="today schedule")
+        if _RE_QUIZ_DETAIL.search(lowered):
+            return RouteDecision(
+                intent="performance_analysis",
+                tools=("get_quiz_results", "get_quiz_history", "get_progress", "get_subjects"),
+                subject=subject,
+                reason="detailed quiz analysis",
+            )
         if _RE_WEAK_STRONG.search(lowered):
             tools = ["get_quiz_history", "get_progress", "get_subjects"]
             if subject:
@@ -245,7 +262,7 @@ class IntentRouter:
         if _RE_SCHEDULE_GENERAL.search(lowered) and _RE_STUDENT_CONTEXT.search(lowered):
             return RouteDecision(intent="schedule_general", tools=("get_timetable",), reason="general schedule")
         if _RE_SUBJECTS.search(lowered):
-            return RouteDecision(intent="subjects", tools=("get_subjects",), reason="subjects")
+            return RouteDecision(intent="subjects", tools=("get_subjects", "get_syllabus", "get_progress"), subject=subject, reason="subjects")
         if _RE_PROFILE.search(lowered):
             return RouteDecision(intent="profile", tools=("get_student_profile",), reason="profile")
         if _RE_GOALS.search(lowered):
@@ -946,14 +963,24 @@ async def run_fast_path(
             if (not observation.success) or plan_backend_error:
                 raise LLMResponseError("Study plan could not be saved", status_code=503, error_type=observation.error_code or "DATABASE_FAILED")
             elif observation.observation.get("requiresConfirmation"):
-                first = plan["schedule"][0]
+                schedule_lines = "\n".join(
+                    f"- **{item['day']} ({item['time']})** — *{item['subject']}*: {item['topic']} ({item['task']})"
+                    for item in plan["schedule"]
+                )
                 answer = (
-                    f"I've prepared a {len(plan['schedule'])}-day study plan: \"{plan['title']}\".\n"
-                    f"It starts with **{first['day']}**: {first['topic']} ({first['task']}).\n\n"
+                    f"I've prepared a {len(plan['schedule'])}-day study plan: **\"{plan['title']}\"**.\n\n"
+                    f"{schedule_lines}\n\n"
                     "Confirm below to save it to EduNova."
                 )
             else:
-                answer = f"Your study plan \"{plan['title']}\" ({len(plan['schedule'])} days) has been saved to EduNova."
+                schedule_lines = "\n".join(
+                    f"- **{item['day']} ({item['time']})** — *{item['subject']}*: {item['topic']} ({item['task']})"
+                    for item in plan["schedule"]
+                )
+                answer = (
+                    f"Your study plan **\"{plan['title']}\"** ({len(plan['schedule'])} days) has been saved to EduNova:\n\n"
+                    f"{schedule_lines}"
+                )
 
 
     else:  # student data retrieval + synthesis
@@ -968,7 +995,9 @@ async def run_fast_path(
             tool_context=tool_context,
         )
         convo = _format_recent_conversation(conversation, max_turns=3)
-        db_system = _DB_SYSTEM + "\nEDUNOVA DATABASE FACTS (authoritative; never invent beyond these):\n" + (_format_db_facts(state) or "(no facts returned)") + (f"\nAR educational context: {educational_text}" if educational_text else "")
+        ctx_tokens = int(getattr(settings, "local_model_ctx_size", 2048) or 2048)
+        facts_budget = max(1200, (ctx_tokens // 2) * 3)
+        db_system = _DB_SYSTEM + "\nEDUNOVA DATABASE FACTS (authoritative; never invent beyond these):\n" + (_format_db_facts(state, budget=facts_budget) or "(no facts returned)") + (f"\nAR educational context: {educational_text}" if educational_text else "")
         user_prompt = goal + (f"\n\n(Conversation so far:\n{convo})" if convo else "")
         await events.emit("agent.generating", iteration=1)
         answer = await _generate_streaming(

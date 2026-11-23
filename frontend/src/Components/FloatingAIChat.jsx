@@ -19,32 +19,79 @@ const CHAT_WIDTH = 400;
 const CHAT_HEIGHT = 600;
 const CHAT_GAP = 12;
 
+const SESSION_CHAT_KEY = "eduNova_ai_session_v1";
+
 const QUICK_PROMPTS = [
   {
     id: "today-classes",
     title: "What classes do I have today?",
-    prompt: "What classes do I have today according to my timetable?",
+    prompt: "What classes do I have today?",
     icon: BookOpenIcon,
   },
   {
     id: "study-recommendation",
     title: "What should I study today?",
-    prompt: "What should I study today based on my weak topics and syllabus?",
+    prompt: "What should I study today?",
     icon: SparkleIcon,
   },
   {
     id: "exam-study-plan",
     title: "Make me an exam study plan",
-    prompt: "Make me a study plan for my upcoming exam based on my weak topics.",
+    prompt: "Create a 5-day exam study plan based on my syllabus and weak topics.",
     icon: ClipboardIcon,
   },
   {
     id: "quiz-analysis",
     title: "Analyze my last quiz",
-    prompt: "Why did I perform badly in my last physics quiz?",
+    prompt: "Analyze my last quiz.",
     icon: DocumentIcon,
   },
 ];
+
+function currentSessionUserKey() {
+  if (typeof window === "undefined") return "anon";
+  try {
+    const token = localStorage.getItem("token") || "";
+    return token ? token.slice(-16) : "anon";
+  } catch {
+    return "anon";
+  }
+}
+
+function loadSessionChat() {
+  if (typeof window === "undefined") return { messages: [], conversationId: null };
+  try {
+    const raw = sessionStorage.getItem(`${SESSION_CHAT_KEY}:${currentSessionUserKey()}`);
+    if (!raw) return { messages: [], conversationId: null };
+    const parsed = JSON.parse(raw);
+    return {
+      messages: Array.isArray(parsed?.messages) ? parsed.messages.slice(-40) : [],
+      conversationId: typeof parsed?.conversationId === "string" ? parsed.conversationId : null,
+    };
+  } catch {
+    return { messages: [], conversationId: null };
+  }
+}
+
+function saveSessionChat(messages, conversationId) {
+  if (typeof window === "undefined") return;
+  try {
+    const key = `${SESSION_CHAT_KEY}:${currentSessionUserKey()}`;
+    if (!messages || messages.length === 0) {
+      sessionStorage.removeItem(key);
+      return;
+    }
+    sessionStorage.setItem(
+      key,
+      JSON.stringify({
+        messages: messages.slice(-40),
+        conversationId: conversationId || null,
+      })
+    );
+  } catch {
+    // sessionStorage may be unavailable in restricted contexts
+  }
+}
 
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
@@ -132,9 +179,13 @@ if (typeof window !== "undefined") {
 }
 
 export default function FloatingAIChat({ feature = "dashboard" }) {
+  const initialSession = useRef(null);
+  if (!initialSession.current) {
+    initialSession.current = loadSessionChat();
+  }
   const [isOpen, setIsOpen] = useState(false);
   const [input, setInput] = useState("");
-  const [messages, setMessages] = useState([]);
+  const [messages, setMessages] = useState(() => initialSession.current.messages);
   const [loading, setLoading] = useState(false);
   const [agentStatus, setAgentStatus] = useState("");
   const [showInfo, setShowInfo] = useState(false);
@@ -163,13 +214,18 @@ export default function FloatingAIChat({ feature = "dashboard" }) {
   // Lets a new question, a close, or an unmount cancel the in-flight request
   // instead of leaving the server generating for an answer nobody will read.
   const abortRef = useRef(null);
+  const submittingRef = useRef(false);
   const currentPosRef = useRef(position);
   const isOpenRef = useRef(isOpen);
   const rafRef = useRef(null);
-  const conversationIdRef = useRef(null);
+  const conversationIdRef = useRef(initialSession.current.conversationId);
 
   currentPosRef.current = position;
   isOpenRef.current = isOpen;
+
+  useEffect(() => {
+    saveSessionChat(messages, conversationIdRef.current);
+  }, [messages]);
 
   useEffect(() => {
     let timeoutId;
@@ -225,8 +281,9 @@ export default function FloatingAIChat({ feature = "dashboard" }) {
     async (messageText, options = {}) => {
       const { appendUser = true, errorToRemove = null } = options;
       const userMessage = String(messageText || "").trim();
-      if (!userMessage || loading) return;
+      if (!userMessage || loading || submittingRef.current) return;
 
+      submittingRef.current = true;
       autoScrollRef.current = true;
       if (errorToRemove) {
         setMessages((prev) => prev.filter((msg) => msg.id !== errorToRemove));
@@ -306,6 +363,7 @@ export default function FloatingAIChat({ feature = "dashboard" }) {
           },
         ]);
       } finally {
+        submittingRef.current = false;
         if (abortRef.current === controller) abortRef.current = null;
         setLoading(false);
         setStreamingText("");
@@ -314,6 +372,17 @@ export default function FloatingAIChat({ feature = "dashboard" }) {
     },
     [loading, feature]
   );
+
+  const clearConversation = useCallback(() => {
+    abortRef.current?.abort();
+    submittingRef.current = false;
+    conversationIdRef.current = null;
+    setMessages([]);
+    setStreamingText("");
+    setAgentStatus("");
+    setLoading(false);
+    saveSessionChat([], null);
+  }, []);
 
   // Cancel any in-flight generation when the chat unmounts, so a navigation
   // away does not leave the model generating an answer with no reader.
@@ -564,14 +633,47 @@ export default function FloatingAIChat({ feature = "dashboard" }) {
                 <p className="truncate text-xs font-medium text-slate-500 dark:text-slate-300">
                   {ASSISTANT_SUBTITLE}
                 </p>
-                <div className="mt-1 flex items-center gap-1.5 text-[11px] font-medium text-teal-700 dark:text-teal-200">
-                  <span className="edunova-ai-status-dot" aria-hidden="true" />
-                  <span>{loading && agentStatus ? agentStatus : (modelStatus.detail || modelStatus.label)}</span>
+                <div
+                  className={`mt-1 flex items-center gap-1.5 text-[11px] font-medium ${
+                    modelStatus.isReady
+                      ? "text-teal-700 dark:text-teal-200"
+                      : modelStatus.isDegraded || modelStatus.isStarting || modelStatus.isBusy
+                        ? "text-amber-700 dark:text-amber-200"
+                        : modelStatus.isUnavailable
+                          ? "text-rose-600 dark:text-rose-300"
+                          : "text-slate-500 dark:text-slate-300"
+                  }`}
+                  title={modelStatus.detail || modelStatus.label}
+                >
+                  <span
+                    className={`h-2 w-2 shrink-0 rounded-full ${
+                      modelStatus.isReady
+                        ? "bg-emerald-500 shadow-[0_0_0_3px_rgba(16,185,129,0.18)]"
+                        : modelStatus.isDegraded || modelStatus.isStarting || modelStatus.isBusy
+                          ? "bg-amber-400 shadow-[0_0_0_3px_rgba(251,191,36,0.2)]"
+                          : modelStatus.isUnavailable
+                            ? "bg-rose-500 shadow-[0_0_0_3px_rgba(244,63,94,0.18)]"
+                            : "bg-slate-400"
+                    }`}
+                    aria-hidden="true"
+                  />
+                  <span className="truncate">{loading && agentStatus ? agentStatus : modelStatus.label}</span>
                 </div>
               </div>
             </div>
 
             <div className="flex shrink-0 items-center gap-1.5">
+              {hasConversation && (
+                <button
+                  type="button"
+                  onClick={clearConversation}
+                  disabled={loading}
+                  className="inline-flex h-8 items-center justify-center rounded-full border border-slate-200/80 bg-white/80 px-2.5 text-[11px] font-semibold text-slate-600 transition hover:border-teal-200 hover:text-teal-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-400/70 disabled:opacity-50 dark:border-white/10 dark:bg-white/5 dark:text-slate-300 dark:hover:text-white"
+                  aria-label="Clear EduNova AI conversation"
+                >
+                  Clear
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => setShowInfo((value) => !value)}
@@ -594,7 +696,12 @@ export default function FloatingAIChat({ feature = "dashboard" }) {
 
           {showInfo && (
             <div className="absolute right-4 top-[4.25rem] z-10 w-[min(310px,calc(100%-2rem))] rounded-2xl border border-teal-100 bg-white/95 p-3 text-xs leading-relaxed text-slate-600 shadow-xl backdrop-blur-md dark:border-white/10 dark:bg-slate-900/95 dark:text-slate-300">
-              EduNova AI is a unified data-aware assistant. It intelligently accesses your timetable, syllabus, quiz performance, and study progress from EduNova and supplements with verified web research.
+              <p>{modelStatus.connectionSummary}</p>
+              {modelStatus.detail && (
+                <p className="mt-1.5 text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                  {modelStatus.detail}
+                </p>
+              )}
             </div>
           )}
         </header>
@@ -606,7 +713,11 @@ export default function FloatingAIChat({ feature = "dashboard" }) {
           aria-live="polite"
         >
           {!hasConversation ? (
-            <WelcomeState onPrompt={(prompt) => submitMessage(prompt)} loading={loading} />
+            <WelcomeState
+              onPrompt={(prompt) => submitMessage(prompt)}
+              loading={loading}
+              connectionSummary={modelStatus.connectionSummary}
+            />
           ) : (
             <div className="space-y-4">
               {messages.map((message) => (
@@ -692,14 +803,24 @@ export default function FloatingAIChat({ feature = "dashboard" }) {
           <span className="absolute -right-0.5 -top-0.5 rounded-full border border-white/80 bg-white px-1.5 py-0.5 text-[9px] font-black tracking-[0.12em] text-teal-700 shadow-sm dark:border-slate-800 dark:bg-slate-900 dark:text-teal-200">
             AI
           </span>
-          <span className="absolute bottom-1 right-1 h-3.5 w-3.5 rounded-full border-2 border-white bg-emerald-400 shadow-[0_0_0_4px_rgba(52,211,153,0.16)] dark:border-slate-950" />
+          <span
+            className={`absolute bottom-1 right-1 h-3.5 w-3.5 rounded-full border-2 border-white dark:border-slate-950 ${
+              modelStatus.isReady
+                ? "bg-emerald-400 shadow-[0_0_0_4px_rgba(52,211,153,0.16)]"
+                : modelStatus.isUnavailable
+                  ? "bg-rose-400 shadow-[0_0_0_4px_rgba(244,63,94,0.16)]"
+                  : modelStatus.isDegraded || modelStatus.isStarting || modelStatus.isBusy
+                    ? "bg-amber-400 shadow-[0_0_0_4px_rgba(251,191,36,0.16)]"
+                    : "bg-teal-400 shadow-[0_0_0_4px_rgba(45,212,191,0.16)]"
+            }`}
+          />
         </span>
       </button>
     </>
   );
 }
 
-function WelcomeState({ onPrompt, loading }) {
+function WelcomeState({ onPrompt, loading, connectionSummary }) {
   return (
     <div className="flex min-h-full flex-col items-center justify-center py-4 text-center">
       <div className="relative mb-4">
@@ -709,7 +830,7 @@ function WelcomeState({ onPrompt, loading }) {
       <h3 className="text-lg font-bold text-slate-950 dark:text-white">EduNova AI</h3>
       <p className="mt-1 text-base font-semibold text-slate-800 dark:text-slate-100">Unified Data-Aware Assistant</p>
       <p className="mt-2 max-w-[18rem] text-sm leading-6 text-slate-500 dark:text-slate-400">
-        Connected to your timetable, subjects, quiz scores, and verified research.
+        {connectionSummary}
       </p>
 
       <div className="mt-5 grid w-full gap-2.5">

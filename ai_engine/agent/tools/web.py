@@ -243,11 +243,11 @@ class WebTools:
             )
 
         provider = self.settings.web_search_provider
-        if provider == "auto":
-            # Keyless-first: a configured provider key always wins; otherwise a
-            # keyless public index is used so current-information questions keep
-            # working without any account. Both providers below normalize into
-            # the same record shape and are treated as untrusted data.
+        is_auto = provider == "auto"
+        if is_auto:
+            # Keyless-first: a configured provider key always wins; otherwise
+            # try public scholarly/web indexes in priority order so verified
+            # external sources work on cloud runtimes without fabricating links.
             provider = "brave" if self.settings.web_search_api_key else "duckduckgo"
         if provider == "brave":
             results = await self._search_brave(query, max_results)
@@ -256,11 +256,34 @@ class WebTools:
         elif provider == "serper":
             results = await self._search_serper(query, max_results)
         elif provider == "duckduckgo":
-            results = await self._search_duckduckgo(query, max_results)
+            try:
+                results = await self._search_duckduckgo(query, max_results)
+            except Exception:
+                if not is_auto:
+                    raise
+                results = []
+            if is_auto and not results:
+                for fallback_name, fn in (
+                    ("crossref", self._search_crossref),
+                    ("wikipedia", self._search_wikipedia),
+                    ("github", self._search_github),
+                ):
+                    try:
+                        candidate = await fn(query, max_results)
+                        if candidate:
+                            results = candidate
+                            provider = fallback_name
+                            break
+                    except Exception:
+                        continue
+        elif provider == "crossref":
+            results = await self._search_crossref(query, max_results)
+        elif provider == "wikipedia":
+            results = await self._search_wikipedia(query, max_results)
         elif provider == "github":
             results = await self._search_github(query, max_results)
         else:
-            raise ToolInputError("Unsupported search provider; use brave, tavily, serper, duckduckgo, github, or auto")
+            raise ToolInputError("Unsupported search provider; use brave, tavily, serper, duckduckgo, crossref, wikipedia, github, or auto")
         return {"query": query, "provider": provider, "results": results}
 
     async def _search_duckduckgo(self, query: str, max_results: int) -> list[dict[str, Any]]:
@@ -306,6 +329,67 @@ class WebTools:
                 if len(rows) >= max_results:
                     break
         return rows
+
+    async def _search_crossref(self, query: str, max_results: int) -> list[dict[str, Any]]:
+        """Keyless scholarly paper search over CrossRef's public DOI API."""
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": "EduNovaAI/1.0 (+https://edunova-x.ranjitacharya13.workers.dev)",
+        }
+        async with httpx.AsyncClient(timeout=self.settings.web_request_timeout_seconds, headers=headers) as client:
+            response = await client.get(
+                "https://api.crossref.org/works",
+                params={"query": query[:240], "rows": max_results},
+            )
+            response.raise_for_status()
+            items = response.json().get("message", {}).get("items", [])
+        rows = []
+        for item in items:
+            title = item.get("title")[0] if isinstance(item.get("title"), list) and item.get("title") else item.get("title")
+            doi = item.get("DOI")
+            url = item.get("URL") or (f"https://doi.org/{doi}" if doi else "")
+            container = item.get("container-title")[0] if isinstance(item.get("container-title"), list) and item.get("container-title") else ""
+            year = None
+            issued = item.get("issued", {}).get("date-parts")
+            if isinstance(issued, list) and issued and isinstance(issued[0], list) and issued[0]:
+                year = str(issued[0][0])
+            rows.append({
+                "url": url,
+                "title": title,
+                "description": " · ".join(filter(None, [container, f"DOI: {doi}" if doi else ""])),
+                "published_date": year,
+            })
+        return self._normalize_results(rows, max_results)
+
+    async def _search_wikipedia(self, query: str, max_results: int) -> list[dict[str, Any]]:
+        """Keyless reference search via Wikipedia's public MediaWiki API."""
+        headers = {"Accept": "application/json", "User-Agent": "EduNovaAI/1.0"}
+        async with httpx.AsyncClient(timeout=self.settings.web_request_timeout_seconds, headers=headers) as client:
+            response = await client.get(
+                "https://en.wikipedia.org/w/api.php",
+                params={
+                    "action": "query",
+                    "list": "search",
+                    "srsearch": query[:240],
+                    "srlimit": max_results,
+                    "format": "json",
+                },
+            )
+            response.raise_for_status()
+            items = response.json().get("query", {}).get("search", [])
+        rows = []
+        for item in items:
+            title = str(item.get("title") or "").strip()
+            if not title:
+                continue
+            slug = title.replace(" ", "_")
+            snippet = re.sub(r"<[^>]*>", " ", str(item.get("snippet") or ""))
+            rows.append({
+                "url": f"https://en.wikipedia.org/wiki/{slug}",
+                "title": f"{title} — Wikipedia",
+                "description": snippet,
+            })
+        return self._normalize_results(rows, max_results)
 
     async def _search_github(self, query: str, max_results: int) -> list[dict[str, Any]]:
         """Keyless search over GitHub's public repository index (api.github.com).

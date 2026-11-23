@@ -4,6 +4,14 @@ const crypto = require("node:crypto");
 const auth = require("../middleware/auth");
 const { executeApplicationTool, confirmApplicationTool } = require("../services/applicationTools");
 const { educationalContext } = require("../services/arLessons");
+const {
+  resolveDirectProviderConfig,
+  normalizeUpstreamStatusPayload,
+  buildDirectProviderHealth,
+  buildCapabilities,
+  isDatabaseReady,
+  executeDirectAssistantQuery,
+} = require("../services/aiAssistantService");
 const router = express.Router();
 const buckets = new Map();
 router.use((req, res, next) => {
@@ -25,8 +33,13 @@ function aiRateLimit(req, res, next) {
   next();
 }
 function getAiBaseUrl() {
-  const url = String(process.env.AI_ENGINE_URL || (process.env.NODE_ENV !== "production" ? "http://127.0.0.1:8001" : "")).trim();
-  return url.replace(/\/+$/, "");
+  if ("AI_ENGINE_URL" in process.env) {
+    return String(process.env.AI_ENGINE_URL || "").trim().replace(/\/+$/, "");
+  }
+  if (resolveDirectProviderConfig()?.configured) {
+    return "";
+  }
+  return process.env.NODE_ENV !== "production" ? "http://127.0.0.1:8001" : "";
 }
 // Logged once at boot so a missing AI gateway target is visible in the deploy
 // log instead of only in a student's 503.
@@ -88,6 +101,58 @@ async function readLimited(stream, max = 2 * 1024 * 1024) {
   }
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
+async function runDirectProviderChat({ req, res, directConfig, message, conversationId, context, stream, requestId }) {
+  if (!stream) {
+    const answer = await executeDirectAssistantQuery({
+      providerConfig: directConfig,
+      user: req.user,
+      message,
+      conversationId,
+      applicationContext: context,
+    });
+    return res.status(200).json({ ...answer, requestId });
+  }
+
+  res.status(200).set({
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    "X-Accel-Buffering": "no",
+    Connection: "keep-alive",
+  });
+  res.flushHeaders();
+
+  const writeSse = (event) => {
+    if (!res.writableEnded && !res.destroyed) {
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+    }
+  };
+
+  try {
+    const finalEvent = await executeDirectAssistantQuery({
+      providerConfig: directConfig,
+      user: req.user,
+      message,
+      conversationId,
+      applicationContext: context,
+      onEvent: async (evt) => writeSse(evt),
+    });
+    writeSse({ ...finalEvent, requestId });
+    if (!res.writableEnded && !res.destroyed) res.end();
+  } catch (err) {
+    writeSse({
+      type: "error",
+      success: false,
+      error: {
+        code: err.code || "INFERENCE_FAILED",
+        message: err.message || "AI service is temporarily unavailable",
+      },
+      message: err.message || "AI service is temporarily unavailable",
+      requestId,
+    });
+    if (!res.writableEnded && !res.destroyed) res.end();
+  }
+}
+
 async function handleAgentChat(req, res) {
   const requestId = req.requestId;
   res.setHeader("X-Request-Id", requestId);
@@ -95,29 +160,93 @@ async function handleAgentChat(req, res) {
   const conversationId = req.body?.conversationId;
   if (typeof message !== "string" || !message.trim()) return fail(res, 400, "INVALID_INPUT", "message is required", requestId);
   if (message.length > 12000) return fail(res, 413, "INVALID_INPUT", "message is too long", requestId);
-  if (conversationId && (typeof conversationId !== "string" || !/^[A-Za-z0-9_-]{16,100}$/.test(conversationId))) return fail(res, 400, "INVALID_INPUT", "conversationId is invalid", requestId);
+  if (conversationId && (typeof conversationId !== "string" || !/^[A-Za-z0-9_-]{8,100}$/.test(conversationId))) return fail(res, 400, "INVALID_INPUT", "conversationId is invalid", requestId);
+
   const base = getAiBaseUrl();
-  if (!base) return fail(res, 503, "CONFIG_FAILED", "AI service endpoint is not configured", requestId);
-  if (process.env.NODE_ENV === "production" && !process.env.AI_INTERNAL_TOKEN) return fail(res, 503, "AUTH_FAILED", "Internal AI authentication is not configured", requestId);
-  // POST /ai/stream is always SSE; POST /ai/chat streams when the client asks for it.
+  const directConfig = resolveDirectProviderConfig();
   const stream = req.path === "/stream" || (req.path === "/chat" && /text\/event-stream/i.test(req.headers.accept || ""));
+
+  if (directConfig?.invalidConfig && !base) {
+    return fail(res, 503, "CONFIG_FAILED", directConfig.error, requestId);
+  }
+  if (!base && !directConfig?.configured) {
+    return fail(res, 503, "CONFIG_FAILED", "AI service endpoint is not configured", requestId);
+  }
+  if (base && process.env.NODE_ENV === "production" && !process.env.AI_INTERNAL_TOKEN && !directConfig?.configured) {
+    return fail(res, 503, "AUTH_FAILED", "Internal AI authentication is not configured", requestId);
+  }
+
   const controller = new AbortController();
   const started = Date.now();
   res.on("close", () => { if (!res.writableEnded) controller.abort(); });
   console.info(JSON.stringify({ event: "ai.request", requestId, userId: String(req.user.id), stream }));
   try {
     const context = await applicationContext(req.user, req.body?.applicationContext);
+
+    // If AI_ENGINE_URL is unset (or internal auth is unconfigured in prod), use
+    // the configured direct OpenAI-compatible provider directly.
+    if (!base || (process.env.NODE_ENV === "production" && !process.env.AI_INTERNAL_TOKEN)) {
+      return await runDirectProviderChat({
+        req,
+        res,
+        directConfig,
+        message: message.trim(),
+        conversationId,
+        context,
+        stream,
+        requestId,
+      });
+    }
+
     // One observational probe. A permanently failed or starting service is NOT
     // a request queue, and chat must not wake/reload it. No blind POST retries:
     // replaying a tool-bearing request could duplicate writes.
     const probeStarted = Date.now();
-    const ready = await axios.get(`${base}/api/ai/ready`, { headers: internalHeaders(requestId), timeout: 8000, signal: controller.signal, validateStatus: () => true });
+    let ready;
+    try {
+      ready = await axios.get(`${base}/api/ai/ready`, { headers: internalHeaders(requestId), timeout: 8000, signal: controller.signal, validateStatus: () => true });
+    } catch (probeErr) {
+      if (directConfig?.configured) {
+        return await runDirectProviderChat({
+          req,
+          res,
+          directConfig,
+          message: message.trim(),
+          conversationId,
+          context,
+          stream,
+          requestId,
+        });
+      }
+      throw probeErr;
+    }
+
     // Hop 1->2 of the request path (Express gateway -> AI orchestrator).
     console.info(JSON.stringify({ event: "ai.hop.gateway_to_ai", requestId, readyStatus: ready.status, probeMs: Date.now() - probeStarted, modelReady: ready.data?.modelReady === true, errorStage: ready.data?.errorStage || null }));
     if (ready.status !== 200 || ready.data?.modelReady !== true) {
-      const code = ready.data?.errorStage || (ready.status === 401 ? "AUTH_FAILED" : ready.data?.permanentFailure ? "MODEL_STARTUP_FAILED" : "MODEL_NOT_READY");
-      return fail(res, ready.status === 401 ? 503 : ready.status >= 400 ? ready.status : 503, code,
-        ready.data?.lastError || `Self-hosted inference is not ready (${ready.data?.lifecycle || "unavailable"})`, requestId);
+      if (directConfig?.configured) {
+        return await runDirectProviderChat({
+          req,
+          res,
+          directConfig,
+          message: message.trim(),
+          conversationId,
+          context,
+          stream,
+          requestId,
+        });
+      }
+      const isNonJsonReady = !ready.data || typeof ready.data !== "object" || Array.isArray(ready.data);
+      const code = (!isNonJsonReady && ready.data?.errorStage) ||
+        (ready.status === 401 ? "AUTH_FAILED" :
+          ready.status === 404 ? "CONFIG_FAILED" :
+          ready.status === 502 || ready.status >= 520 ? "AI_SERVICE_UNAVAILABLE" :
+          (!isNonJsonReady && ready.data?.permanentFailure) ? "MODEL_STARTUP_FAILED" : "MODEL_NOT_READY");
+      const safeMsg = (!isNonJsonReady && (ready.data?.lastError || ready.data?.error?.message)) ||
+        (ready.status === 503 ? "AI assistant is starting up. Please try again in a moment." :
+          ready.status === 404 ? "AI service endpoint is not configured properly." :
+          "AI service is temporarily unavailable.");
+      return fail(res, ready.status === 401 || ready.status === 502 || ready.status === 404 ? 503 : ready.status >= 400 ? ready.status : 503, code, safeMsg, requestId);
     }
     const payload = { requestId, message: message.trim(), conversationId, ownerId: String(req.user.id),
       userRole: req.user.role, userName: req.user.name, userEmail: req.user.email,
@@ -194,33 +323,197 @@ router.post("/actions/:token/confirm", auth, aiRateLimit, async (req, res) => {
     res.status(result.success ? 200 : result.status || 400).json(result);
   } catch { fail(res, 500, "DATABASE_FAILED", "Action could not be saved"); }
 });
-// Observational status proxies. The API never runs the model; it relays the
-// orchestrator's real state so the frontend can show a precise message
-// (starting / resource insufficient / unreachable) instead of "Try again".
+
+// Observational status proxies with unified, honest status normalization.
 function proxyStatus(path, timeout = 10000) {
+  const isHealthOrReady = path === "/api/ai/health" || path === "/api/ai/ready";
+
   return async (req, res) => {
     const base = getAiBaseUrl();
-    if (!base) return res.status(503).json({ success: false, modelReady: false, modelState: "CONFIG_FAILED", status: "error", error: { code: "CONFIG_FAILED", message: "AI service endpoint is not configured" } });
+    const directConfig = resolveDirectProviderConfig();
+    const dbReady = isDatabaseReady();
+    const internalAuthReady = !(process.env.NODE_ENV === "production" && !process.env.AI_INTERNAL_TOKEN);
+    const offlineCaps = buildCapabilities({ chatReady: false, dbReady: false, researchReady: false });
+
+    if (!base) {
+      const directHealth = buildDirectProviderHealth(directConfig);
+      return res.status(directHealth.httpStatus).json(directHealth.payload);
+    }
+
+    if (!internalAuthReady && !directConfig?.configured && isHealthOrReady) {
+      return res.status(503).json({
+        success: false,
+        status: "not_configured",
+        configured: false,
+        provider: "edunova-ai",
+        database: dbReady ? "connected" : "disconnected",
+        modelReady: false,
+        modelState: "CONFIG_FAILED",
+        capabilities: offlineCaps,
+        errorCode: "CONFIG_FAILED",
+        error: {
+          code: "CONFIG_FAILED",
+          message: "Internal AI service authentication is not configured",
+        },
+        message: "Internal AI service authentication is not configured",
+      });
+    }
+
     try {
       const response = await axios.get(`${base}${path}`, { headers: internalHeaders(crypto.randomUUID()), timeout, validateStatus: () => true });
-      // A non-JSON body is a proxy/edge page (Render free-tier "loading",
-      // Cloudflare challenge, or a wrong AI_ENGINE_URL serving HTML). This is
-      // the classic "/api/ai/health -> 502" signature: classify it by the
-      // upstream status instead of collapsing every case into a generic 502.
-      if (!response.data || typeof response.data !== "object") {
-        if (response.status === 503) return res.status(503).json({ success: false, modelReady: false, modelState: "starting", status: "error", error: { code: "MODEL_NOT_READY", message: "The AI service is still starting (upstream returned a loading page). Try again in a moment." } });
-        if (response.status === 404) return res.status(503).json({ success: false, modelReady: false, modelState: "CONFIG_FAILED", status: "error", error: { code: "CONFIG_FAILED", message: "The AI service URL is wrong or the service is not deployed (upstream 404). Check AI_ENGINE_URL." } });
-        if (response.status === 504) return res.status(504).json({ success: false, modelReady: false, modelState: "UPSTREAM_TIMEOUT", status: "error", error: { code: "UPSTREAM_TIMEOUT", message: "The AI service did not respond in time." } });
-        return fail(res, 502, "INVALID_UPSTREAM", "AI status response is invalid");
+
+      // Non-JSON upstream bodies occur when Render/Cloudflare returns an HTML
+      // loading page (503), Bad Gateway page (502), 404 page, timeout (504),
+      // or when AI_ENGINE_URL points to a static HTML host (200).
+      if (!response.data || typeof response.data !== "object" || Array.isArray(response.data)) {
+        if (directConfig?.configured && isHealthOrReady) {
+          const directHealth = buildDirectProviderHealth(directConfig);
+          return res.status(directHealth.httpStatus).json(directHealth.payload);
+        }
+        if (response.status === 503) {
+          return res.status(503).json({
+            success: false,
+            status: "degraded",
+            configured: true,
+            provider: "edunova-ai",
+            database: dbReady ? "connected" : "disconnected",
+            modelReady: false,
+            modelState: "starting",
+            capabilities: buildCapabilities({ chatReady: false, dbReady, researchReady: false }),
+            errorCode: "MODEL_NOT_READY",
+            error: {
+              code: "MODEL_NOT_READY",
+              message: "The AI service is starting up. Please try again in a moment.",
+            },
+            message: "The AI service is starting up. Please try again in a moment.",
+          });
+        }
+        if (response.status === 404) {
+          return res.status(503).json({
+            success: false,
+            status: "not_configured",
+            configured: false,
+            provider: "edunova-ai",
+            database: dbReady ? "connected" : "disconnected",
+            modelReady: false,
+            modelState: "CONFIG_FAILED",
+            capabilities: offlineCaps,
+            errorCode: "CONFIG_FAILED",
+            error: {
+              code: "CONFIG_FAILED",
+              message: "The AI service URL is wrong or the service is not deployed (upstream 404). Check AI_ENGINE_URL.",
+            },
+            message: "The AI service URL is wrong or the service is not deployed (upstream 404). Check AI_ENGINE_URL.",
+          });
+        }
+        if (response.status === 401 || response.status === 403) {
+          return res.status(503).json({
+            success: false,
+            status: "not_configured",
+            configured: false,
+            provider: "edunova-ai",
+            database: dbReady ? "connected" : "disconnected",
+            modelReady: false,
+            modelState: "CONFIG_FAILED",
+            capabilities: offlineCaps,
+            errorCode: "AUTH_FAILED",
+            error: {
+              code: "AUTH_FAILED",
+              message: "Internal AI authentication was rejected by the upstream AI service.",
+            },
+            message: "Internal AI authentication was rejected by the upstream AI service.",
+          });
+        }
+        if (response.status === 504) {
+          return res.status(504).json({
+            success: false,
+            status: "unavailable",
+            configured: true,
+            provider: "edunova-ai",
+            database: dbReady ? "connected" : "disconnected",
+            modelReady: false,
+            modelState: "UPSTREAM_TIMEOUT",
+            capabilities: offlineCaps,
+            errorCode: "UPSTREAM_TIMEOUT",
+            error: {
+              code: "UPSTREAM_TIMEOUT",
+              message: "AI service is temporarily unavailable (upstream timed out).",
+            },
+            message: "AI service is temporarily unavailable (upstream timed out).",
+          });
+        }
+        if (response.status === 429 || response.status >= 500) {
+          return res.status(503).json({
+            success: false,
+            status: "unavailable",
+            configured: true,
+            provider: "edunova-ai",
+            database: dbReady ? "connected" : "disconnected",
+            modelReady: false,
+            modelState: "UNAVAILABLE",
+            capabilities: offlineCaps,
+            errorCode: "AI_SERVICE_UNAVAILABLE",
+            error: {
+              code: "AI_SERVICE_UNAVAILABLE",
+              message: "AI service is temporarily unavailable",
+            },
+            message: "AI service is temporarily unavailable",
+          });
+        }
+        return res.status(502).json({
+          success: false,
+          status: "invalid_response",
+          configured: true,
+          provider: "edunova-ai",
+          database: dbReady ? "connected" : "disconnected",
+          modelReady: false,
+          modelState: "INVALID_RESPONSE",
+          capabilities: offlineCaps,
+          errorCode: "INVALID_STATUS_RESPONSE",
+          error: {
+            code: "INVALID_STATUS_RESPONSE",
+            message: "Unable to verify AI service status",
+          },
+          message: "Unable to verify AI service status",
+        });
       }
+
       const data = response.data;
       const code = data.errorCode || data.errorStage || (response.status === 401 ? "AUTH_FAILED" : null);
       if (code && !data.error) data.error = { code, message: data.errorMessage || data.lastError || null };
-      res.status(response.status).json(data);
+
+      if (isHealthOrReady) {
+        if (response.status >= 400 && directConfig?.configured) {
+          const directHealth = buildDirectProviderHealth(directConfig);
+          return res.status(directHealth.httpStatus).json(directHealth.payload);
+        }
+        const normalized = normalizeUpstreamStatusPayload(data, response.status, { internalAuthReady });
+        return res.status(normalized.httpStatus).json(normalized.payload);
+      }
+
+      return res.status(response.status).json(data);
     } catch (error) {
+      if (directConfig?.configured && isHealthOrReady) {
+        const directHealth = buildDirectProviderHealth(directConfig);
+        return res.status(directHealth.httpStatus).json(directHealth.payload);
+      }
       const code = networkCode(error);
-      res.status(503).json({ success: false, modelReady: false, modelState: "UNREACHABLE", status: "error",
-        error: { code, message: code === "UPSTREAM_TIMEOUT" ? "AI service did not respond in time" : "AI service is unreachable" } });
+      const message =
+        code === "UPSTREAM_TIMEOUT"
+          ? "AI service did not respond in time"
+          : "AI service is temporarily unavailable";
+      return res.status(503).json({
+        success: false,
+        status: "unavailable",
+        configured: true,
+        provider: "edunova-ai",
+        database: dbReady ? "connected" : "disconnected",
+        modelReady: false,
+        modelState: "UNREACHABLE",
+        capabilities: offlineCaps,
+        error: { code, message },
+        message,
+      });
     }
   };
 }

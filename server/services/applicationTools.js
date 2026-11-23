@@ -24,6 +24,7 @@ const Attendance = require("../models/Attendance");
 const StudentProgress = require("../models/StudentProgress");
 const StudyPlan = require("../models/StudyPlan");
 const AiAuditLog = require("../models/AiAuditLog");
+const ARLesson = require("../models/ARLesson");
 const { assignmentAccess, roomsFor, identity, legacyShared, escapeRegex, httpError, materialAccess } = require("./access");
 const { validateToolArguments } = require("./toolValidation");
 const { createPracticeQuiz, performanceSummary } = require("./quizService");
@@ -144,20 +145,109 @@ async function getStudentProfile(user) {
   };
 }
 
-async function getSubjects(user) {
-  let subjects = user.subjects || [];
-  if (!subjects.length && isDbConnected()) {
-    const { doc: timetable } = await scopedTimetable(user);
-    if (timetable) {
-      const set = new Set();
-      for (const day of ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]) {
-        for (const item of timetable[day] || []) {
-          if (item?.subject) set.add(item.subject);
-        }
-      }
-      subjects = Array.from(set);
+function isFreeSlotSubject(subject) {
+  return /\b(free|revision|break|self[- ]?study)\b/i.test(String(subject || ""));
+}
+
+function parseEndMinutes(timeRange) {
+  const raw = String(timeRange || "");
+  const parts = raw.split("-");
+  const target = (parts[1] || parts[0] || "").trim();
+  const match = target.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i);
+  if (!match) return null;
+  let hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  const meridiem = (match[3] || "").toUpperCase();
+  if (meridiem === "PM" && hours < 12) hours += 12;
+  else if (meridiem === "AM" && hours === 12) hours = 0;
+  else if (!meridiem && hours >= 1 && hours <= 6) hours += 12; // afternoon school periods (1:30 - 4:00)
+  return hours * 60 + minutes;
+}
+
+function currentMinutesInTimezone(timeZone = "UTC") {
+  try {
+    const parts = new Intl.DateTimeFormat("en-GB", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+      timeZone,
+    }).formatToParts(new Date());
+    const hh = Number(parts.find((p) => p.type === "hour")?.value || 0);
+    const mm = Number(parts.find((p) => p.type === "minute")?.value || 0);
+    return hh * 60 + mm;
+  } catch {
+    const now = new Date();
+    return now.getUTCHours() * 60 + now.getUTCMinutes();
+  }
+}
+
+function normalizePeriods(rawList = []) {
+  return rawList.map((p) => {
+    const plain = typeof p?.toObject === "function" ? p.toObject() : p;
+    const periodKey = plain?.period ? Number(plain.period) : null;
+    const explicitTime =
+      plain?.time ||
+      (plain?.startTime && plain?.endTime ? `${plain.startTime} - ${plain.endTime}` : plain?.startTime || "");
+    return {
+      period: plain?.period ?? null,
+      time: explicitTime || (periodKey ? PERIOD_TIMES[periodKey] : "") || "",
+      subject: plain?.subject || plain?.class || "Free Period",
+      ...(plain?.teacher ? { teacher: plain.teacher } : {}),
+      ...(plain?.room ? { room: plain.room } : {}),
+    };
+  });
+}
+
+function findNextSchoolDay(timetableDoc, todayName) {
+  if (!timetableDoc) return null;
+  const startIdx = DAYS_OF_WEEK.indexOf(todayName);
+  if (startIdx < 0) return null;
+  for (let offset = 1; offset <= 7; offset += 1) {
+    const candidateDay = DAYS_OF_WEEK[(startIdx + offset) % 7];
+    if (candidateDay === "Saturday" || candidateDay === "Sunday") continue;
+    const candidatePeriods = normalizePeriods(timetableDoc[candidateDay] || []);
+    if (candidatePeriods.length > 0) {
+      return { day: candidateDay, periods: candidatePeriods };
     }
   }
+  return null;
+}
+
+async function getSubjects(user) {
+  const set = new Set(
+    (Array.isArray(user.subjects) ? user.subjects : [])
+      .map((s) => String(s || "").trim())
+      .filter((s) => s && !isFreeSlotSubject(s))
+  );
+
+  if (!set.size && isDbConnected()) {
+    const { doc: timetable } = await scopedTimetable(user);
+    if (timetable) {
+      for (const day of ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]) {
+        for (const item of timetable[day] || []) {
+          const name = String(item?.subject || item?.class || "").trim();
+          if (name && !isFreeSlotSubject(name)) set.add(name);
+        }
+      }
+    }
+  }
+
+  if (isDbConnected() && mongoose.connection.db && user._id) {
+    const [progressDoc, attemptedSubjects] = await Promise.all([
+      StudentProgress.findOne({ userId: user._id }).lean().catch(() => null),
+      QuizAttempt.distinct("subject", { userId: user._id }).catch(() => []),
+    ]);
+    for (const item of progressDoc?.subjects || []) {
+      const name = String(item?.subject || "").trim();
+      if (name && !isFreeSlotSubject(name)) set.add(name);
+    }
+    for (const name of attemptedSubjects || []) {
+      const clean = String(name || "").trim();
+      if (clean && !isFreeSlotSubject(clean)) set.add(clean);
+    }
+  }
+
+  const subjects = Array.from(set);
   return {
     subjects,
     enrolledClasses: user.enrolledClasses || [],
@@ -176,66 +266,87 @@ async function getTimetable(user, args = {}) {
   const days = dayFilter ? [dayFilter] : ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
 
   const schedule = {};
+  const availableStudySlots = {};
   for (const d of days) {
-    const rawList = doc?.[d] || [];
-    schedule[d] = rawList.map((p) => {
-      const plain = typeof p?.toObject === "function" ? p.toObject() : p;
-      const periodKey = plain?.period ? Number(plain.period) : null;
-      return {
-        period: plain.period,
-        time: plain.time || (periodKey ? PERIOD_TIMES[periodKey] : "") || "",
-        subject: plain.subject || plain.class || "Free / Study Period",
-      };
-    });
+    const normalized = normalizePeriods(doc?.[d] || []);
+    schedule[d] = normalized.map((p) => ({
+      period: p.period,
+      time: p.time,
+      subject: p.subject === "Free Period" ? "Free / Study Period" : p.subject,
+      ...(p.teacher ? { teacher: p.teacher } : {}),
+      ...(p.room ? { room: p.room } : {}),
+    }));
+    const inSchoolFree = schedule[d]
+      .filter((p) => isFreeSlotSubject(p.subject))
+      .map((p) => ({ time: p.time || `Period ${p.period}`, type: "in-school-revision" }));
+    availableStudySlots[d] = [
+      ...inSchoolFree,
+      { time: "16:30 - 18:00", type: "evening-study-block-1" },
+      { time: "19:30 - 21:00", type: "evening-study-block-2" },
+    ];
   }
 
   return {
     type: isTeacher ? "teacher" : "student",
     scope: doc?.ownerId ? "user" : doc?.classId ? "class" : "shared-school",
     schedule,
+    availableStudySlots,
     hasEntries: Object.values(schedule).some((list) => list.length > 0),
   };
 }
 
 async function getTodaySchedule(user) {
-  const today = new Intl.DateTimeFormat("en-US", { weekday: "long", timeZone: user.timezone || "UTC" }).format(new Date());
-  const isTeacher = user.role === "teacher";
+  const tz = user.timezone || "UTC";
+  const today = new Intl.DateTimeFormat("en-US", { weekday: "long", timeZone: tz }).format(new Date());
   let timetableDoc = null;
   let liveSessions = [];
 
   if (isDbConnected()) {
     ({ doc: timetableDoc } = await scopedTimetable(user));
 
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date(startOfDay);
-    endOfDay.setDate(endOfDay.getDate() + 1);
+    if (mongoose.connection.db || typeof LiveSession.find === "function") {
+      const startOfDay = new Date();
+      startOfDay.setHours(0, 0, 0, 0);
+      const endOfDay = new Date(startOfDay);
+      endOfDay.setDate(endOfDay.getDate() + 1);
 
-    liveSessions = await LiveSession.find({
-      date: { $gte: startOfDay, $lt: endOfDay },
-      ...(user.role === "teacher" ? { teacherId: identity(user) } : { roomId: { $in: roomsFor(user) } }),
-    })
-      .sort({ createdAt: 1 })
-      .lean();
+      try {
+        const query = LiveSession.find({
+          date: { $gte: startOfDay, $lt: endOfDay },
+          ...(user.role === "teacher" ? { teacherId: identity(user) } : { roomId: { $in: roomsFor(user) } }),
+        });
+        if (mongoose.connection.db && query && typeof query.sort === "function") {
+          liveSessions = await query.sort({ createdAt: 1 }).lean();
+        }
+      } catch {
+        liveSessions = [];
+      }
+    }
   }
 
-  const periodsRaw = timetableDoc?.[today] || [];
-
-  const periods = periodsRaw.map((p) => {
-    const plain = typeof p?.toObject === "function" ? p.toObject() : p;
-    const periodKey = plain?.period ? Number(plain.period) : null;
-    return {
-      period: plain.period,
-      time: plain.time || (periodKey ? PERIOD_TIMES[periodKey] : "") || "",
-      subject: plain.subject || plain.class || "Free Period",
-    };
+  const periods = normalizePeriods(timetableDoc?.[today] || []);
+  const nowMins = currentMinutesInTimezone(tz);
+  const upcomingPeriodsToday = periods.filter((p) => {
+    const endMins = parseEndMinutes(p.time);
+    return endMins === null || endMins >= nowMins;
   });
+  const freePeriodsToday = periods
+    .filter((p) => isFreeSlotSubject(p.subject))
+    .map((p) => ({ period: p.period, time: p.time, label: p.subject }));
+  const nextSchoolDay = findNextSchoolDay(timetableDoc, today);
 
   return {
     day: today,
     date: new Date().toISOString().slice(0, 10),
     isWeekend: today === "Sunday" || today === "Saturday",
     periods,
+    upcomingPeriodsToday,
+    freeStudySlotsToday: [
+      ...freePeriodsToday,
+      { period: null, time: "16:30 - 18:00", label: "Post-class revision block" },
+      { period: null, time: "19:30 - 21:00", label: "Evening practice & exam prep" },
+    ],
+    nextSchoolDay,
     liveSessions: liveSessions.map((s) => ({
       roomId: s.roomId,
       className: s.className,
@@ -246,23 +357,35 @@ async function getTodaySchedule(user) {
     })),
     summary: periods.length
       ? `You have ${periods.length} scheduled periods today (${today}).`
-      : `No scheduled classes found for today (${today}).`,
+      : nextSchoolDay
+        ? `No classes scheduled for ${today}; your next scheduled classes are on ${nextSchoolDay.day} (${nextSchoolDay.periods.length} periods).`
+        : `No scheduled classes found for today (${today}).`,
   };
 }
 
 async function getUpcomingClasses(user) {
-  const today = new Intl.DateTimeFormat("en-US", { weekday: "long", timeZone: user.timezone || "UTC" }).format(new Date());
   const scheduleRes = await getTodaySchedule(user);
+  const upcoming = scheduleRes.upcomingPeriodsToday.length
+    ? scheduleRes.upcomingPeriodsToday
+    : scheduleRes.nextSchoolDay?.periods || [];
 
   return {
-    day: today,
-    upcomingClasses: scheduleRes.periods,
+    day: scheduleRes.day,
+    upcomingDay: scheduleRes.upcomingPeriodsToday.length
+      ? scheduleRes.day
+      : scheduleRes.nextSchoolDay?.day || scheduleRes.day,
+    upcomingClasses: upcoming,
+    todayClasses: scheduleRes.periods,
+    nextSchoolDay: scheduleRes.nextSchoolDay,
     activeLiveSessions: scheduleRes.liveSessions,
   };
 }
 
 async function getSyllabus(user, args = {}) {
   let files = [];
+  const curriculumTopics = [];
+  const subjectFilter = args.subject ? String(args.subject).toLowerCase().trim() : "";
+
   if (isDbConnected() && mongoose.connection.db) {
     files = await mongoose.connection.db
       .collection("syllabus_files.files")
@@ -270,9 +393,38 @@ async function getSyllabus(user, args = {}) {
       .sort({ uploadDate: -1 })
       .limit(100)
       .toArray();
+
+    const [arLessons, exams] = await Promise.all([
+      ARLesson.find({ published: true }).select("subject title topic summary").limit(30).lean().catch(() => []),
+      Exam.find({ $or: [{ userId: user._id }, { userId: null, room: { $in: [...roomsFor(user), "", "general"] } }] })
+        .select("subject title syllabusTopics")
+        .limit(30)
+        .lean()
+        .catch(() => []),
+    ]);
+
+    for (const lesson of arLessons) {
+      if (subjectFilter && !String(lesson.subject || "").toLowerCase().includes(subjectFilter) && !String(lesson.title || "").toLowerCase().includes(subjectFilter)) {
+        continue;
+      }
+      curriculumTopics.push({
+        subject: lesson.subject || "General Science",
+        topic: lesson.topic || lesson.title,
+        source: "curriculum-module",
+      });
+    }
+    for (const exam of exams) {
+      if (subjectFilter && !String(exam.subject || "").toLowerCase().includes(subjectFilter)) continue;
+      for (const topic of exam.syllabusTopics || []) {
+        curriculumTopics.push({
+          subject: exam.subject,
+          topic,
+          source: `exam:${exam.title}`,
+        });
+      }
+    }
   }
 
-  const subjectFilter = args.subject ? String(args.subject).toLowerCase().trim() : "";
   let filtered = files.map((f) => ({
     id: f._id,
     filename: f.filename,
@@ -289,10 +441,12 @@ async function getSyllabus(user, args = {}) {
     );
   }
 
-
+  const subjectsSummary = await getSubjects(user);
 
   return {
+    enrolledSubjects: subjectsSummary.subjects,
     uploadedSyllabusFiles: filtered.slice(0, 10),
+    curriculumTopics: curriculumTopics.slice(0, 25),
     totalFiles: filtered.length,
   };
 }
@@ -349,9 +503,25 @@ async function getProgress(user, args = {}) {
     progress = await StudentProgress.findOne({ userId: user._id });
   }
 
+  const canAggregate = Boolean(mongoose.connection.db) || QuizAttempt.aggregate !== mongoose.Model.aggregate;
+  const quizPerformance = canAggregate ? await performanceSummary(user) : [];
+  const weakSubjects = quizPerformance
+    .filter((row) => typeof row.averageScore === "number" && row.averageScore < 60)
+    .map((row) => ({ subject: row._id, averageScore: Math.round(row.averageScore), attempts: row.attempts }));
+  const strongSubjects = quizPerformance
+    .filter((row) => typeof row.averageScore === "number" && row.averageScore >= 75)
+    .map((row) => ({ subject: row._id, averageScore: Math.round(row.averageScore), attempts: row.attempts }));
+
   if (!progress) {
-    const quizPerformance = await performanceSummary(user);
-    return { hasProgress: quizPerformance.length > 0, overallProgressPercent: null, subjects: [], quizPerformance };
+    return {
+      hasProgress: quizPerformance.length > 0,
+      overallProgressPercent: null,
+      subjects: [],
+      quizPerformance,
+      weakSubjects,
+      strongSubjects,
+      revisionPriorities: weakSubjects.map((w) => `${w.subject} (average quiz score ${w.averageScore}%)`),
+    };
   }
 
   const subjectFilter = args.subject ? String(args.subject).toLowerCase().trim() : null;
@@ -359,8 +529,18 @@ async function getProgress(user, args = {}) {
     ? progress.subjects.filter((s) => s.subject.toLowerCase() === subjectFilter)
     : progress.subjects;
 
+  const progressWeakTopics = filteredSubjects.flatMap((s) =>
+    (s.weakTopics || []).map((t) => `${s.subject}: ${t}`)
+  );
+
   return {
-    quizPerformance: await performanceSummary(user),
+    quizPerformance,
+    weakSubjects,
+    strongSubjects,
+    revisionPriorities: [
+      ...progressWeakTopics,
+      ...weakSubjects.map((w) => `${w.subject} (average quiz score ${w.averageScore}%)`),
+    ].slice(0, 10),
     overallProgressPercent: progress.overallProgressPercent,
     studyStreakDays: progress.studyStreakDays,
     totalStudyMinutes: progress.totalStudyMinutes,
@@ -400,8 +580,34 @@ async function getQuizHistory(user, args = {}) {
     attempts = await QuizAttempt.find(filter).sort({ createdAt: -1 }).limit(limit).lean();
   }
 
+  const scores = attempts.map((q) => Number(q.score)).filter((n) => Number.isFinite(n));
+  const averageScore = scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : null;
+  const highestScore = scores.length ? Math.max(...scores) : null;
+  const lowestScore = scores.length ? Math.min(...scores) : null;
+
+  const bySubject = new Map();
+  for (const q of attempts) {
+    const subj = String(q.subject || "General");
+    const entry = bySubject.get(subj) || { total: 0, count: 0 };
+    entry.total += Number(q.score) || 0;
+    entry.count += 1;
+    bySubject.set(subj, entry);
+  }
+  const weakSubjects = [];
+  const strongSubjects = [];
+  for (const [subj, stats] of bySubject.entries()) {
+    const avg = Math.round(stats.total / stats.count);
+    if (avg < 60) weakSubjects.push({ subject: subj, averageScore: avg, attempts: stats.count });
+    else if (avg >= 75) strongSubjects.push({ subject: subj, averageScore: avg, attempts: stats.count });
+  }
+
   return {
     totalAttempts: attempts.length,
+    averageScore,
+    highestScore,
+    lowestScore,
+    weakSubjects,
+    strongSubjects,
     quizzes: attempts.map((q) => ({
       id: q._id,
       quizTitle: q.quizTitle,
@@ -410,6 +616,7 @@ async function getQuizHistory(user, args = {}) {
       score: q.score,
       totalQuestions: q.totalQuestions,
       correctAnswers: q.correctAnswers,
+      weakTopics: q.weakTopics || [],
       date: q.createdAt,
     })),
   };
@@ -428,7 +635,81 @@ async function getQuizResults(user, args = {}) {
   }
 
   if (!attempt) {
-    return { hasResults: false, quizTitle: null, subject: args.subject || null, weakTopics: [], answersSummary: [] };
+    let availableQuizzes = [];
+    if (isDbConnected() && mongoose.connection.db) {
+      const quizDocs = await Assignment.find({
+        $and: [assignmentAccess(user), { "quiz.0": { $exists: true } }],
+      })
+        .select("title subject room topic")
+        .sort({ createdAt: -1 })
+        .limit(5)
+        .lean()
+        .catch(() => []);
+      availableQuizzes = quizDocs.map((q) => ({
+        id: String(q._id),
+        title: q.title,
+        subject: q.subject || q.room || "General",
+        topic: q.topic || "",
+      }));
+    }
+    return {
+      hasResults: false,
+      quizTitle: null,
+      subject: args.subject || null,
+      weakTopics: [],
+      strongTopics: [],
+      answersSummary: [],
+      availablePracticeQuizzes: availableQuizzes,
+      message: "No completed quiz attempts were found for this student account yet.",
+    };
+  }
+
+  const answersSummary = (attempt.answers || []).map((a) => ({
+    question: a.question,
+    selectedOption: a.selectedOption,
+    correctOption: a.correctOption,
+    isCorrect: a.isCorrect,
+    topic: a.topic || attempt.topic || attempt.subject || "",
+  }));
+
+  const missedQuestions = answersSummary.filter((a) => !a.isCorrect);
+  const weakSet = new Set(
+    [
+      ...(attempt.weakTopics || []),
+      ...missedQuestions.map((m) => m.topic),
+    ]
+      .map((t) => String(t || "").trim())
+      .filter(Boolean)
+  );
+  const strongSet = new Set(
+    answersSummary
+      .filter((a) => a.isCorrect)
+      .map((a) => String(a.topic || "").trim())
+      .filter((t) => t && !weakSet.has(t))
+  );
+  if (!strongSet.size && Number(attempt.score) >= 75 && attempt.subject && !weakSet.has(attempt.subject)) {
+    strongSet.add(attempt.subject);
+  }
+
+  const weakTopics = Array.from(weakSet);
+  const strongTopics = Array.from(strongSet);
+  const improvementRecommendations = [];
+  if (weakTopics.length) {
+    improvementRecommendations.push(`Review core concepts and worked examples in: ${weakTopics.join(", ")}.`);
+  }
+  if (missedQuestions.length) {
+    improvementRecommendations.push(
+      `Re-attempt the ${missedQuestions.length} missed question(s) from "${attempt.quizTitle}" and compare your selected answer with the correct option.`
+    );
+  }
+  if (Number(attempt.score) >= 80) {
+    improvementRecommendations.push(
+      `Strong mastery (${attempt.score}%) — progress to timed mixed-topic practice in ${attempt.subject}.`
+    );
+  } else {
+    improvementRecommendations.push(
+      `Schedule a 30-minute focused revision session on ${attempt.subject}${attempt.topic ? ` (${attempt.topic})` : ""} before taking another practice quiz.`
+    );
   }
 
   return {
@@ -439,15 +720,12 @@ async function getQuizResults(user, args = {}) {
     scorePercentage: attempt.score,
     totalQuestions: attempt.totalQuestions,
     correctAnswers: attempt.correctAnswers,
-    weakTopics: attempt.weakTopics || [],
+    weakTopics,
+    strongTopics,
+    missedQuestions: missedQuestions.slice(0, 10),
+    improvementRecommendations,
     feedback: attempt.feedback || "",
-    answersSummary: (attempt.answers || []).map((a) => ({
-      question: a.question,
-      selectedOption: a.selectedOption,
-      correctOption: a.correctOption,
-      isCorrect: a.isCorrect,
-      topic: a.topic,
-    })),
+    answersSummary,
     attemptDate: attempt.createdAt,
   };
 }
@@ -465,6 +743,7 @@ async function getAssignments(user, args = {}) {
     assignments: assignments.map((a) => ({
       id: a._id,
       room: a.room,
+      subject: a.subject || a.room || "",
       title: a.title,
       filename: a.filename,
       hasQuiz: Boolean(a.quiz && a.quiz.length > 0),
@@ -482,18 +761,29 @@ async function getExams(user, args = {}) {
     exams = await Exam.find(filter).sort({ date: 1 }).limit(50).lean();
   }
 
-  return {
-    totalExams: exams.length,
-    exams: exams.map((e) => ({
+  const now = Date.now();
+  const mapped = exams.map((e) => {
+    const examMs = e.date ? new Date(e.date).getTime() : null;
+    const daysUntilExam = examMs && Number.isFinite(examMs)
+      ? Math.ceil((examMs - now) / (24 * 60 * 60 * 1000))
+      : null;
+    return {
       id: e._id,
       title: e.title,
       subject: e.subject,
       date: e.date,
+      daysUntilExam,
       venue: e.venue,
       syllabusTopics: e.syllabusTopics || [],
       durationMinutes: e.durationMinutes,
       totalMarks: e.totalMarks,
-    })),
+    };
+  });
+
+  return {
+    totalExams: mapped.length,
+    upcomingExams: mapped.filter((e) => e.daysUntilExam === null || e.daysUntilExam >= 0),
+    exams: mapped,
   };
 }
 
