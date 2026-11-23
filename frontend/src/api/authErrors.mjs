@@ -5,14 +5,10 @@
 // This module has NO imports and NO Vite-specific globals on purpose, so it
 // can be unit-tested directly with `node --test` (see
 // frontend/tests/auth-errors.test.mjs). `api.js` uses it for loginUser.
-//
-// The old behaviour collapsed EVERY failure (wrong password, rate limit,
-// server down, network offline, timeout) into "Invalid credentials", which
-// hid the real cause and made the stuck "Signing in..." button impossible
-// to diagnose. Each failure class now gets an accurate, retryable message.
 
 export const LOGIN_MESSAGES = {
   INVALID_CREDENTIALS: "Invalid credentials",
+  FORBIDDEN: "Your account has been suspended. Please contact an administrator.",
   RATE_LIMITED: "Too many sign-in attempts. Please wait a moment and try again.",
   UNAVAILABLE: "The server is temporarily unavailable. Please try again shortly.",
   SERVER_ERROR: "Something went wrong on the server. Please try again later.",
@@ -20,6 +16,19 @@ export const LOGIN_MESSAGES = {
   NETWORK: "Cannot reach the server. Check your connection and try again.",
   GENERIC: "Something went wrong. Please try again.",
 };
+
+function sanitizeBackendMessage(raw) {
+  const text =
+    typeof raw === "string"
+      ? raw.trim()
+      : typeof raw?.message === "string"
+        ? raw.message.trim()
+        : "";
+  if (!text || text.length > 300 || /<\/?(?:html|body|head|pre|script)\b/i.test(text)) {
+    return "";
+  }
+  return text;
+}
 
 // Parse a Retry-After header value (delta-seconds or HTTP-date) into
 // seconds from now. Returns 0 when absent/unparseable.
@@ -39,22 +48,28 @@ export function parseRetryAfterSeconds(headers) {
 }
 
 // Map an axios error (or any thrown value) from POST /api/auth/login to
-// { error, status, retryAfterSeconds }. Never throws.
+// { error, status, retryAfterSeconds, bucket }. Never throws.
 export function mapLoginError(err) {
   const response = err?.response;
   const status = response?.status ?? null;
   const body = response?.data;
-  const backendMessage =
-    typeof body?.error === "string" && body.error.trim() ? body.error.trim() : "";
+  const backendMessage = sanitizeBackendMessage(body?.error ?? body?.message);
 
   if (!response) {
-    // No HTTP response at all: timeout, DNS, offline, CORS, or the backend
-    // never answered (Render free-tier cold start). Never "Invalid
-    // credentials" — the credentials were never even checked.
     if (err?.code === "ECONNABORTED" || /timeout/i.test(String(err?.message || ""))) {
-      return { error: LOGIN_MESSAGES.TIMEOUT, status: null, retryAfterSeconds: 0 };
+      return {
+        error: LOGIN_MESSAGES.TIMEOUT,
+        status: null,
+        retryAfterSeconds: 0,
+        bucket: null,
+      };
     }
-    return { error: LOGIN_MESSAGES.NETWORK, status: null, retryAfterSeconds: 0 };
+    return {
+      error: LOGIN_MESSAGES.NETWORK,
+      status: null,
+      retryAfterSeconds: 0,
+      bucket: null,
+    };
   }
 
   if (status === 429) {
@@ -66,30 +81,50 @@ export function mapLoginError(err) {
       error: backendMessage || LOGIN_MESSAGES.RATE_LIMITED,
       status,
       retryAfterSeconds,
+      bucket: body?.bucket === "ip" ? "ip" : "account",
     };
   }
 
   if (status === 400 || status === 401) {
-    // Backend already returns the generic "Invalid credentials" for both
-    // unknown accounts and wrong passwords (no enumeration oracle).
     return {
       error: backendMessage || LOGIN_MESSAGES.INVALID_CREDENTIALS,
       status,
       retryAfterSeconds: 0,
+      bucket: null,
     };
   }
 
   if (status === 403) {
-    return { error: backendMessage || "Access denied.", status, retryAfterSeconds: 0 };
+    return {
+      error: backendMessage || LOGIN_MESSAGES.FORBIDDEN,
+      status,
+      retryAfterSeconds: 0,
+      bucket: null,
+    };
   }
 
-  if (status === 503) {
-    return { error: backendMessage || LOGIN_MESSAGES.UNAVAILABLE, status, retryAfterSeconds: 0 };
+  if (status === 502 || status === 503 || status === 504) {
+    return {
+      error: backendMessage || LOGIN_MESSAGES.UNAVAILABLE,
+      status,
+      retryAfterSeconds: 0,
+      bucket: null,
+    };
   }
 
   if (status >= 500) {
-    return { error: backendMessage || LOGIN_MESSAGES.SERVER_ERROR, status, retryAfterSeconds: 0 };
+    return {
+      error: backendMessage || LOGIN_MESSAGES.SERVER_ERROR,
+      status,
+      retryAfterSeconds: 0,
+      bucket: null,
+    };
   }
 
-  return { error: backendMessage || LOGIN_MESSAGES.GENERIC, status, retryAfterSeconds: 0 };
+  return {
+    error: backendMessage || LOGIN_MESSAGES.GENERIC,
+    status,
+    retryAfterSeconds: 0,
+    bucket: null,
+  };
 }

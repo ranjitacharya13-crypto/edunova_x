@@ -1,5 +1,6 @@
 import React, { useEffect, lazy, Suspense } from "react";
 import { loginUser } from "../api/api";
+import { setStoredToken } from "../api/authSession.mjs";
 
 import HomeView from "./Views/HomeView";
 import SyllabusView from "./Views/SyllabusView";
@@ -14,7 +15,16 @@ const ARLessonView = lazy(() => import("./AR/ARLessonView"));
 const QuizView = lazy(() => import("./Views/QuizView"));
 const ProgressView = lazy(() => import("./Views/ProgressView"));
 
-export default function Dashboard({ user, view, setUser, setView, resourceId }) {
+export default function Dashboard({
+  user,
+  view,
+  setUser,
+  setToken,
+  setView,
+  resourceId,
+  sessionNotice = "",
+  onClearSessionNotice,
+}) {
   useEffect(() => {
     if (user?.role === "admin" && !String(view || "").startsWith("admin-")) {
       setView("admin-overview");
@@ -23,13 +33,21 @@ export default function Dashboard({ user, view, setUser, setView, resourceId }) 
 
   if (user?.role === "admin") {
     return (
-        <div className="w-full min-w-0">
+      <div className="w-full min-w-0">
         <div className="page slide-enter-active page-shell">
           <AdminDashboard view={view} user={user} />
         </div>
       </div>
     );
   }
+
+  const completeSession = (authUser, authToken) => {
+    setStoredToken(authToken);
+    setToken?.(authToken);
+    onClearSessionNotice?.();
+    setUser(authUser);
+    setView(authUser.role === "admin" ? "admin-overview" : "home");
+  };
 
   return (
     <div className="w-full min-w-0">
@@ -77,25 +95,21 @@ export default function Dashboard({ user, view, setUser, setView, resourceId }) 
             {/* ===== RIGHT : LOGIN CARD ===== */}
             <div className="w-full flex justify-center mt-8 lg:mt-0">
               <LoginCard
+                sessionNotice={sessionNotice}
+                onClearSessionNotice={onClearSessionNotice}
                 onLogin={async (email, password) => {
-                  // Never throw: LoginCard's finally-block resets the button,
-                  // but returning an error object keeps the flow explicit.
                   try {
                     const res = await loginUser({ email, password });
                     if (!res?.error && res?.user && res?.token) {
-                      try {
-                        localStorage.setItem("token", res.token);
-                      } catch {
-                        // Storage unavailable (private browsing): the session
-                        // still works in-memory; don't break the login.
-                      }
-                      setUser(res.user);
-                      setView("home");
+                      completeSession(res.user, res.token);
                     }
                     return res;
                   } catch {
                     return { error: "Something went wrong. Please try again." };
                   }
+                }}
+                onRegistered={(registeredUser, registeredToken) => {
+                  completeSession(registeredUser, registeredToken);
                 }}
                 onGuest={() => {
                   setUser({ name: "Guest", role: "guest" });

@@ -29,16 +29,19 @@ const server = http.createServer(app);
 // ==========================
 // TRUST PROXY (IMPORTANT)
 // ==========================
-// Production path: browser -> Cloudflare Worker -> Render load balancer ->
-// Express. Render's load balancer is exactly ONE hop in front of this app,
-// so `trust proxy` is set to 1: Express may read X-Forwarded-For from that
-// hop. Without this, `req.ip` is the load-balancer IP for EVERY request and
-// any IP-based limiting would treat all visitors as one client (the
-// production "Too many sign-in attempts" lockout). The login rate limiter
-// additionally keys by account and only trusts the worker-forwarded
-// CF-Connecting-IP when PROXY_SECRET matches — see
-// middleware/loginRateLimit.js.
-app.set("trust proxy", 1);
+// Production Render architecture:
+//   Browser -> Render Cloudflare Edge -> Render Envoy LB -> Express (2 hops).
+// Setting `trust proxy` to 1 stops at Cloudflare's edge IP instead of the
+// visitor IP; setting it to 2 on Render resolves `req.ip` across both Render
+// proxies while still ignoring any attacker-forged X-Forwarded-For prefix.
+// Override with TRUST_PROXY_HOPS when deploying behind a different topology.
+const trustProxyHops =
+  Number(process.env.TRUST_PROXY_HOPS) > 0
+    ? Math.floor(Number(process.env.TRUST_PROXY_HOPS))
+    : process.env.RENDER === "true" || process.env.NODE_ENV === "production"
+      ? 2
+      : 1;
+app.set("trust proxy", trustProxyHops);
 
 // ==========================
 // CORS CONFIG (IMPORTANT)
@@ -89,7 +92,8 @@ const corsOptions = {
   },
   credentials: false,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
+  allowedHeaders: ["Content-Type", "Authorization", "Accept", "X-Request-Id"],
+  exposedHeaders: ["Retry-After", "X-Request-Id"],
   optionsSuccessStatus: 204,
 };
 
@@ -175,7 +179,10 @@ app.use(express.json());
 // Correlation ID on every request so a user's report ("login failed") can be
 // matched to the exact structured log line (auth.login.*) in Render logs.
 app.use((req, res, next) => {
-  req.requestId = crypto.randomUUID();
+  const incomingId = String(req.headers["x-request-id"] || "").trim();
+  req.requestId = /^[a-zA-Z0-9._-]{8,64}$/.test(incomingId)
+    ? incomingId
+    : crypto.randomUUID();
   res.setHeader("X-Request-Id", req.requestId);
   next();
 });
@@ -271,74 +278,28 @@ mongoConnection
       console.log(`Updated existing user role to admin: ${adminEmail}`);
     }
 
-    // Create demo accounts idempotently when SEED_DEMO_USERS=true.
-    //
-    // The login page publicly advertises the demo student credentials, so
-    // the demo student MUST exist in production or demo login always fails
-    // with "Invalid credentials". It is low-privilege (student) and holds
-    // no real PII, so seeding it in production is safe. The demo TEACHER
-    // (privileged role) is NEVER seeded in production.
-    //
-    // Existing accounts are never overwritten — except the demo account's
-    // own password, which is repaired to the advertised value if it drifted
-    // (e.g. seeded with an older password), so the advertised demo login
-    // always works. Disable entirely with SEED_DEMO_USERS=false.
-    if (String(process.env.SEED_DEMO_USERS || "").toLowerCase() === "true") {
-      const isProduction = process.env.NODE_ENV === "production";
-      const demoUsers = [
-        // Sample student account for project demonstrations (same identity
-        // created by `npm run seed:demo-student`).
-        {
-          name: "Demo Student",
-          username: "student_demo_account",
-          email: "student@edunova.demo",
-          password: process.env.DEMO_STUDENT_PASSWORD || "Student@12345",
-          role: "student",
-        },
-      ];
-      if (!isProduction) {
-        demoUsers.push(
-          {
-            name: "Demo Teacher",
-            username: "teacher_demo",
-            email: "teacher@edunova.com",
-            password: "123456",
-            role: "teacher",
-          },
-          {
-            name: "Demo Student",
-            username: "student_demo",
-            email: "student@edunova.com",
-            password: "123456",
-            role: "student",
-          }
-        );
-      }
-
-      for (const demo of demoUsers) {
-        const existing = await User.findOne({ email: demo.email });
-        if (!existing) {
-          const hashedPassword = await bcrypt.hash(demo.password, 10);
-          await new User({ ...demo, password: hashedPassword }).save();
-          console.log(`✅ Seeded demo user: ${demo.email}`);
-        } else {
-          const matches = await bcrypt
-            .compare(demo.password, existing.password)
-            .catch(() => false);
-          if (!matches) {
-            existing.password = await bcrypt.hash(demo.password, 10);
-            await existing.save();
-            console.log(`✅ Repaired demo user password: ${demo.email}`);
-          }
-        }
-      }
-    }
+    // Provision the publicly advertised low-privilege Demo Student
+    // (student@edunova.demo) idempotently on every boot unless explicitly
+    // disabled via SEED_DEMO_STUDENT=false. Existing non-student accounts are
+    // never modified. Optional non-production dev accounts (teacher@edunova.com
+    // / student@edunova.com) remain strictly gated behind NODE_ENV !== "production"
+    // and SEED_DEMO_USERS=true.
+    const { ensureDemoStudent, ensureDevDemoUsers } = require("./services/demoAccount");
+    await ensureDemoStudent({ log: console });
+    await ensureDevDemoUsers({ log: console });
   })
   .catch((err) => {
     // Do NOT exit: the process must keep listening so Render's health check
     // reports a live-but-degraded service (and shows this log) instead of an
     // opaque "no open ports detected" restart loop.
-    console.error("❌ MongoDB connection failed:", err.message);
+    console.error(
+      JSON.stringify({
+        timestamp: new Date().toISOString(),
+        event: "db.connection.failed",
+        error: err.name || "MongoError",
+        message: err.message,
+      })
+    );
     if (/Authentication failed|bad auth/i.test(err.message)) {
       console.error("   → Check the username/password in MONGO_URI.");
     }
@@ -352,10 +313,23 @@ mongoConnection
 
 // Surface post-startup connection drops instead of failing silently.
 mongoose.connection.on("error", (err) =>
-  console.error("❌ MongoDB runtime error:", err.message)
+  console.error(
+    JSON.stringify({
+      timestamp: new Date().toISOString(),
+      event: "db.runtime.error",
+      error: err?.name || "MongoError",
+      message: err?.message || "Unknown error",
+    })
+  )
 );
 mongoose.connection.on("disconnected", () =>
-  console.warn("⚠️  MongoDB disconnected — driver will attempt to reconnect.")
+  console.warn(
+    JSON.stringify({
+      timestamp: new Date().toISOString(),
+      event: "db.runtime.disconnected",
+      message: "MongoDB disconnected — driver will attempt to reconnect.",
+    })
+  )
 );
 
 // ==========================

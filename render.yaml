@@ -114,30 +114,32 @@ services:
         value: "20"
       # No warm queues and no replay of tool-bearing chat POSTs. Readiness is
       # observed once; the persistent AI service owns startup and hard deadlines.
-      # Demo seeding (idempotent; existing accounts are never overwritten).
-      # The login page publicly advertises the demo STUDENT credentials
-      # (student@edunova.demo / Student@12345), so the demo student must
-      # exist in production or demo login always fails. It is low-privilege
-      # and holds no real PII. The demo TEACHER is never seeded in
-      # production (see server/server.js). Keep "true" so the advertised
-      # demo login works; set "false" to disable demo seeding entirely.
-      - key: SEED_DEMO_USERS
+      # Demo student seeding (idempotent; existing non-student accounts are
+      # never modified). The login page publicly advertises the demo STUDENT
+      # credentials (student@edunova.demo / Student@12345), so the demo student
+      # is provisioned by default on boot unless SEED_DEMO_STUDENT=false.
+      # Non-production dev accounts (teacher@edunova.com / student@edunova.com)
+      # stay disabled in production regardless of SEED_DEMO_USERS.
+      - key: SEED_DEMO_STUDENT
         value: "true"
-      # Login rate limiting (failure-based, per account + per verified
-      # client IP, temporary 15-minute lockout, success resets the account
-      # counter). Defaults are production-sane; override only if needed.
+      - key: SEED_DEMO_USERS
+        value: "false"
+      # Render fronts *.onrender.com with Cloudflare + Render Envoy LB (2 hops).
+      - key: TRUST_PROXY_HOPS
+        value: "2"
+      # Login rate limiting (failure-based, shared MongoDB TTL store across
+      # instances with in-memory fallback, temporary 5-minute lockout, success
+      # resets the caller's account+IP counter).
       - key: LOGIN_MAX_FAILURES_PER_ACCOUNT
-        value: "10"
+        value: "5"
       - key: LOGIN_MAX_FAILURES_PER_IP
-        value: "50"
+        value: "20"
+      - key: LOGIN_MAX_FAILURES_PER_ACCOUNT_GLOBAL
+        value: "30"
       - key: LOGIN_WINDOW_MS
-        value: "900000"
-      # Optional shared secret between the Cloudflare Worker and this API.
-      # When set on BOTH (worker var PROXY_SECRET + this env var), the API
-      # trusts the worker-forwarded CF-Connecting-IP header for precise
-      # per-client rate limiting. Without it, limiting falls back to the
-      # per-account bucket (still safe; IP bucket is shared behind the
-      # worker). Set the same random value in both dashboards.
+        value: "300000"
+      # Optional shared secret between the Cloudflare Worker and this API for
+      # same-origin /api/* Worker fallback requests.
       - key: PROXY_SECRET
         sync: false
 

@@ -1,5 +1,11 @@
 import axios from "axios";
 import { mapLoginError } from "./authErrors.mjs";
+import {
+  clearStoredToken,
+  getStoredToken,
+  isJwtExpired,
+  validateLoginResponse,
+} from "./authSession.mjs";
 
 // ==========================
 // API CLIENT (dev proxy + prod)
@@ -20,12 +26,12 @@ import { mapLoginError } from "./authErrors.mjs";
 // ("Cannot GET /auth/login").
 //
 // PRODUCTION FALLBACK: If VITE_API_URL was not set at build time (e.g. the
-// Cloudflare build ran without dashboard env vars), fall back to the deployed
-// Render API. This keeps the committed production bundle self-sufficient and
-// never lets a Cloudflare build silently dial the visitor's own origin for
-// /api. Local development is unaffected: in dev mode it still defaults to
-// "/api", which the Vite dev proxy forwards to the local backend on port 4000.
-const DEFAULT_PROD_API_URL = "/api";
+// Cloudflare build ran without dashboard env vars), fall back directly to the
+// deployed Render API over HTTPS. Talking directly to Render ensures Render's
+// Cloudflare edge receives each visitor's true IP rather than collapsing all
+// traffic behind a shared Worker egress IP. Local development is unaffected:
+// in dev mode it still defaults to "/api", proxied by Vite to port 4000.
+const DEFAULT_PROD_API_URL = "https://edunova-api-y3rx.onrender.com/api";
 
 let baseURL =
   import.meta.env.VITE_API_URL ||
@@ -48,13 +54,69 @@ if (import.meta.env.PROD) {
 
 // Timeout is REQUIRED: without it a hung request (Render free-tier cold
 // start, stalled proxy) leaves the login button on "Signing in..." forever.
-// 60s comfortably covers a cold start; on expiry the user gets an accurate,
-// retryable timeout message instead of a stuck button.
 const API = axios.create({
   baseURL,
   withCredentials: false,
-  timeout: 60_000,
+  timeout: 30_000,
 });
+
+const SESSION_TERMINAL_CODES = new Set([
+  "TOKEN_EXPIRED",
+  "INVALID_TOKEN",
+  "USER_NOT_FOUND",
+  "ACCOUNT_BLOCKED",
+]);
+
+function notifySessionInvalidated(status, data) {
+  clearStoredToken();
+  if (typeof window === "undefined") return;
+  const code = String(data?.code || "");
+  const message =
+    code === "ACCOUNT_BLOCKED" || status === 403
+      ? "Your account has been suspended. Please contact an administrator."
+      : "Your session has expired. Please sign in again.";
+  window.dispatchEvent(
+    new CustomEvent("edunova:auth-expired", {
+      detail: { status, code, message },
+    })
+  );
+}
+
+function maybeInvalidateSession(config, status, data) {
+  const url = String(config?.url || "");
+  if (/\/auth\/(login|register)\b/i.test(url)) return;
+  const authHeader =
+    config?.headers?.Authorization ||
+    config?.headers?.authorization ||
+    (typeof config?.headers?.get === "function" && config.headers.get("Authorization")) ||
+    "";
+  if (!authHeader) return;
+
+  const code = String(data?.code || "");
+  const rawToken = String(authHeader).replace(/^Bearer\s+/i, "").trim();
+  if (
+    SESSION_TERMINAL_CODES.has(code) ||
+    (status === 401 && rawToken && isJwtExpired(rawToken))
+  ) {
+    notifySessionInvalidated(status, data);
+  }
+}
+
+API.interceptors.response.use(
+  (response) => {
+    if (response.status === 401 || response.status === 403) {
+      maybeInvalidateSession(response.config, response.status, response.data);
+    }
+    return response;
+  },
+  (error) => {
+    const status = error?.response?.status;
+    if (status === 401 || status === 403) {
+      maybeInvalidateSession(error.config, status, error.response?.data);
+    }
+    return Promise.reject(error);
+  }
+);
 
 // Resolve a relative API path ("/study", "/assignments/x/preview") against the
 // configured base URL. Absolute URLs (https://...) pass through untouched.
@@ -85,24 +147,75 @@ export const API_ORIGIN =
 
 export const registerUser = async (formData) => {
   try {
-    const res = await API.post("/auth/register", formData);
-    return res.data;
-  } catch (err) {
-    return { error: err.response?.data?.error || "Registration failed" };
-  }
-};
-
-// Returns the backend payload on success ({ token, user }) or
-// { error, status, retryAfterSeconds } on failure. Never throws, so callers
-// can always reset their loading state. Every failure class (invalid
-// credentials, 429 rate limit, 503 unavailable, timeout, offline) gets its
-// own accurate message — see authErrors.mjs.
-export const loginUser = async (formData) => {
-  try {
-    const res = await API.post("/auth/login", formData, { timeout: 60_000 });
+    const payload = {
+      ...formData,
+      email: String(formData?.email || "").trim(),
+      username: String(formData?.username || "").trim(),
+    };
+    const res = await API.post("/auth/register", payload, { timeout: 30_000 });
     return res.data;
   } catch (err) {
     return mapLoginError(err);
+  }
+};
+
+// Returns { token, user } on success or { error, status, retryAfterSeconds, bucket }
+// on failure. Never throws, never retries automatically, and validates that a
+// 200 response actually carries a valid session payload.
+export const loginUser = async (formData) => {
+  try {
+    const payload = {
+      email: String(formData?.email || "").trim(),
+      password: String(formData?.password || ""),
+    };
+    const res = await API.post("/auth/login", payload, { timeout: 30_000 });
+    const checked = validateLoginResponse(res.data);
+    if (!checked.ok) {
+      return {
+        error: checked.error,
+        status: checked.status ?? res.status,
+        retryAfterSeconds: checked.retryAfterSeconds || 0,
+        bucket: checked.bucket || null,
+      };
+    }
+    return { token: checked.token, user: checked.user };
+  } catch (err) {
+    return mapLoginError(err);
+  }
+};
+
+// Verify a stored JWT against GET /api/auth/me on boot. Never throws.
+export const getCurrentUser = async (tokenOverride) => {
+  const token = String(tokenOverride || getStoredToken() || "").trim();
+  if (!token) {
+    return { user: null, status: 401, code: "NO_TOKEN" };
+  }
+  if (isJwtExpired(token)) {
+    clearStoredToken();
+    return {
+      user: null,
+      status: 401,
+      code: "TOKEN_EXPIRED",
+      error: "Your session has expired. Please sign in again.",
+    };
+  }
+  try {
+    const res = await API.get("/auth/me", {
+      headers: { Authorization: `Bearer ${token}` },
+      timeout: 15_000,
+    });
+    if (res.data?.user && typeof res.data.user === "object") {
+      return { user: res.data.user, status: 200, code: null };
+    }
+    return { user: null, status: res.status, code: "INVALID_RESPONSE" };
+  } catch (err) {
+    const status = err?.response?.status ?? null;
+    const code = err?.response?.data?.code || null;
+    const error = err?.response?.data?.error || "";
+    if (status === 401 || status === 403) {
+      clearStoredToken();
+    }
+    return { user: null, status, code, error };
   }
 };
 
@@ -146,10 +259,8 @@ export const getAdminDashboard = async (token) => {
 };
 
 function adminAuthHeaders() {
-  const token = localStorage.getItem("token");
-  return {
-    Authorization: `Bearer ${token}`,
-  };
+  const token = getStoredToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
 export const getAdminUsers = async (role = "") => {
@@ -261,7 +372,7 @@ export const getAdminAnalytics = async () => {
 };
 
 function aiAuthHeaders(extra = {}) {
-  const token = localStorage.getItem("token");
+  const token = getStoredToken();
   return {
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
     ...extra,

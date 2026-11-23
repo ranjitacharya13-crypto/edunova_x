@@ -1,4 +1,4 @@
-export default function Header({ theme, onToggleTheme }) {
+export default function Header({ theme, onToggleTheme, user, onLogout }) {
   const isDark = theme === "dark";
   const nextThemeLabel = isDark ? "Light mode" : "Dark mode";
 
@@ -20,51 +20,63 @@ export default function Header({ theme, onToggleTheme }) {
           </div>
         </div>
 
-        <button
-          type="button"
-          onClick={onToggleTheme}
-          className="glass-btn text-xs sm:text-sm px-2.5 sm:px-3 py-2 rounded-xl inline-flex items-center gap-1.5 sm:gap-2 text-slate-700 dark:text-slate-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 shrink-0"
-          aria-label="Toggle theme"
-        >
-          {isDark ? (
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              className="w-4 h-4"
-              aria-hidden="true"
+        <div className="flex items-center gap-2 shrink-0">
+          {user && onLogout && (
+            <button
+              type="button"
+              onClick={onLogout}
+              className="md:hidden text-xs text-rose-600 bg-rose-500/10 px-2.5 py-2 rounded-xl hover:bg-rose-500/15 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-400/40"
             >
-              <circle cx="12" cy="12" r="4" />
-              <path d="M12 2v2" />
-              <path d="M12 20v2" />
-              <path d="M4.93 4.93l1.41 1.41" />
-              <path d="M17.66 17.66l1.41 1.41" />
-              <path d="M2 12h2" />
-              <path d="M20 12h2" />
-              <path d="M4.93 19.07l1.41-1.41" />
-              <path d="M17.66 6.34l1.41-1.41" />
-            </svg>
-          ) : (
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              className="w-4 h-4"
-              aria-hidden="true"
-            >
-              <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z" />
-              <path d="M17.5 6.5h.01" />
-              <path d="M19.5 10.5h.01" />
-            </svg>
+              Sign out
+            </button>
           )}
-          <span className="font-medium">{nextThemeLabel}</span>
-        </button>
+
+          <button
+            type="button"
+            onClick={onToggleTheme}
+            className="glass-btn text-xs sm:text-sm px-2.5 sm:px-3 py-2 rounded-xl inline-flex items-center gap-1.5 sm:gap-2 text-slate-700 dark:text-slate-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 shrink-0"
+            aria-label="Toggle theme"
+          >
+            {isDark ? (
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="w-4 h-4"
+                aria-hidden="true"
+              >
+                <circle cx="12" cy="12" r="4" />
+                <path d="M12 2v2" />
+                <path d="M12 20v2" />
+                <path d="M4.93 4.93l1.41 1.41" />
+                <path d="M17.66 17.66l1.41 1.41" />
+                <path d="M2 12h2" />
+                <path d="M20 12h2" />
+                <path d="M4.93 19.07l1.41-1.41" />
+                <path d="M17.66 6.34l1.41-1.41" />
+              </svg>
+            ) : (
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="w-4 h-4"
+                aria-hidden="true"
+              >
+                <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z" />
+                <path d="M17.5 6.5h.01" />
+                <path d="M19.5 10.5h.01" />
+              </svg>
+            )}
+            <span className="font-medium">{nextThemeLabel}</span>
+          </button>
+        </div>
       </div>
     </header>
   );

@@ -1,75 +1,146 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import RegisterWizard from "./RegisterWizard";
 
-export default function LoginCard({ onLogin }) {
+const DEMO_STUDENT_EMAIL = "student@edunova.demo";
+const DEMO_STUDENT_PASSWORD = "Student@12345";
+
+export default function LoginCard({
+  onLogin,
+  onRegistered,
+  sessionNotice = "",
+  onClearSessionNotice,
+}) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [activeSource, setActiveSource] = useState(null); // "manual" | "demo" | null
+  const [slowHint, setSlowHint] = useState(false);
   const [retryAfter, setRetryAfter] = useState(0);
+  const [lockedTarget, setLockedTarget] = useState(""); // "*" | normalized email | ""
   const [showRegister, setShowRegister] = useState(false);
 
-  // Countdown for rate-limit (429) lockouts: the button stays disabled with
-  // a visible "try again in Xs" label until the backend allows a retry.
+  // Synchronous lock prevents rapid double-clicks / double-Enter submissions
+  // before React commits the asynchronous `loading` state update.
+  const inFlightRef = useRef(false);
+
   useEffect(() => {
-    if (retryAfter <= 0) return;
-    const timer = setTimeout(() => setRetryAfter((s) => Math.max(0, s - 1)), 1000);
+    if (retryAfter <= 0) {
+      if (lockedTarget) setLockedTarget("");
+      return;
+    }
+    const timer = setTimeout(() => {
+      setRetryAfter((s) => {
+        const next = Math.max(0, s - 1);
+        if (next === 0) setLockedTarget("");
+        return next;
+      });
+    }, 1000);
     return () => clearTimeout(timer);
-  }, [retryAfter]);
+  }, [retryAfter, lockedTarget]);
 
   if (showRegister) {
-    return <RegisterWizard onBack={() => setShowRegister(false)} />;
+    return (
+      <RegisterWizard
+        onBack={() => setShowRegister(false)}
+        onComplete={(user, token) => {
+          setShowRegister(false);
+          if (onRegistered && user && token) {
+            onRegistered(user, token);
+          } else if (user?.email) {
+            setEmail(user.email);
+          }
+        }}
+      />
+    );
   }
 
-  const DEMO_STUDENT_EMAIL = "student@edunova.demo";
-  const DEMO_STUDENT_PASSWORD = "Student@12345";
+  const normalizedManualEmail = email.trim().toLowerCase();
+  const manualRateLimited =
+    retryAfter > 0 &&
+    (lockedTarget === "*" ||
+      (Boolean(normalizedManualEmail) && lockedTarget === normalizedManualEmail));
+  const demoRateLimited =
+    retryAfter > 0 &&
+    (lockedTarget === "*" || lockedTarget === DEMO_STUDENT_EMAIL);
 
-  // Single login path for manual + demo sign-in.
-  //
-  // Guarantees:
-  // - `finally` ALWAYS resets `loading`, so the button can never get stuck
-  //   on "Signing in..." — even if onLogin throws (e.g. localStorage
-  //   unavailable in private browsing) or the request times out.
-  // - Duplicate submissions are ignored while a request is in flight.
-  // - Rate-limit responses surface a countdown instead of a dead button.
-  const runLogin = async (emailValue, passwordValue) => {
-    if (loading || retryAfter > 0) return;
+  const runLogin = async (emailValue, passwordValue, source) => {
+    if (inFlightRef.current || loading) return;
+
+    const cleanEmail = String(emailValue || "").trim();
+    const normalizedTarget = cleanEmail.toLowerCase();
+
+    if (source === "manual" && (!cleanEmail || !passwordValue)) {
+      setError("Please enter your email and password.");
+      return;
+    }
+
+    if (
+      retryAfter > 0 &&
+      (lockedTarget === "*" || (normalizedTarget && lockedTarget === normalizedTarget))
+    ) {
+      return;
+    }
+
+    inFlightRef.current = true;
+    onClearSessionNotice?.();
     setError("");
+    setSlowHint(false);
+    setActiveSource(source);
     setLoading(true);
+
+    const slowTimer = setTimeout(() => {
+      setSlowHint(true);
+    }, 4000);
+
     try {
-      const res = await onLogin(emailValue, passwordValue);
+      const res = await onLogin(cleanEmail, passwordValue);
       if (res?.error) {
         setError(res.error);
-        if (Number(res.retryAfterSeconds) > 0) {
-          setRetryAfter(Number(res.retryAfterSeconds));
+        const waitSeconds = Number(res.retryAfterSeconds) || 0;
+        if (res.status === 429 && waitSeconds > 0) {
+          setRetryAfter(waitSeconds);
+          setLockedTarget(res.bucket === "ip" ? "*" : normalizedTarget || "*");
         }
         return;
       }
-      // Success: Dashboard navigates to the home view; nothing to reset.
+      if (!res?.token || !res?.user) {
+        setError("Sign-in did not complete. Please try again.");
+      }
     } catch {
       setError("Something went wrong. Please try again.");
     } finally {
+      clearTimeout(slowTimer);
+      inFlightRef.current = false;
       setLoading(false);
+      setActiveSource(null);
+      setSlowHint(false);
     }
   };
 
   const handleLogin = (event) => {
     if (event) event.preventDefault();
-    runLogin(email, password);
+    runLogin(email, password, "manual");
   };
 
-  // Demo login goes through the exact same real authentication API as a
-  // manual login — no bypass, no direct navigation to the dashboard.
   const handleDemoStudentLogin = () => {
-    runLogin(DEMO_STUDENT_EMAIL, DEMO_STUDENT_PASSWORD);
+    runLogin(DEMO_STUDENT_EMAIL, DEMO_STUDENT_PASSWORD, "demo");
   };
 
-  const locked = loading || retryAfter > 0;
-  const submitLabel = retryAfter > 0
+  const manualDisabled = loading || manualRateLimited;
+  const demoDisabled = loading || demoRateLimited;
+
+  const submitLabel = manualRateLimited
     ? `Try again in ${retryAfter}s`
-    : loading
+    : loading && activeSource === "manual"
       ? "Signing in..."
       : "Sign In";
+
+  const demoLabel = demoRateLimited
+    ? `Try again in ${retryAfter}s`
+    : loading && activeSource === "demo"
+      ? "Signing in..."
+      : "Login as Demo Student";
 
   return (
     <div className="w-full max-w-md mx-auto glass-card p-6">
@@ -78,15 +149,33 @@ export default function LoginCard({ onLogin }) {
         Login to continue to EduNova
       </p>
 
+      {sessionNotice && !error && (
+        <div
+          role="status"
+          className="mb-3 text-sm text-amber-800 bg-amber-50 border border-amber-200 px-3 py-2 rounded-lg"
+        >
+          {sessionNotice}
+        </div>
+      )}
+
       {error && (
-        <div className="mb-3 text-sm text-red-600 bg-red-50 px-3 py-2 rounded-lg">
+        <div
+          role="alert"
+          className="mb-3 text-sm text-red-600 bg-red-50 px-3 py-2 rounded-lg"
+        >
           {error}
         </div>
       )}
 
-      {/* A real form (submit handler preserved): fixes the browser
-          "[DOM] Password field is not contained in a form" warning and lets
-          Enter submit, with identical styling, autocomplete and auth flow. */}
+      {loading && slowHint && (
+        <div
+          role="status"
+          className="mb-3 text-xs text-slate-600 bg-slate-100/80 px-3 py-2 rounded-lg"
+        >
+          Connecting to server — waking up service, please wait...
+        </div>
+      )}
+
       <form onSubmit={handleLogin} noValidate>
         <input
           id="email"
@@ -95,7 +184,10 @@ export default function LoginCard({ onLogin }) {
           autoComplete="email"
           placeholder="Email"
           value={email}
-          onChange={(e) => setEmail(e.target.value)}
+          onChange={(e) => {
+            setEmail(e.target.value);
+            if (error) setError("");
+          }}
           disabled={loading}
           className="w-full mb-3 px-4 py-3 rounded-xl border border-white/40 bg-white/60 backdrop-blur-md focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:opacity-60"
         />
@@ -107,14 +199,17 @@ export default function LoginCard({ onLogin }) {
           autoComplete="current-password"
           placeholder="Password"
           value={password}
-          onChange={(e) => setPassword(e.target.value)}
+          onChange={(e) => {
+            setPassword(e.target.value);
+            if (error) setError("");
+          }}
           disabled={loading}
           className="w-full mb-4 px-4 py-3 rounded-xl border border-white/40 bg-white/60 backdrop-blur-md focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:opacity-60"
         />
 
         <button
           type="submit"
-          disabled={locked}
+          disabled={manualDisabled}
           className="w-full bg-primary text-white py-3 rounded-xl font-medium disabled:opacity-60"
         >
           {submitLabel}
@@ -122,8 +217,10 @@ export default function LoginCard({ onLogin }) {
       </form>
 
       <button
+        type="button"
+        disabled={loading}
         onClick={() => setShowRegister(true)}
-        className="w-full mt-4 text-primary border border-primary/30 bg-white/40 backdrop-blur-md py-2.5 rounded-xl hover:bg-white/60 transition"
+        className="w-full mt-4 text-primary border border-primary/30 bg-white/40 backdrop-blur-md py-2.5 rounded-xl hover:bg-white/60 transition disabled:opacity-60"
       >
         Create Account
       </button>
@@ -148,14 +245,10 @@ export default function LoginCard({ onLogin }) {
           <button
             type="button"
             onClick={handleDemoStudentLogin}
-            disabled={locked}
+            disabled={demoDisabled}
             className="w-full mt-3 bg-slate-800 text-white py-2.5 rounded-xl font-medium hover:bg-slate-700 transition disabled:opacity-60"
           >
-            {retryAfter > 0
-              ? `Try again in ${retryAfter}s`
-              : loading
-                ? "Signing in..."
-                : "Login as Demo Student"}
+            {demoLabel}
           </button>
         </div>
       </div>

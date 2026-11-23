@@ -1,13 +1,18 @@
 import React from "react";
 import Navigation from "./Navigation";
 import AdminNavigation from "./Admin/AdminNavigation";
+import { clearStoredToken } from "../api/authSession.mjs";
 
-export default function Sidebar({ user, view, setUser, setView, setToken }) {
+export default function Sidebar({ user, view, setUser, setView, setToken, onLogout }) {
   const handleLogout = () => {
-    localStorage.removeItem("token");
-    setToken(null);
-    setUser(null);
-    setView("welcome");
+    if (onLogout) {
+      onLogout();
+      return;
+    }
+    clearStoredToken();
+    setToken?.(null);
+    setUser?.(null);
+    setView?.("welcome");
   };
 
   return (
@@ -24,6 +29,7 @@ export default function Sidebar({ user, view, setUser, setView, setToken }) {
           </div>
 
           <button
+            type="button"
             onClick={handleLogout}
             className="text-sm text-rose-600 bg-rose-500/10 px-3 py-1.5 rounded-xl hover:bg-rose-500/15 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-400/40"
           >

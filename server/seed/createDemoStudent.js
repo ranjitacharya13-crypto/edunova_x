@@ -1,44 +1,22 @@
 // server/seed/createDemoStudent.js
 //
-// Creates the demo student account used for project demonstrations:
+// Creates or reconciles the demo student account used for project demonstrations:
 //
 //   Email:    student@edunova.demo
-//   Password: Student@12345
+//   Password: Student@12345 (or DEMO_STUDENT_PASSWORD)
 //   Role:     student
 //   Name:     Demo Student
 //
-// The script is IDEMPOTENT — running it multiple times never creates a
-// duplicate account and never touches any other user (admins, teachers or
-// existing students).
-//
-// Usage:
-//   node server/seed/createDemoStudent.js
-//   npm run seed:demo-student --prefix server
-//
-// Environment:
-//   MONGO_URI   (required) existing MongoDB connection string.
-//               Loaded from server/.env when present, or from the shell.
-//   DEMO_STUDENT_PASSWORD (optional) override the default demo password.
-//
-// Nothing is hardcoded: the MongoDB URI always comes from the environment and
-// the password is stored ONLY as a bcrypt hash (same bcryptjs mechanism and
-// cost factor used by server/routes/auth.js).
+// Idempotent: never duplicates the account, repairs drifted demo password
+// hashes, and never modifies any non-student account.
 const path = require("path");
 
-// Load server/.env when running locally (Render/production inject env vars).
 require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
 
 const mongoose = require("mongoose");
-const bcrypt = require("bcryptjs");
-const User = require("../models/User");
+const { ensureDemoStudent, getDemoStudentSpec } = require("../services/demoAccount");
 
-const DEMO_STUDENT = {
-  name: "Demo Student",
-  username: "student_demo_account",
-  email: "student@edunova.demo",
-  password: process.env.DEMO_STUDENT_PASSWORD || "Student@12345",
-  role: "student",
-};
+const DEMO_STUDENT = getDemoStudentSpec();
 
 async function createDemoStudent() {
   const mongoUri = String(process.env.MONGO_URI || "").trim();
@@ -54,42 +32,37 @@ async function createDemoStudent() {
   console.log("✅ Connected to MongoDB");
 
   try {
-    const existing = await User.findOne({ email: DEMO_STUDENT.email });
+    // CLI invocation explicitly intends to provision the demo student even if
+    // SEED_DEMO_STUDENT=false happened to be set in the shell.
+    const previousFlag = process.env.SEED_DEMO_STUDENT;
+    process.env.SEED_DEMO_STUDENT = "true";
+    let result;
+    try {
+      result = await ensureDemoStudent({ log: console });
+    } finally {
+      if (previousFlag === undefined) delete process.env.SEED_DEMO_STUDENT;
+      else process.env.SEED_DEMO_STUDENT = previousFlag;
+    }
 
-    if (existing) {
-      if (existing.role !== "student") {
-        console.error(
-          `❌ A user with email ${DEMO_STUDENT.email} already exists but has role "${existing.role}" (expected "student"). Nothing was changed — please resolve this manually.`
-        );
-        process.exitCode = 1;
-        return;
-      }
-      console.log(
-        `ℹ️  Demo student already exists: ${existing.email} (role: ${existing.role}). Nothing to do.`
+    if (result.status === "skipped-role-mismatch") {
+      console.error(
+        `❌ Account ${DEMO_STUDENT.email} exists with a non-student role. Nothing was changed.`
       );
+      process.exitCode = 1;
       return;
     }
 
-    // Same bcrypt mechanism + cost factor as the register route.
-    const hashedPassword = await bcrypt.hash(DEMO_STUDENT.password, 10);
-
-    const user = new User({
-      name: DEMO_STUDENT.name,
-      username: DEMO_STUDENT.username,
-      email: DEMO_STUDENT.email,
-      password: hashedPassword,
-      role: DEMO_STUDENT.role,
-    });
-    await user.save();
-
-    console.log(`✅ Demo student created: ${user.email} (role: ${user.role})`);
+    if (result.status === "already-ok") {
+      console.log(
+        `ℹ️  Demo student already exists and verified: ${DEMO_STUDENT.email} (role: student).`
+      );
+    }
   } finally {
     await mongoose.connection.close();
     console.log("🔌 MongoDB connection closed");
   }
 }
 
-// Allow `require()` without side effects (useful for tests).
 if (require.main === module) {
   createDemoStudent().catch(async (err) => {
     console.error("❌ Failed to create demo student:", err.message);
