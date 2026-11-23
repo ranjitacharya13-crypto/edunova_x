@@ -78,13 +78,24 @@ export default function Dashboard({ user, view, setUser, setView, resourceId }) 
             <div className="w-full flex justify-center mt-8 lg:mt-0">
               <LoginCard
                 onLogin={async (email, password) => {
-                  const res = await loginUser({ email, password });
-                  if (!res?.error && res?.user) {
-                    localStorage.setItem("token", res.token);
-                    setUser(res.user);
-                    setView("home");
+                  // Never throw: LoginCard's finally-block resets the button,
+                  // but returning an error object keeps the flow explicit.
+                  try {
+                    const res = await loginUser({ email, password });
+                    if (!res?.error && res?.user && res?.token) {
+                      try {
+                        localStorage.setItem("token", res.token);
+                      } catch {
+                        // Storage unavailable (private browsing): the session
+                        // still works in-memory; don't break the login.
+                      }
+                      setUser(res.user);
+                      setView("home");
+                    }
+                    return res;
+                  } catch {
+                    return { error: "Something went wrong. Please try again." };
                   }
-                  return res;
                 }}
                 onGuest={() => {
                   setUser({ name: "Guest", role: "guest" });
